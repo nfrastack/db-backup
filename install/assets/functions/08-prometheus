@@ -1,0 +1,328 @@
+#!/command/with-contenv bash
+
+# Prometheus metrics configuration
+PROMETHEUS_PORT=${PROMETHEUS_PORT:-"9090"}
+PROMETHEUS_METRICS_FILE=${PROMETHEUS_METRICS_FILE:-"/tmp/prometheus_metrics"}
+PROMETHEUS_METRICS_LOCK=${PROMETHEUS_METRICS_LOCK:-"/tmp/prometheus_metrics.lock"}
+
+# Initialize Prometheus metrics file
+init_prometheus_metrics() {
+    if var_true "${DEBUG_PROMETHEUS}" ; then debug on; fi
+    
+    # Create metrics file with headers
+    cat > "${PROMETHEUS_METRICS_FILE}" << 'EOF'
+# HELP dbbackup_backup_status Backup job status (0=success, 1=failed)
+# TYPE dbbackup_backup_status gauge
+# HELP dbbackup_backup_duration_seconds Backup job duration in seconds
+# TYPE dbbackup_backup_duration_seconds gauge
+# HELP dbbackup_backup_size_bytes Backup file size in bytes
+# TYPE dbbackup_backup_size_bytes gauge
+# HELP dbbackup_backup_timestamp Backup completion timestamp
+# TYPE dbbackup_backup_timestamp gauge
+# HELP dbbackup_compression_duration_seconds Compression duration in seconds
+# TYPE dbbackup_compression_duration_seconds gauge
+# HELP dbbackup_encryption_duration_seconds Encryption duration in seconds
+# TYPE dbbackup_encryption_duration_seconds gauge
+# HELP dbbackup_checksum_duration_seconds Checksum calculation duration in seconds
+# TYPE dbbackup_checksum_duration_seconds gauge
+# HELP dbbackup_upload_duration_seconds Upload duration in seconds
+# TYPE dbbackup_upload_duration_seconds gauge
+# HELP dbbackup_database_availability Database availability status (1=available, 0=unavailable)
+# TYPE dbbackup_database_availability gauge
+# HELP dbbackup_jobs_total Total number of backup jobs
+# TYPE dbbackup_jobs_total counter
+# HELP dbbackup_jobs_failed_total Total number of failed backup jobs
+# TYPE dbbackup_jobs_failed_total counter
+# HELP dbbackup_jobs_success_total Total number of successful backup jobs
+# TYPE dbbackup_jobs_success_total counter
+EOF
+
+    if var_true "${DEBUG_PROMETHEUS}" ; then debug off; fi
+}
+
+# Start Prometheus HTTP server
+start_prometheus_server() {
+    if var_true "${DEBUG_PROMETHEUS}" ; then debug on; fi
+    
+    if var_true "${CONTAINER_ENABLE_MONITORING}" && [ "${CONTAINER_MONITORING_BACKEND,,}" = "prometheus" ]; then
+        print_notice "Starting Prometheus metrics server on port ${PROMETHEUS_PORT}"
+        
+        # Start HTTP server in background using Python if available, otherwise use netcat
+        (
+            while true; do
+                if command -v python3 >/dev/null 2>&1; then
+                    # Use Python HTTP server
+                    python3 -c "
+import http.server
+import socketserver
+import os
+
+class MetricsHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/plain; version=0.0.4; charset=utf-8')
+        self.end_headers()
+        
+        metrics_file = '${PROMETHEUS_METRICS_FILE}'
+        if os.path.exists(metrics_file):
+            with open(metrics_file, 'r') as f:
+                self.wfile.write(f.read().encode())
+        else:
+            self.wfile.write(b'# No metrics available')
+
+with socketserver.TCPServer(('', ${PROMETHEUS_PORT}), MetricsHandler) as httpd:
+    httpd.serve_forever()
+"
+                else
+                    # Fallback to netcat if Python is not available
+                    echo -e "HTTP/1.1 200 OK\r\nContent-Type: text/plain; version=0.0.4; charset=utf-8\r\n\r\n$(cat ${PROMETHEUS_METRICS_FILE} 2>/dev/null || echo '# No metrics available')" | \
+                    nc -l -p "${PROMETHEUS_PORT}" -w 1
+                fi
+            done
+        ) &
+        
+        PROMETHEUS_SERVER_PID=$!
+        echo "${PROMETHEUS_SERVER_PID}" > /tmp/prometheus_server.pid
+        print_notice "Prometheus server started with PID ${PROMETHEUS_SERVER_PID}"
+    fi
+    
+    if var_true "${DEBUG_PROMETHEUS}" ; then debug off; fi
+}
+
+# Stop Prometheus HTTP server
+stop_prometheus_server() {
+    if [ -f /tmp/prometheus_server.pid ]; then
+        local pid=$(cat /tmp/prometheus_server.pid)
+        if kill -0 "${pid}" 2>/dev/null; then
+            kill "${pid}"
+            print_notice "Prometheus server stopped (PID: ${pid})"
+        fi
+        rm -f /tmp/prometheus_server.pid
+    fi
+}
+
+# Add metric to Prometheus file (for counters - always increment)
+add_prometheus_counter() {
+    local metric_name="$1"
+    local metric_value="$2"
+    local labels="$3"
+    
+    if var_true "${CONTAINER_ENABLE_MONITORING}" && [ "${CONTAINER_MONITORING_BACKEND,,}" = "prometheus" ]; then
+        # Use lock to prevent concurrent writes
+        (
+            flock -x 200
+            local temp_file="${PROMETHEUS_METRICS_FILE}.tmp"
+            
+            # Create full metric name with labels
+            local full_metric_name
+            if [ -n "${labels}" ]; then
+                full_metric_name="${metric_name}{${labels}}"
+            else
+                full_metric_name="${metric_name}"
+            fi
+            
+            # Get current value of the counter
+            local current_value=0
+            if [ -f "${PROMETHEUS_METRICS_FILE}" ]; then
+                current_value=$(grep "^${full_metric_name} " "${PROMETHEUS_METRICS_FILE}" | tail -1 | awk '{print $2}' 2>/dev/null || echo "0")
+                # Remove existing counter metric
+                grep -v "^${full_metric_name} " "${PROMETHEUS_METRICS_FILE}" > "${temp_file}" 2>/dev/null || true
+                mv "${temp_file}" "${PROMETHEUS_METRICS_FILE}"
+            fi
+            
+            # Calculate new value (increment by metric_value)
+            local new_value=$((current_value + metric_value))
+            
+            # Add updated counter metric
+            echo "${full_metric_name} ${new_value}" >> "${PROMETHEUS_METRICS_FILE}"
+        ) 200>"${PROMETHEUS_METRICS_LOCK}"
+    fi
+}
+
+# Update metric in Prometheus file (for gauges - replace existing value)
+update_prometheus_gauge() {
+    local metric_name="$1"
+    local metric_value="$2"
+    local labels="$3"
+    
+    if var_true "${CONTAINER_ENABLE_MONITORING}" && [ "${CONTAINER_MONITORING_BACKEND,,}" = "prometheus" ]; then
+        # Use lock to prevent concurrent writes
+        (
+            flock -x 200
+            local temp_file="${PROMETHEUS_METRICS_FILE}.tmp"
+            
+            # Create full metric name with labels
+            local full_metric_name
+            if [ -n "${labels}" ]; then
+                full_metric_name="${metric_name}{${labels}}"
+            else
+                full_metric_name="${metric_name}"
+            fi
+            
+            # Remove existing metric with same name and labels, then add new one
+            if [ -f "${PROMETHEUS_METRICS_FILE}" ]; then
+                grep -v "^${full_metric_name} " "${PROMETHEUS_METRICS_FILE}" > "${temp_file}" 2>/dev/null || true
+                mv "${temp_file}" "${PROMETHEUS_METRICS_FILE}"
+            fi
+            
+            # Add new metric
+            echo "${full_metric_name} ${metric_value}" >> "${PROMETHEUS_METRICS_FILE}"
+        ) 200>"${PROMETHEUS_METRICS_LOCK}"
+    fi
+}
+
+# Update backup status metric (gauge - replace existing value)
+update_backup_status_metric() {
+    local db_host="$1"
+    local db_name="$2"
+    local status="$3"
+    local labels="db_host=\"${db_host}\",db_name=\"${db_name}\""
+    
+    update_prometheus_gauge "dbbackup_backup_status" "${status}" "${labels}"
+}
+
+# Update backup duration metric (gauge - replace existing value)
+update_backup_duration_metric() {
+    local db_host="$1"
+    local db_name="$2"
+    local duration="$3"
+    local labels="db_host=\"${db_host}\",db_name=\"${db_name}\""
+    
+    update_prometheus_gauge "dbbackup_backup_duration_seconds" "${duration}" "${labels}"
+}
+
+# Update backup size metric (gauge - replace existing value)
+update_backup_size_metric() {
+    local db_host="$1"
+    local db_name="$2"
+    local size="$3"
+    local labels="db_host=\"${db_host}\",db_name=\"${db_name}\""
+    
+    update_prometheus_gauge "dbbackup_backup_size_bytes" "${size}" "${labels}"
+}
+
+# Update backup timestamp metric (gauge - replace existing value)
+update_backup_timestamp_metric() {
+    local db_host="$1"
+    local db_name="$2"
+    local timestamp="$3"
+    local labels="db_host=\"${db_host}\",db_name=\"${db_name}\""
+    
+    update_prometheus_gauge "dbbackup_backup_timestamp" "${timestamp}" "${labels}"
+}
+
+# Update compression duration metric (gauge - replace existing value)
+update_compression_duration_metric() {
+    local db_host="$1"
+    local db_name="$2"
+    local duration="$3"
+    local labels="db_host=\"${db_host}\",db_name=\"${db_name}\""
+    
+    update_prometheus_gauge "dbbackup_compression_duration_seconds" "${duration}" "${labels}"
+}
+
+# Update encryption duration metric (gauge - replace existing value)
+update_encryption_duration_metric() {
+    local db_host="$1"
+    local db_name="$2"
+    local duration="$3"
+    local labels="db_host=\"${db_host}\",db_name=\"${db_name}\""
+    
+    update_prometheus_gauge "dbbackup_encryption_duration_seconds" "${duration}" "${labels}"
+}
+
+# Update checksum duration metric (gauge - replace existing value)
+update_checksum_duration_metric() {
+    local db_host="$1"
+    local db_name="$2"
+    local duration="$3"
+    local labels="db_host=\"${db_host}\",db_name=\"${db_name}\""
+    
+    update_prometheus_gauge "dbbackup_checksum_duration_seconds" "${duration}" "${labels}"
+}
+
+# Update upload duration metric (gauge - replace existing value)
+update_upload_duration_metric() {
+    local db_host="$1"
+    local db_name="$2"
+    local duration="$3"
+    local labels="db_host=\"${db_host}\",db_name=\"${db_name}\""
+    
+    update_prometheus_gauge "dbbackup_upload_duration_seconds" "${duration}" "${labels}"
+}
+
+# Update database availability metric (gauge - replace existing value)
+update_database_availability_metric() {
+    local db_host="$1"
+    local db_name="$2"
+    local db_type="$3"
+    local availability="$4"
+    local labels="db_host=\"${db_host}\",db_name=\"${db_name}\",db_type=\"${db_type}\""
+    
+    update_prometheus_gauge "dbbackup_database_availability" "${availability}" "${labels}"
+}
+
+# Increment job counter (counter - always increment)
+increment_job_counter() {
+    local db_host="$1"
+    local db_name="$2"
+    local labels="db_host=\"${db_host}\",db_name=\"${db_name}\""
+    
+    add_prometheus_counter "dbbackup_jobs_total" "1" "${labels}"
+}
+
+# Increment failed job counter (counter - always increment)
+increment_failed_job_counter() {
+    local db_host="$1"
+    local db_name="$2"
+    local labels="db_host=\"${db_host}\",db_name=\"${db_name}\""
+    
+    add_prometheus_counter "dbbackup_jobs_failed_total" "1" "${labels}"
+}
+
+# Increment successful job counter (counter - always increment)
+increment_successful_job_counter() {
+    local db_host="$1"
+    local db_name="$2"
+    local labels="db_host=\"${db_host}\",db_name=\"${db_name}\""
+    
+    add_prometheus_counter "dbbackup_jobs_success_total" "1" "${labels}"
+}
+
+# Clean old metrics (keep only headers and unique metrics)
+cleanup_prometheus_metrics() {
+    if [ -f "${PROMETHEUS_METRICS_FILE}" ]; then
+        local line_count=$(wc -l < "${PROMETHEUS_METRICS_FILE}")
+        if [ "${line_count}" -gt 500 ]; then
+            # Keep headers and remove duplicates, keeping only the latest value for each metric
+            (
+                flock -x 200
+                local temp_file="${PROMETHEUS_METRICS_FILE}.tmp"
+                
+                # Keep headers (lines starting with #)
+                grep "^#" "${PROMETHEUS_METRICS_FILE}" > "${temp_file}"
+                
+                # For each unique metric name, keep only the last occurrence
+                # This ensures counters keep their accumulated values
+                grep -v "^#" "${PROMETHEUS_METRICS_FILE}" | \
+                awk -F'[{} ]' '{
+                    # Extract metric name and labels
+                    metric_name = $1
+                    if ($2 != "") {
+                        metric_name = metric_name "{" $2
+                    }
+                    # Store the latest value for each metric
+                    # For counters, this will be the highest accumulated value
+                    metrics[metric_name] = $0
+                } END {
+                    # Output all unique metrics
+                    for (metric in metrics) {
+                        print metrics[metric]
+                    }
+                }' >> "${temp_file}"
+                
+                mv "${temp_file}" "${PROMETHEUS_METRICS_FILE}"
+            ) 200>"${PROMETHEUS_METRICS_LOCK}"
+        fi
+    fi
+}

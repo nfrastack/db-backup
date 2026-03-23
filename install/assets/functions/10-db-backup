@@ -947,6 +947,10 @@ backup_sqlite3() {
 
 check_availability() {
     if var_true "${DEBUG_CHECK_AVAILABILITY}" ; then debug on; fi
+    
+    # Initialize availability as unavailable (0)
+    local availability_status=0
+    
     if var_false "${backup_job_skip_availability_check}" ; then
         case "${dbtype}" in
             "couch" )
@@ -957,7 +961,10 @@ check_availability() {
                 fi
                 while [ "${code_received}" != "200" ]; do
                     code_received=$(run_as_user curl -XGET -sSL -o /dev/null -L -w ''%{http_code}'' ${_ca_couch_auth} ${backup_job_db_host}:${backup_job_db_port})
-                    if [ "${code_received}" = "200" ] ; then break ; fi
+                    if [ "${code_received}" = "200" ] ; then 
+                        availability_status=1
+                        break 
+                    fi
                     sleep 5
                     (( counter+=5 ))
                     write_log warn "CouchDB Host '${backup_job_db_host}' is not accessible, retrying.. ($counter seconds so far)"
@@ -972,12 +979,16 @@ check_availability() {
                             (( counter+=5 ))
                             write_log warn "InfluxDB Host '${backup_job_db_host#*//}' is not accessible, retrying.. ($counter seconds so far)"
                         done
+                        availability_status=1
                     ;;
                     2 )
                         code_received=0
                         while [ "${code_received}" != "200" ]; do
                             code_received=$(run_as_user curl -XGET -sSL -o /dev/null -w ''%{http_code}'' ${backup_job_db_host}:${backup_job_db_port}/health)
-                            if [ "${code_received}" = "200" ] ; then break ; fi
+                            if [ "${code_received}" = "200" ] ; then 
+                                availability_status=1
+                                break 
+                            fi
                             sleep 5
                             (( counter+=5 ))
                             write_log warn "InfluxDB Host '${backup_job_db_host}' is not accessible, retrying.. ($counter seconds so far)"
@@ -988,6 +999,7 @@ check_availability() {
             "mongo" )
                 if [ -n "${backup_job_mongo_custom_uri}" ] ; then
                     write_log debug "Skipping Connectivity Check"
+                    availability_status=1
                 else
                     counter=0
                     while ! (run_as_user nc -z ${backup_job_db_host} ${backup_job_db_port}) ; do
@@ -995,6 +1007,7 @@ check_availability() {
                         (( counter+=5 ))
                         write_log warn "Mongo Host '${backup_job_db_host}' is not accessible, retrying.. ($counter seconds so far)"
                     done
+                    availability_status=1
                 fi
             ;;
             "mysql" )
@@ -1005,6 +1018,7 @@ check_availability() {
                     (( counter+=5 ))
                     write_log warn "MySQL/MariaDB Server '${backup_job_db_host}' is not accessible, retrying.. (${counter} seconds so far)"
                 done
+                availability_status=1
             ;;
             "mssql" )
                 counter=0
@@ -1013,6 +1027,7 @@ check_availability() {
                     (( counter+=5 ))
                     write_log warn "MSSQL Host '${backup_job_db_host}' is not accessible, retrying.. ($counter seconds so far)"
                 done
+                availability_status=1
             ;;
             "pgsql" )
                 counter=0
@@ -1022,6 +1037,7 @@ check_availability() {
                     (( counter+=5 ))
                     write_log warn "Postgres Host '${backup_job_db_host}' is not accessible, retrying.. ($counter seconds so far)"
                 done
+                availability_status=1
             ;;
             "redis" )
                 counter=0
@@ -1030,6 +1046,7 @@ check_availability() {
                     (( counter+=5 ))
                     write_log warn "Redis Host '${backup_job_db_host}' is not accessible, retrying.. ($counter seconds so far)"
                 done
+                availability_status=1
             ;;
             "sqlite3" )
                 if [[ ! -e "${backup_job_db_host}" ]]; then
@@ -1044,10 +1061,20 @@ check_availability() {
                     write_log error "File '${backup_job_db_host}' is not readable."
                     exit_code=2
                     exit $exit_code
+                else
+                    availability_status=1
                 fi
             ;;
         esac
     fi
+    
+    # Send database availability metric to Prometheus if enabled
+    if var_true "${CONTAINER_ENABLE_MONITORING}" && [ "${CONTAINER_MONITORING_BACKEND,,}" = "prometheus" ]; then
+        source /assets/functions/08-prometheus
+        source /assets/defaults/08-prometheus
+        update_database_availability_metric "${backup_job_db_host}" "${1}" "${dbtype}" "${availability_status}"
+    fi
+    
     if var_true "${DEBUG_CHECK_AVAILABILITY}" ; then debug off; fi
 }
 
@@ -1283,6 +1310,13 @@ EOF
 ctrl_c() {
     sed -i "/^${backup_instance_number}/d" /tmp/.container/db-backup-backups
     symlink_log
+    
+    # Stop Prometheus server if running
+    if var_true "${CONTAINER_ENABLE_MONITORING}" && [ "${CONTAINER_MONITORING_BACKEND,,}" = "prometheus" ]; then
+        source /assets/functions/08-prometheus
+        stop_prometheus_server
+    fi
+    
     print_warn "User aborted"
     exit
 }
@@ -1777,6 +1811,60 @@ EOZP
         unset zabbix_checksum_time
         unset zabbix_encrypt_time
         rm -rf "${zabbix_payload}"
+    fi
+
+    # Send metrics to Prometheus if enabled
+    if var_true "${CONTAINER_ENABLE_MONITORING}" && [ "${CONTAINER_MONITORING_BACKEND,,}" = "prometheus" ]; then
+        source /assets/functions/08-prometheus
+        source /assets/defaults/08-prometheus
+        print_notice "Sending Backup Statistics to Prometheus"
+        
+        # Increment job counter
+        increment_job_counter "${backup_job_db_host}" "${1}"
+        
+        # Update status metric (0=success, 1=failed)
+        if [ "${exit_code}" = "0" ]; then
+            increment_successful_job_counter "${backup_job_db_host}" "${1}"
+            update_backup_status_metric "${backup_job_db_host}" "${1}" "0"
+        else
+            increment_failed_job_counter "${backup_job_db_host}" "${1}"
+            update_backup_status_metric "${backup_job_db_host}" "${1}" "1"
+        fi
+        
+        # Update duration metric
+        update_backup_duration_metric "${backup_job_db_host}" "${1}" "${dbbackup_total_time}"
+        
+        # Update size metric (convert to bytes if needed)
+        local size_in_bytes="${filesize}"
+        if [ -n "${size_in_bytes}" ] && [ "${size_in_bytes}" != "0" ]; then
+            update_backup_size_metric "${backup_job_db_host}" "${1}" "${size_in_bytes}"
+        fi
+        
+        # Update timestamp metric
+        update_backup_timestamp_metric "${backup_job_db_host}" "${1}" "${dbbackup_finish_time}"
+        
+        # Update compression duration if available
+        if [ -n "${compression_time}" ] && [ "${compression_time}" != "0" ]; then
+            update_compression_duration_metric "${backup_job_db_host}" "${1}" "${compression_time}"
+        fi
+        
+        # Update encryption duration if available
+        if [ -n "${encryption_time}" ] && [ "${encryption_time}" != "0" ]; then
+            update_encryption_duration_metric "${backup_job_db_host}" "${1}" "${encryption_time}"
+        fi
+        
+        # Update checksum duration if available
+        if [ -n "${checksum_time}" ] && [ "${checksum_time}" != "0" ]; then
+            update_checksum_duration_metric "${backup_job_db_host}" "${1}" "${checksum_time}"
+        fi
+        
+        # Update upload duration if available
+        if [ -n "${upload_time}" ] && [ "${upload_time}" != "0" ]; then
+            update_upload_duration_metric "${backup_job_db_host}" "${1}" "${upload_time}"
+        fi
+        
+        # Cleanup old metrics periodically
+        cleanup_prometheus_metrics
     fi
 
     ### Post Script Support

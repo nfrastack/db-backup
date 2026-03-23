@@ -1,0 +1,7 @@
+#!/command/with-contenv bash
+
+# Prometheus monitoring configuration
+PROMETHEUS_PORT=${PROMETHEUS_PORT:-"9090"}
+PROMETHEUS_METRICS_FILE=${PROMETHEUS_METRICS_FILE:-"/tmp/prometheus_metrics"}
+PROMETHEUS_METRICS_LOCK=${PROMETHEUS_METRICS_LOCK:-"/tmp/prometheus_metrics.lock"}
+DEBUG_PROMETHEUS=${DEBUG_PROMETHEUS:-"FALSE"}

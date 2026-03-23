@@ -31,6 +31,7 @@ Backs up CouchDB, InfluxDB, MySQL/MariaDB, Microsoft SQL, MongoDB, Postgres, Red
 - encryption support (passphrase and public key)
 - notify upon job failure to email, matrix, mattermost, rocketchat, custom script
 - zabbix metrics support
+- prometheus metrics support
 - hooks to execute pre and post backup job for customization purposes
 - companion script to aid in restores
 
@@ -169,7 +170,7 @@ The following directories are used for configuration and can be mapped for persi
 
 #### Base Images used
 
-This image relies on an [Alpine Linux](https://hub.docker.com/r/tiredofit/alpine) base image that relies on an [init system](https://github.com/just-containers/s6-overlay) for added capabilities. Outgoing SMTP capabilities are handled via `msmtp`. Individual container performance monitoring is performed by [zabbix-agent](https://zabbix.org). Additional tools include: `bash`,`curl`,`less`,`logrotate`, `nano`.
+This image relies on an [Alpine Linux](https://hub.docker.com/r/tiredofit/alpine) base image that relies on an [init system](https://github.com/just-containers/s6-overlay) for added capabilities. Outgoing SMTP capabilities are handled via `msmtp`. Individual container performance monitoring is performed by [zabbix-agent](https://zabbix.org) or [Prometheus](https://prometheus.io). Additional tools include: `bash`,`curl`,`less`,`logrotate`, `nano`.
 
 Be sure to view the following repositories to understand all the customizable options:
 
@@ -189,6 +190,10 @@ Be sure to view the following repositories to understand all the customizable op
 | `MANUAL_RUN_FOREVER`     | `TRUE` or `FALSE` if you wish to try to make the container exit after the backup                                                 | `TRUE`          |
 | `DEBUG_MODE`             | If set to `true`, print copious shell script messages to the container log. Otherwise only basic messages are printed.           | `FALSE`         |
 | `BACKUP_JOB_CONCURRENCY` | How many backup jobs to run concurrently                                                                                         | `1`             |
+| `CONTAINER_ENABLE_MONITORING` | Enable monitoring with Zabbix or Prometheus                                                                                      | `TRUE`          |
+| `CONTAINER_MONITORING_BACKEND` | Choose monitoring backend: `zabbix` or `prometheus`                                                                              | `zabbix`        |
+| `PROMETHEUS_PORT` | Port for Prometheus metrics endpoint                                                                                             | `9090`          |
+| `DEBUG_PROMETHEUS` | Enable debug logging for Prometheus metrics                                                                                     | `FALSE`         |
 
 #### Job Defaults
 If these are set and no other defaults or variables are set explicitly, they will be added to any of the backup jobs.

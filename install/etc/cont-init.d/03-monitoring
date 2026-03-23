@@ -1,0 +1,191 @@
+#!/command/with-contenv bash
+
+source /assets/functions/00-container
+output_off
+prepare_service single
+PROCESS_NAME="monitoring"
+
+## Legacy
+if var_false "${ENABLE_ZABBIX}"; then CONTAINER_ENABLE_MONITORING=FALSE ; fi
+if var_true "${ENABLE_ZABBIX}"; then
+    CONTAINER_ENABLE_MONITORING=TRUE
+    CONTAINER_MONITORING_BACKEND=zabbix
+fi
+##
+
+if var_true "${CONTAINER_ENABLE_MONITORING}" ; then
+    case "${CONTAINER_MONITORING_BACKEND,,}" in
+        "zabbix" )
+            print_debug "Using Zabbix Backend"
+            os=$(cat /etc/os-release |grep ^ID= | cut -d = -f2)
+            if var_true "${DEBUG_MODE}" ; then
+                ZABBIX_DEBUGLEVEL=4
+            fi
+
+            if var_true "${ZABBIX_USER_SUDO}" ; then
+                grant_sudo zabbix
+            fi
+
+            if var_true "${ZABBIX_USER_DOAS}" ; then
+                grant_doas zabbix
+            fi
+
+            if [ -n "${ZABBIX_ENCRYPT_PSK_ID}" ] || [ -n "${ZABBIX_ENCRYPT_PSK_KEY}" ] || [ -n "${ZABBIX_ENCRYPT_PSK_FILE}" ] ; then
+                transform_file_var \
+                                ZABBIX_ENCRYPT_PSK_ID \
+                                ZABBIX_ENCRYPT_PSK_KEY
+
+                print_debug "Zabbix Agent - Using PSK Encryption"
+                if [ ! -n "${ZABBIX_ENCRYPT_PSK_FILE}" ] && [ ! -n "${ZABBIX_ENCRYPT_PSK_KEY}" ] ; then
+                    print_error "You've selected Zabbix Agent PSK Encryption but haven't supplied a file or a Key!"
+                    exit 1
+                fi
+
+                if [ ! -n "${ZABBIX_ENCRYPT_PSK_FILE}" ] && [ -n "${ZABBIX_ENCRYPT_PSK_KEY}" ] ; then
+                    print_debug "Zabbix Agent - Only have PSK via ENV Var (Automated creation of file)"
+                    # libressl/openssl rand -hex 32 = 256bit
+                    mkdir -p "${ZABBIX_CERT_PATH}"
+                    ZABBIX_ENCRYPT_PSK_FILE="zabbix_agent.psk"
+                    echo "${ZABBIX_ENCRYPT_PSK_KEY}" > "${ZABBIX_CERT_PATH}"/"${ZABBIX_ENCRYPT_PSK_FILE}"
+                fi
+
+                chmod -f 0600 "${ZABBIX_CERT_PATH}"/"${ZABBIX_ENCRYPT_PSK_FILE}"
+                chown -f -R "${ZABBIX_USER}" "${ZABBIX_CERT_PATH}"
+        tls_psk=$(cat<<EOF
+TLSConnect=psk
+TLSPSKIdentity=${ZABBIX_ENCRYPT_PSK_ID}
+TLSPSKFile=${ZABBIX_CERT_PATH}/${ZABBIX_ENCRYPT_PSK_FILE}
+EOF
+                )
+                fi
+
+                transform_file_var ZABBIX_SERVER
+
+                case "${ZABBIX_AGENT_TYPE,,}" in
+                    "1" | "classic" | "c" | "legacy" | "old" )
+                        logship_version="classic"
+                        if [ "${ZABBIX_SETUP_TYPE,,}" = "auto" ] ; then
+                            print_debug "Configuring Zabbix classic Agent"
+            cat <<EOF > "${ZABBIX_CONFIG_PATH}"/"${ZABBIX_CONFIG_FILE}"
+# Custom Generated Zabbix Agent configuration for version 1. If you want to use your own config set 'ZABBIX_SETUP_TYPE=MANUAL'
+# Generated on $(TZ=${TIMEZONE} date +'%Y-%m-%d %H:%M:%S %Z')
+
+AllowKey=system.run[${ZABBIX_REMOTECOMMANDS_ALLOW}]
+AllowRoot=${ZABBIX_ALLOW_ROOT}
+BufferSend=${ZABBIX_BUFFER_SEND}
+BufferSize=${ZABBIX_BUFFER_SIZE}
+DebugLevel=${ZABBIX_DEBUGLEVEL}
+Hostname=${ZABBIX_HOSTNAME}
+ListenIP=${ZABBIX_LISTEN_IP}
+ListenPort=${ZABBIX_LISTEN_PORT}
+LogFile=${ZABBIX_AGENT_LOG_PATH}/${ZABBIX_AGENT_LOG_FILE}
+LogFileSize=${ZABBIX_LOG_FILE_SIZE}
+LogRemoteCommands=${ZABBIX_REMOTECOMMANDS_LOG}
+MaxLinesPerSecond=${ZABBIX_MAXLINES_SECOND}
+Timeout=${ZABBIX_AGENT_TIMEOUT}
+PidFile=${ZABBIX_PID}
+RefreshActiveChecks=${ZABBIX_REFRESH_ACTIVE_CHECKS}
+Server=${ZABBIX_SERVER}
+ServerActive=${ZABBIX_SERVER_ACTIVE}
+StartAgents=${ZABBIX_START_AGENTS}
+User=${ZABBIX_USER}
+${tls_psk}
+Include=${ZABBIX_CONFIG_PATH}/${ZABBIX_CONFIG_FILE}.d/*.conf
+EOF
+                        else
+                            print_debug "Skipping Configuring Zabbix classic Agent"
+                        fi
+                    ;;
+                    "2" | "m" | "n" | "modern" | "new" )
+                        case ${os} in
+                            "alpine" )
+                                osver=$(cat /etc/os-release | grep VERSION_ID | cut -d = -f 2 | cut -d . -f 2 | cut -d _ -f 1)
+                                if [ "${osver}" -ge 11 ] || [ "$osver" = "edge" ] || [ "$osver" = "17*" ]; then
+                                    print_debug "We are using newer than Alpine 3.11 to be able to use the Zabbix Modern client.."
+                                else
+                                    print_error "Sorry, Modern version not available for this images version (Alpine 3.11 + only)"
+                                    exit 1
+                                fi
+                            ;;
+                        esac
+                        logship_version="modern"
+                        if [ "${ZABBIX_SETUP_TYPE,,}" = "auto" ] ; then
+                            print_debug "Configuring Zabbix modern Agent"
+            cat <<EOF > "${ZABBIX_CONFIG_PATH}"/"${ZABBIX_CONFIG_FILE}"
+# Custom Generated Zabbix Agent configuration for version 2 If you want to use your own config set 'ZABBIX_SETUP_TYPE=MANUAL'
+# Generated on $(TZ=${TIMEZONE} date +'%Y-%m-%d %H:%M:%S %Z')
+
+AllowKey=system.run[${ZABBIX_REMOTECOMMANDS_ALLOW}]
+BufferSend=${ZABBIX_BUFFER_SEND}
+BufferSize=${ZABBIX_BUFFER_SIZE}
+ControlSocket=${ZABBIX_SOCKET}
+DebugLevel=${ZABBIX_DEBUGLEVEL}
+Hostname=${ZABBIX_HOSTNAME}
+ListenPort=${ZABBIX_LISTEN_PORT}
+LogFile=${ZABBIX_AGENT_LOG_PATH}/${ZABBIX_AGENT_LOG_FILE}
+LogFileSize=${ZABBIX_LOG_FILE_SIZE}
+RefreshActiveChecks=${ZABBIX_REFRESH_ACTIVE_CHECKS}
+Server=${ZABBIX_SERVER}
+ServerActive=${ZABBIX_SERVER_ACTIVE}
+StatusPort=${ZABBIX_STATUS_PORT}
+Timeout=${ZABBIX_AGENT_TIMEOUT}
+PidFile=${ZABBIX_PID}
+${tls_psk}
+Include=${ZABBIX_CONFIG_PATH}/${ZABBIX_CONFIG_FILE}.d/*.conf
+EOF
+                        else
+                            print_debug "Skipping Configuring Zabbix modern Agent"
+                        fi
+                    ;;
+                esac
+
+                if [ -n "${ZABBIX_REMOTECOMMANDS_DENY}" ]; then
+                    echo "DenyKey=system.run[${ZABBIX_REMOTECOMMANDS_DENY}]" >> "${ZABBIX_CONFIG_PATH}"/"${ZABBIX_CONFIG_FILE}"
+                fi
+
+                print_debug "Zabbix Agent - Generating Collection Configuration"
+                case ${os} in
+                    "alpine" )
+                        updated_packages="UserParameter=packages.upgradable,doas apk update >/dev/null && apk version | sed '/Installed/d' | wc -l"
+                    ;;
+                    "debian" | "ubuntu" )
+                        updated_packages="UserParameter=packages.upgradable,doas apt-get update >/dev/null && doas aptitude search '~U' | wc -l"
+                    ;;
+                esac
+
+                mkdir -p "${ZABBIX_CONFIG_PATH}"/"${ZABBIX_CONFIG_FILE}".d
+      cat <<EOF > "${ZABBIX_CONFIG_PATH}"/"${ZABBIX_CONFIG_FILE}".d/tiredofit-container_agent.conf
+# Zabbix Container Agent Configuration - Automatically Generated based on Operating System
+# Find Companion Zabbix Server Templates at https://github.com/tiredofit/docker-alpine or https://github.com/tiredofit/docker-debian
+# Autoregister=toica
+
+## Report on Container OS
+UserParameter=agent.os,grep "PRETTY_NAME" /etc/os-release | cut -d '"' -f2
+
+## Report on packages that are available to be upgraded
+${updated_packages}
+EOF
+
+                mkdir -p "${ZABBIX_AGENT_LOG_PATH}"
+                chown -R "${ZABBIX_USER}":root "${ZABBIX_AGENT_LOG_PATH}"
+                chown -R "${ZABBIX_USER}":root "${ZABBIX_CONFIG_PATH}"
+                chown -R "${ZABBIX_USER}":root /var/lib/zabbix
+                chmod 775 "${ZABBIX_CONFIG_PATH}"
+                create_logrotate zabbix-agent "${ZABBIX_AGENT_LOG_PATH}"/"${ZABBIX_AGENT_LOG_FILE}" zabbix-agent-${logship_version} "${ZABBIX_USER}" root
+                print_notice "Container configured for monitoring with '${CONTAINER_MONITORING_BACKEND} ${ZABBIX_AGENT_TYPE}'"
+            ;;
+        "prometheus" )
+            print_debug "Using Prometheus Backend"
+            print_notice "Container configured for monitoring with '${CONTAINER_MONITORING_BACKEND}'"
+            ;;
+        * )
+            print_error "Unknown Monitoring Backend"
+            exit 1
+            ;;
+    esac
+else
+    service_stop "$(basename "$0")"
+fi
+
+liftoff
+output_on

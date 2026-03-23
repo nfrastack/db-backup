@@ -36,4 +36,12 @@ db_backup_container_init
 create_schedulers backup
 create_zabbix dbbackup4
 
+# Initialize Prometheus if enabled
+if var_true "${CONTAINER_ENABLE_MONITORING}" && [ "${CONTAINER_MONITORING_BACKEND,,}" = "prometheus" ]; then
+    source /assets/functions/08-prometheus
+    source /assets/defaults/08-prometheus
+    init_prometheus_metrics
+    start_prometheus_server
+fi
+
 liftoff
