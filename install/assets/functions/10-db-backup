@@ -1098,7 +1098,7 @@ cleanup_old_data() {
     if var_true "${DEBUG_CLEANUP_OLD_DATA}" ; then debug on; fi
     if [ -n "${backup_job_cleanup_time}" ]; then
         if [ "${master_exit_code}" != 1 ]; then
-            case "${backup_job_backup_location,,}" in
+            case "${backup_job_backup_location}" in
                 "blobxfer" )
                     write_log info "Cleaning up old backups on filesystem"
                     run_as_user mkdir -p "${backup_job_filesystem_path}"
@@ -2094,8 +2094,7 @@ timer() {
             print_debug "[timer] [datetime] Difference in seconds: ${time_wait}"
 
             if (( ${time_wait} < 0 )); then
-                time_wait=$(( (${time_wait} + (${backup_job_backup_interval} - 1)) / (${backup_job_backup_interval} * 60) ))
-                time_wait=$(( ${time_wait} * -1 ))
+                time_wait=$(( ${backup_job_backup_interval} * 60 - ${time_wait} * -1 % (${backup_job_backup_interval} * 60) ))
                 print_debug "[timer] [datetime] Difference in seconds (rounded) time_wait is in the past : ${time_wait}"
             fi
 
