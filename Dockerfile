@@ -2,7 +2,7 @@ ARG DISTRO=alpine
 ARG DISTRO_VARIANT=3.21-7.10.31
 
 FROM docker.io/tiredofit/${DISTRO}:${DISTRO_VARIANT}
-LABEL maintainer="Dave Conroy (github.com/tiredofit)"
+LABEL maintainer="nfrastack (github.com/nfrastack)"
 
 ENV INFLUX1_CLIENT_VERSION=1.8.0 \
     INFLUX2_CLIENT_VERSION=2.7.5 \
@@ -10,12 +10,13 @@ ENV INFLUX1_CLIENT_VERSION=1.8.0 \
     MSSQL_VERSION=18.6.1.1-1 \
     MYSQL_VERSION=mysql-8.4.8 \
     MYSQL_REPO_URL=https://github.com/mysql/mysql-server \
+    NEO4J_VERSION=5.26.0 \
     AWS_CLI_VERSION=1.44.56 \
     POSTGRES_VERSION=18.3 \
     CONTAINER_ENABLE_MESSAGING=TRUE \
     CONTAINER_ENABLE_MONITORING=TRUE \
-    IMAGE_NAME="tiredofit/db-backup" \
-    IMAGE_REPO_URL="https://github.com/tiredofit/docker-db-backup/"
+    IMAGE_NAME="nfrastack/container-db-backup" \
+    IMAGE_REPO_URL="https://github.com/nfrastack/container-db-backup/"
 
 RUN source /assets/functions/00-container && \
     set -ex && \
@@ -71,8 +72,6 @@ RUN source /assets/functions/00-container && \
    awk '$1 == "#define" && $2 == "DEFAULT_PGSOCKET_DIR" && $3 == "\"/tmp\"" { $3 = "\"/var/run/postgresql\""; print; next } { print }' src/include/pg_config_manual.h > src/include/pg_config_manual.h.new && \
    grep '/var/run/postgresql' src/include/pg_config_manual.h.new && \
    mv src/include/pg_config_manual.h.new src/include/pg_config_manual.h && \
-   wget -O config/config.guess 'https://git.savannah.gnu.org/cgit/config.git/plain/config.guess?id=7d3d27baf8107b630586c962c057e22149653deb' && \
-   wget -O config/config.sub 'https://git.savannah.gnu.org/cgit/config.git/plain/config.sub?id=7d3d27baf8107b630586c962c057e22149653deb' && \
    export LLVM_CONFIG="/usr/lib/llvm19/bin/llvm-config" && \
    export CLANG=clang-19  && \
     ./configure \
@@ -157,12 +156,14 @@ RUN source /assets/functions/00-container && \
                     gpg \
                     gpg-agent \
                     groff \
+                    jq \
                     libarchive \
                     libtirpc \
                     mariadb-client \
                     mariadb-connector-c \
                     mongodb-tools \
                     ncurses \
+                    openjdk17-jre-headless \
                     openssl \
                     pigz \
                     pixz \
@@ -210,6 +211,14 @@ RUN source /assets/functions/00-container && \
     else \
         echo >&2 "Unable to build Influx 2 on this system" ; \
     fi ; \
+    \
+    mkdir -p /usr/src/neo4j && \
+    curl -sSL https://dist.neo4j.org/neo4j-community-${NEO4J_VERSION}-unix.tar.gz | tar xzf - --strip-components=1 -C /usr/src/neo4j && \
+    mkdir -p /opt/neo4j/bin /opt/neo4j/lib && \
+    cp /usr/src/neo4j/bin/cypher-shell /opt/neo4j/bin/ && \
+    cp /usr/src/neo4j/lib/*.jar /opt/neo4j/lib/ && \
+    chmod +x /opt/neo4j/bin/cypher-shell && \
+    ln -sf /opt/neo4j/bin/cypher-shell /usr/local/bin/cypher-shell && \
     \
     clone_git_repo https://github.com/influxdata/influxdb "${INFLUX1_CLIENT_VERSION}" && \
     go build -o /usr/sbin/influxd ./cmd/influxd && \

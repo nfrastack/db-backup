@@ -15,7 +15,7 @@
 
 This will build a container for backing up multiple types of DB Servers
 
-Backs up CouchDB, InfluxDB, MySQL/MariaDB, Microsoft SQL, MongoDB, Postgres, Redis servers.
+Backs up CouchDB, InfluxDB, MySQL/MariaDB, Microsoft SQL, MongoDB, Neo4J, Postgres, Redis servers.
 
 - dump to local filesystem or backup to S3 Compatible services, and Azure.
 - multiple backup job support
@@ -64,6 +64,7 @@ Backs up CouchDB, InfluxDB, MySQL/MariaDB, Microsoft SQL, MongoDB, Postgres, Red
         - [MariaDB/MySQL](#mariadbmysql)
         - [Microsoft SQL](#microsoft-sql)
         - [MongoDB](#mongodb)
+        - [Neo4J](#neo4j)
         - [Postgresql](#postgresql)
         - [Redis](#redis)
       - [Default Storage Options](#default-storage-options)
@@ -84,6 +85,7 @@ Backs up CouchDB, InfluxDB, MySQL/MariaDB, Microsoft SQL, MongoDB, Postgres, Red
         - [MariaDB/MySQL](#mariadbmysql-1)
         - [Microsoft SQL](#microsoft-sql-1)
         - [MongoDB](#mongodb-1)
+        - [Neo4J](#neo4j-1)
         - [Postgresql](#postgresql-1)
         - [Redis](#redis-1)
         - [SQLite](#sqlite)
@@ -105,6 +107,8 @@ Backs up CouchDB, InfluxDB, MySQL/MariaDB, Microsoft SQL, MongoDB, Postgres, Red
   - [Shell Access](#shell-access)
   - [Manual Backups](#manual-backups)
   - [Restoring Databases](#restoring-databases)
+    - [Dedicated Restore Session](#dedicated-restore-session)
+    - [Redis Restore](#redis-restore)
 - [Support](#support)
   - [Usage](#usage)
   - [Bugfixes](#bugfixes)
@@ -248,9 +252,12 @@ Encryption occurs after compression and the encrypted filename will have a `.gpg
 
 ###### CouchDB
 
-| Variable       | Description  | Default | `_FILE` |
-| -------------- | ------------ | ------- | ------- |
-| `DEFAULT_PORT` | CouchDB Port | `5984`  | x       |
+| Variable       | Description                                                                              | Default | `_FILE` |
+| -------------- | ---------------------------------------------------------------------------------------- | ------- | ------- |
+| `DEFAULT_PORT` | CouchDB Port                                                                             | `5984`  | x       |
+| `DEFAULT_NAME` | Database name or comma-separated list. Use `ALL` to back up all non-system databases      |         |         |
+
+> System databases (prefixed with `_`) are automatically excluded when using `ALL`. Use `DB_NAME_EXCLUDE` to exclude additional databases.
 
 ###### InfluxDB
 
@@ -298,6 +305,38 @@ Encryption occurs after compression and the encrypted filename will have a `.gpg
 | `MONGO_CUSTOM_URI` | If you wish to override the MongoDB Connection string enter it here e.g. `mongodb+srv://username:password@cluster.id.mongodb.net`    |         | x       |
 |                    | This environment variable will be parsed and populate the `DB_NAME` and `DB_HOST` variables to properly build your backup filenames. |         |         |
 |                    | You can override them by making your own entries                                                                                     |         |         |
+
+###### Neo4J
+
+| Variable       | Description | Default | `_FILE` |
+| -------------- | ----------- | ------- | ------- |
+| `DEFAULT_PORT` | Neo4J Bolt Port  | `7687`  | x       |
+
+> Requires the [APOC](https://neo4j.com/docs/apoc/current/) plugin to be installed on the Neo4J server.
+> `DB_NAME` should be set to the target database name (default Neo4J database is named `neo4j`).
+> Uses the Bolt protocol via `cypher-shell` to export all data as Cypher statements.
+>
+> **Installing APOC on your Neo4J server:**
+>
+> *Docker (environment variable):*
+> ```bash
+> docker run \
+>   -e NEO4J_PLUGINS='["apoc"]' \
+>   -e NEO4J_apoc_export_file_enabled=true \
+>   -e NEO4J_dbms_security_procedures__unrestricted='apoc.*' \
+>   neo4j:latest
+> ```
+>
+> *Docker Compose:*
+> ```yaml
+> environment:
+>   - NEO4J_PLUGINS=["apoc"]
+>   - NEO4J_apoc_export_file_enabled=true
+>   - NEO4J_dbms_security_procedures__unrestricted=apoc.*
+> ```
+>
+> *Manual installation:*
+> Download the APOC JAR from [Neo4J APOC Releases](https://github.com/neo4j/apoc/releases) and place it in your Neo4J `plugins/` directory.
 
 ###### Postgresql
 
@@ -514,9 +553,13 @@ Encryption will occur after compression and the resulting filename will have a `
 
 ###### CouchDB
 
-| Variable    | Description  | Default | `_FILE` |
-| ----------- | ------------ | ------- | ------- |
-| `DB01_PORT` | CouchDB Port | `5984`  | x       |
+| Variable           | Description                                                                              | Default | `_FILE` |
+| ------------------ | ---------------------------------------------------------------------------------------- | ------- | ------- |
+| `DB01_PORT`        | CouchDB Port                                                                             | `5984`  | x       |
+| `DB01_NAME`        | Database name or comma-separated list. Use `ALL` to back up all non-system databases      |         |         |
+| `DB01_NAME_EXCLUDE`| Comma-separated list of databases to exclude when using `ALL`                             |         |         |
+
+> System databases (prefixed with `_`) are automatically excluded when using `ALL`. Backups are saved as JSON files using the `_all_docs` API. Restore uses `_bulk_docs` to re-import documents.
 
 ###### InfluxDB
 
@@ -572,6 +615,18 @@ Encryption will occur after compression and the resulting filename will have a `
 | `DB01_MONGO_CUSTOM_URI` | If you wish to override the MongoDB Connection string enter it here e.g. `mongodb+srv://username:password@cluster.id.mongodb.net`    |         | x       |
 |                         | This environment variable will be parsed and populate the `DB_NAME` and `DB_HOST` variables to properly build your backup filenames. |         |         |
 |                         | You can override them by making your own entries                                                                                     |         |         |
+
+###### Neo4J
+
+| Variable                 | Description                                                                                               | Default | `_FILE` |
+| ------------------------ | --------------------------------------------------------------------------------------------------------- | ------- | ------- |
+| `DB01_EXTRA_OPTS`        | Pass extra arguments to the backup and database enumeration command, add them here e.g. `--extra-command` |         |         |
+| `DB01_EXTRA_BACKUP_OPTS` | Pass extra arguments to the backup command only, add them here e.g. `--extra-command`                     |         |         |
+| `DB01_NAME`              | Database name e.g. `neo4j`                                                                                |         | x       |
+| `DB01_PORT`              | Neo4J Bolt Port                                                                                           | `7687`  | x       |
+
+> Requires the [APOC](https://neo4j.com/docs/apoc/current/) plugin to be installed on the Neo4J server.
+> Uses `cypher-shell` via the Bolt protocol to export the entire database as Cypher statements.
 
 ###### Postgresql
 
@@ -815,7 +870,7 @@ Manual Backups can be performed by entering the container and typing `backup-now
 
 ### Restoring Databases
 
-Entering in the container and executing `restore` will execute a menu based script to restore your backups - MariaDB, Postgres, and Mongo supported.
+Entering in the container and executing `restore` will execute a menu based script to restore your backups - MariaDB, Postgres, Mongo, Neo4j, CouchDB, and Redis supported.
 
 You will be presented with a series of menus allowing you to choose:
 
@@ -836,7 +891,52 @@ The script can also be executed skipping the interactive mode by using the follo
 
 If you only enter some of the arguments you will be prompted to fill them in.
 
+#### Dedicated Restore Session
 
+When performing a restore, you may want to prevent scheduled backups from running (e.g. to avoid backing up still-empty databases and overwriting good backup files). Set `MODE=MANUAL` and `MANUAL_RUN_FOREVER=TRUE` in your environment to disable all backup schedulers while keeping the container running. Then exec into the container to run `restore` interactively:
+
+```bash
+docker exec -it <container_name> restore
+```
+
+Remember to switch back to `MODE=AUTO` (or remove the override) once the restore is complete so that scheduled backups resume.
+
+#### Redis Restore
+
+Redis backups are binary `.rdb` files. The restore writes the RDB file directly into Redis's data directory and sends `DEBUG RELOAD NOSAVE`, which instructs the running Redis server to load the file without a prior dump. This approach works with every RDB version the Redis server itself supports, and does not depend on any third-party RDB parser.
+
+**CLI invocation:**
+
+```bash
+restore <filename> redis <host> <ignored> <user> <password> <port>
+```
+
+The `db_name` positional argument is accepted for consistency with other DB types but is not used. The `db_user` argument is used when Redis is configured with ACL users; pass the ACL username or an empty string for `requirepass`-only setups.
+
+**Prerequisites:**
+
+- **Shared data volume.** The restore script uses `CONFIG GET dir` to discover where Redis stores its RDB file, then copies the backup there. This only works if the Redis data volume is mounted into the backup container **at the same path Redis uses** (typically `/data`).
+
+  Example Compose snippet:
+  ```yaml
+  services:
+    redis:
+      image: redis
+      volumes:
+        - redis-data:/data
+    backup-db:
+      image: nfrastack/container-db-backup
+      volumes:
+        - redis-data:/data   # same named volume, same mount path
+  ```
+
+- **DEBUG command enabled.** The restore sends `DEBUG RELOAD NOSAVE`. If the Redis server has renamed or disabled the `DEBUG` command (e.g. `rename-command DEBUG ""`), the reload step will fail. Re-enable it for the duration of the restore or use the `ACL` system to grant access.
+
+**Caveats:**
+
+- **FLUSHALL prompt — default is YES.** The restore always prompts whether to `FLUSHALL` the target before importing. Answering `N` or `No` merges/overwrites keys into the existing keyspace. Any other input — including pressing Enter — triggers `FLUSHALL`. This prompt appears even when all arguments are supplied on the command line.
+- **Post-restore verification.** After reload the script issues `DBSIZE` against the target. If the key count is 0 or non-numeric (e.g. an auth error string) the restore is flagged as failed (exit code 4). A positive integer count is reported as a successful verify; it does not confirm every key round-tripped correctly.
+- **Compressed backups.** Variants with compression suffixes (`.rdb.gz`, `.rdb.zst`, `.rdb.bz2`, etc.) are decompressed to a temporary file before the copy step.
 
 ## Support
 

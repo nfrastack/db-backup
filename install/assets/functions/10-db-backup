@@ -370,9 +370,10 @@ EOF
         case "${backup_job_db_type,,}" in
             couch* )
                 dbtype=couch
-                backup_job_backup_job_db_port=${backup_job_db_port:-5984}
+                backup_job_db_port=${backup_job_db_port:-5984}
                 check_var backup_job_db_user DB"${v_instance}"_USER "database username"
                 check_var backup_job_db_pass DB"${v_instance}"_PASS "database password"
+                check_var backup_job_db_name DB"${v_instance}"_NAME "database name. Seperate multiple with commas or use 'ALL'"
             ;;
             influx* )
                 dbtype=influx
@@ -481,6 +482,13 @@ EOF
                 dbtype=mssql
                 backup_job_db_port=${backup_job_db_port:-1433}
             ;;
+            neo4j* )
+                dbtype=neo4j
+                backup_job_db_port=${backup_job_db_port:-7687}
+                check_var backup_job_db_name DB"${v_instance}"_NAME "database name"
+                check_var backup_job_db_user DB"${v_instance}"_USER "database username"
+                check_var backup_job_db_pass DB"${v_instance}"_PASS "database password"
+            ;;
             postgres* | "pgsql" )
                 dbtype=pgsql
                 backup_job_db_port=${backup_job_db_port:-5432}
@@ -529,19 +537,62 @@ EOF
 }
 
 backup_couch() {
-    prepare_dbbackup
-    backup_job_filename=couch_${backup_job_db_name}_${backup_job_db_host#*//}_${now}.txt
-    backup_job_filename_base=couch_${backup_job_db_name}_${backup_job_db_host#*//}
-    compression
+    if var_true "${DEBUG_BACKUP_COUCH}" ; then debug on; fi
+
+    ## Build auth string
+    if [ -n "${backup_job_db_user}" ] && [ -n "${backup_job_db_pass}" ]; then
+        _couch_auth="-u ${backup_job_db_user}:${backup_job_db_pass}"
+    fi
+
+    ## Enumerate databases
+    if [ "${backup_job_db_name,,}" = "all" ] ; then
+        write_log debug "[backup_couch] Preparing to back up all databases except system databases"
+        db_names=$(run_as_user curl -sSL ${_couch_auth} ${backup_job_db_host}:${backup_job_db_port}/_all_dbs | tr -d '[]"' | tr ',' '\n' | grep -v '^_')
+        if [ -n "${backup_job_db_name_exclude}" ] ; then
+            db_names_exclusions=$(echo "${backup_job_db_name_exclude}" | tr ',' '\n')
+            for db_exclude in ${db_names_exclusions} ; do
+                write_log debug "Excluding '${db_exclude}' from ALL DB_NAME backups"
+                db_names=$(echo "$db_names" | sed "/${db_exclude}/d")
+            done
+        fi
+    else
+        db_names=$(echo "${backup_job_db_name}" | tr ',' '\n')
+    fi
     if var_true "${DEBUG_BACKUP_COUCH}" ; then debug off; fi
-    check_exit_code backup "${backup_job_filename}"
-    timer backup finish
-    file_encryption
-    generate_checksum
-    move_dbbackup
-    check_exit_code move "${backup_job_filename}"
-    post_dbbackup ${backup_job_db_name}
-    cleanup_old_data
+    write_log debug "Databases Found: $(echo ${db_names} | xargs | tr ' ' ',')"
+
+    for db in ${db_names} ; do
+        if [ -z "${db}" ] || [ "${db}" = "undefined" ] || [ "${db}" = "null" ] ; then
+            write_log warn "[backup_couch] Skipping invalid database name: '${db}'"
+            continue
+        fi
+        prepare_dbbackup
+        if var_true "${DEBUG_BACKUP_COUCH}" ; then debug on; fi
+        backup_job_filename=couch_${db}_${backup_job_db_host#*//}_${now}.json
+        backup_job_filename_base=couch_${db}_${backup_job_db_host#*//}
+        compression
+        if var_true "${DEBUG_BACKUP_COUCH}" ; then debug off; fi
+        pre_dbbackup "${db}"
+        write_log notice "Dumping CouchDB database: '${db}' ${compression_string}"
+        if var_true "${DEBUG_BACKUP_COUCH}" ; then debug on; fi
+        ## Export in _bulk_docs format: {"docs":[...]} with _rev stripped for clean restore
+        run_as_user ${play_fair} curl -sSL ${_couch_auth} \
+            "${backup_job_db_host}:${backup_job_db_port}/${db}/_all_docs?include_docs=true" \
+            ${backup_job_extra_opts} \
+            ${backup_job_extra_backup_opts} \
+            | jq -c '{docs: [.rows[].doc | del(._rev, ._revisions)]}' \
+            | ${compress_cmd} | run_as_user tee "${temporary_directory}"/"${backup_job_filename}" > /dev/null
+        exit_code=$((PIPESTATUS[0] + PIPESTATUS[1] + PIPESTATUS[2] + PIPESTATUS[3]))
+        if var_true "${DEBUG_BACKUP_COUCH}" ; then debug off; fi
+        check_exit_code backup "${backup_job_filename}"
+        timer backup finish
+        file_encryption
+        generate_checksum
+        move_dbbackup
+        check_exit_code move "${backup_job_filename}"
+        post_dbbackup "${db}"
+        cleanup_old_data
+    done
 }
 
 backup_influx() {
@@ -697,6 +748,46 @@ backup_mssql() {
             cleanup_old_data
         ;;
     esac
+}
+
+backup_neo4j() {
+    if var_true "${DEBUG_BACKUP_NEO4J}" ; then debug on; fi
+    prepare_dbbackup
+    backup_job_filename=neo4j_${backup_job_db_name}_${backup_job_db_host,,}_${now}.cypher
+    backup_job_filename_base=neo4j_${backup_job_db_name}_${backup_job_db_host,,}
+    compression
+    pre_dbbackup "${backup_job_db_name}"
+    write_log notice "Dumping Neo4J database: '${backup_job_db_name}' ${compression_string}"
+    if var_true "${DEBUG_BACKUP_NEO4J}" ; then debug on; fi
+    ## Pipeline: cypher-shell streams APOC output as a JSON-encoded string.
+    ## Post-processing strips the encoding so the file contains clean, directly-importable Cypher:
+    ##   tail -n +2         : remove 'cypherStatements' column header
+    ##   sed (first)        : strip surrounding double quotes and unescape internal \"
+    ##   awk                : convert literal \n sequences to actual newlines
+    run_as_user ${play_fair} cypher-shell \
+        -a "neo4j://${backup_job_db_host}:${backup_job_db_port}" \
+        -u "${backup_job_db_user}" \
+        -p "${backup_job_db_pass}" \
+        -d "${backup_job_db_name}" \
+        --format plain \
+        ${backup_job_extra_opts} \
+        ${backup_job_extra_backup_opts} \
+        "CALL apoc.export.cypher.all(null, {stream:true, format:'cypher-shell'}) YIELD cypherStatements RETURN cypherStatements" \
+        | tail -n +2 \
+        | sed 's/^"//;s/"$//;s/\\"/"/g' \
+        | awk '{gsub(/\\n/,"\n")}1' \
+        | ${compress_cmd} | run_as_user tee "${temporary_directory}"/"${backup_job_filename}" > /dev/null
+    exit_code=$((PIPESTATUS[0] + PIPESTATUS[1] + PIPESTATUS[2] + PIPESTATUS[3] + PIPESTATUS[4]))
+    if var_true "${DEBUG_BACKUP_NEO4J}" ; then debug off; fi
+    check_exit_code backup "${backup_job_filename}"
+    timer backup finish
+    file_encryption
+    generate_checksum
+    move_dbbackup
+    check_exit_code move "${backup_job_filename}"
+    post_dbbackup "${backup_job_db_name}"
+    cleanup_old_data
+    if var_true "${DEBUG_BACKUP_NEO4J}" ; then debug off; fi
 }
 
 backup_mysql() {
@@ -1012,6 +1103,14 @@ check_availability() {
                     sleep 5
                     (( counter+=5 ))
                     write_log warn "MSSQL Host '${backup_job_db_host}' is not accessible, retrying.. ($counter seconds so far)"
+                done
+            ;;
+            "neo4j" )
+                counter=0
+                while ! (run_as_user cypher-shell -a "neo4j://${backup_job_db_host}:${backup_job_db_port}" -u "${backup_job_db_user}" -p "${backup_job_db_pass}" -d "${backup_job_db_name}" "RETURN 1;" > /dev/null 2>&1) ; do
+                    sleep 5
+                    (( counter+=5 ))
+                    write_log warn "Neo4J Host '${backup_job_db_host}' is not accessible, retrying.. ($counter seconds so far)"
                 done
             ;;
             "pgsql" )

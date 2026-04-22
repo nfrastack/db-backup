@@ -619,6 +619,21 @@ get_dbtype() {
             DEFAULT_PORT=${DEFAULT_PORT:-"5432"}
             print_debug "Parsed DBType: Postgresql"
         ;;
+        couch* )
+            parsed_type=true
+            DEFAULT_PORT=${DEFAULT_PORT:-"5984"}
+            print_debug "Parsed DBType: CouchDB"
+        ;;
+        neo4j* )
+            parsed_type=true
+            DEFAULT_PORT=${DEFAULT_PORT:-"7687"}
+            print_debug "Parsed DBType: Neo4j"
+        ;;
+        redis* )
+            parsed_type=true
+            DEFAULT_PORT=${DEFAULT_PORT:-"6379"}
+            print_debug "Parsed DBType: Redis"
+        ;;
         * )
             print_debug "Parsed DBType: UNKNOWN"
         ;;
@@ -669,9 +684,12 @@ EOF
 What Database Type are you looking to restore?
 ${q_dbtype_menu}
 
+    C ) CouchDB
     M ) MySQL / MariaDB
+    N ) Neo4j
     O ) MongoDB
     P ) Postgresql
+    R ) Redis
     Q ) Quit
 
 EOF
@@ -679,11 +697,21 @@ EOF
     case "${q_dbtype_variant}" in
         1 )
             while true; do
-                read -p "$(echo -e ${clg}** ${cdgy}Enter Value \(${cwh}M${cdgy}\) \| \(${cwh}O${cdgy}\) \| \(${cwh}P${cdgy}\) : ${cwh}${coff}) " q_dbtype
+                read -p "$(echo -e ${clg}** ${cdgy}Enter Value \(${cwh}C${cdgy}\) \| \(${cwh}M${cdgy}\) \| \(${cwh}N${cdgy}\) \| \(${cwh}O${cdgy}\) \| \(${cwh}P${cdgy}\) \| \(${cwh}R${cdgy}\) : ${cwh}${coff}) " q_dbtype
                 case "${q_dbtype,,}" in
+                    c* )
+                        r_dbtype=couch
+                        DEFAULT_PORT=${DEFAULT_PORT:-"5984"}
+                        break
+                    ;;
                     m* )
                         r_dbtype=mysql
                         DEFAULT_PORT=${DEFAULT_PORT:-"3306"}
+                        break
+                    ;;
+                    n* )
+                        r_dbtype=neo4j
+                        DEFAULT_PORT=${DEFAULT_PORT:-"7687"}
                         break
                     ;;
                     o* )
@@ -694,6 +722,11 @@ EOF
                     p* )
                         r_dbtype=postgresql
                         DEFAULT_PORT=${DEFAULT_PORT:-"5432"}
+                        break
+                    ;;
+                    r* )
+                        r_dbtype=redis
+                        DEFAULT_PORT=${DEFAULT_PORT:-"6379"}
                         break
                     ;;
                     q* )
@@ -705,15 +738,25 @@ EOF
         ;;
         2 )
             while true; do
-                read -p "$(echo -e ${clg}** ${cdgy}Enter Value \(${cwh}E${cdgy}\) \| \(${cwh}M${cdgy}\) \| \(${cwh}O${cdgy}\) \| \(${cwh}P${cdgy}\) : ${cwh}${coff}) " q_dbtype
+                read -p "$(echo -e ${clg}** ${cdgy}Enter Value \(${cwh}E${cdgy}\) \| \(${cwh}C${cdgy}\) \| \(${cwh}M${cdgy}\) \| \(${cwh}N${cdgy}\) \| \(${cwh}O${cdgy}\) \| \(${cwh}P${cdgy}\) \| \(${cwh}R${cdgy}\) : ${cwh}${coff}) " q_dbtype
                 case "${q_dbtype,,}" in
                     e* | "" )
                         r_dbtype=${DB_TYPE}
                         break
                     ;;
+                    c* )
+                        r_dbtype=couch
+                        DEFAULT_PORT=${DEFAULT_PORT:-"5984"}
+                        break
+                    ;;
                     m* )
                         r_dbtype=mysql
                         DEFAULT_PORT=${DEFAULT_PORT:-"3306"}
+                        break
+                    ;;
+                    n* )
+                        r_dbtype=neo4j
+                        DEFAULT_PORT=${DEFAULT_PORT:-"7687"}
                         break
                     ;;
                     o* )
@@ -724,6 +767,11 @@ EOF
                     p* )
                         r_dbtype=postgresql
                         DEFAULT_PORT=${DEFAULT_PORT:-"5432"}
+                        break
+                    ;;
+                    r* )
+                        r_dbtype=redis
+                        DEFAULT_PORT=${DEFAULT_PORT:-"6379"}
                         break
                     ;;
                     q* )
@@ -735,16 +783,22 @@ EOF
         ;;
         3 )
             while true; do
-                read -p "$(echo -e ${clg}** ${cdgy}Enter Value \(${cwh}F${cdgy}\) \(Default\) \| \(${cwh}M${cdgy}\) \| \(${cwh}O${cdgy}\) \| \(${cwh}P${cdgy}\) : ${cwh}${coff}) " q_dbtype
+                read -p "$(echo -e ${clg}** ${cdgy}Enter Value \(${cwh}F${cdgy}\) \(Default\) \| \(${cwh}C${cdgy}\) \| \(${cwh}M${cdgy}\) \| \(${cwh}N${cdgy}\) \| \(${cwh}O${cdgy}\) \| \(${cwh}P${cdgy}\) \| \(${cwh}R${cdgy}\) : ${cwh}${coff}) " q_dbtype
                 case "${q_dbtype,,}" in
                     f* | "" )
                         r_dbtype=${p_dbtype}
                         case "${r_dbtype}" in
+                            couch* )
+                                DEFAULT_PORT=${DEFAULT_PORT:-"5984"}
+                            ;;
                             mongo )
                                 DEFAULT_PORT=${DEFAULT_PORT:-"27017"}
                             ;;
                             mysql )
                                 DEFAULT_PORT=${DEFAULT_PORT:-"3306"}
+                            ;;
+                            neo4j )
+                                DEFAULT_PORT=${DEFAULT_PORT:-"7687"}
                             ;;
                             pgsql )
                                 DEFAULT_PORT=${DEFAULT_PORT:-"5432"}
@@ -752,9 +806,19 @@ EOF
                         esac
                         break
                     ;;
+                    c* )
+                        r_dbtype=couch
+                        DEFAULT_PORT=${DEFAULT_PORT:-"5984"}
+                        break
+                    ;;
                     m* )
                         r_dbtype=mysql
                         DEFAULT_PORT=${DEFAULT_PORT:-"3306"}
+                        break
+                    ;;
+                    n* )
+                        r_dbtype=neo4j
+                        DEFAULT_PORT=${DEFAULT_PORT:-"7687"}
                         break
                     ;;
                     o* )
@@ -765,6 +829,11 @@ EOF
                     p* )
                         r_dbtype=postgresql
                         DEFAULT_PORT=${DEFAULT_PORT:-"5432"}
+                        break
+                    ;;
+                    r* )
+                        r_dbtype=redis
+                        DEFAULT_PORT=${DEFAULT_PORT:-"6379"}
                         break
                     ;;
                     q* )
@@ -777,7 +846,7 @@ EOF
 
         4 )
             while true; do
-                read -p "$(echo -e ${clg}** ${cdgy}Enter Value \(${cwh}E${cdgy}\) \| \(${cwh}F${cdgy}\) \| \(${cwh}M${cdgy}\) \| \(${cwh}O${cdgy}\) \| \(${cwh}P${cdgy}\) : ${cwh}${coff}) " q_dbtype
+                read -p "$(echo -e ${clg}** ${cdgy}Enter Value \(${cwh}E${cdgy}\) \| \(${cwh}F${cdgy}\) \| \(${cwh}C${cdgy}\) \| \(${cwh}M${cdgy}\) \| \(${cwh}N${cdgy}\) \| \(${cwh}O${cdgy}\) \| \(${cwh}P${cdgy}\) \| \(${cwh}R${cdgy}\) : ${cwh}${coff}) " q_dbtype
                 case "${q_dbtype,,}" in
                     e* | "" )
                         r_dbtype=${DB_TYPE}
@@ -787,9 +856,19 @@ EOF
                         r_dbtype=${p_dbtype}
                         break
                     ;;
+                    c* )
+                        r_dbtype=couch
+                        DEFAULT_PORT=${DEFAULT_PORT:-"5984"}
+                        break
+                    ;;
                     m* )
                         r_dbtype=mysql
                         DEFAULT_PORT=${DEFAULT_PORT:-"3306"}
+                        break
+                    ;;
+                    n* )
+                        r_dbtype=neo4j
+                        DEFAULT_PORT=${DEFAULT_PORT:-"7687"}
                         break
                     ;;
                     o* )
@@ -800,6 +879,11 @@ EOF
                     p* )
                         r_dbtype=postgresql
                         DEFAULT_PORT=${DEFAULT_PORT:-"5432"}
+                        break
+                    ;;
+                    r* )
+                        r_dbtype=redis
+                        DEFAULT_PORT=${DEFAULT_PORT:-"6379"}
                         break
                     ;;
                     q* )
@@ -888,7 +972,11 @@ EOF
 get_filename() {
     COLUMNS=12
     prompt="Please select a file to restore:"
-    options=( $(find "${DEFAULT_FILESYSTEM_PATH}" -type f -maxdepth 2  -not -name '*.md5' -not -name '*.sha1' -not -name '*.gpg' -print0 | sort -z | xargs -0) )
+    ## Include symlinks (-type l) so 'latest-*' pointers appear. Surface latest-* first,
+    ## then the rest newest-first (filenames embed YYYYMMDD_HHMMSS, so reverse-sort == newest-first).
+    latest_files=( $(find "${DEFAULT_FILESYSTEM_PATH}" -maxdepth 2 \( -type f -o -type l \) -name 'latest-*' -not -name '*.md5' -not -name '*.sha1' -not -name '*.gpg' -print0 | sort -z | xargs -0) )
+    other_files=( $(find "${DEFAULT_FILESYSTEM_PATH}" -maxdepth 2 \( -type f -o -type l \) -not -name 'latest-*' -not -name '*.md5' -not -name '*.sha1' -not -name '*.gpg' -print0 | sort -zr | xargs -0) )
+    options=( "${latest_files[@]}" "${other_files[@]}" )
     PS3="$prompt "
     select opt in "${options[@]}" "Custom" "Quit" ; do
         if (( REPLY == 2 + ${#options[@]} )) ; then
@@ -1076,7 +1164,12 @@ fi
 
 
 ## Parse Extension
-case "${r_filename##*.}" in
+## Resolve symlinks so latest-* aliases pick up the real file's extension.
+_r_filename_for_ext="${r_filename}"
+if [ -L "${r_filename}" ] ; then
+    _r_filename_for_ext=$(readlink -f "${r_filename}")
+fi
+case "${_r_filename_for_ext##*.}" in
           bz* )
                  decompress_cmd='bz'
                  print_debug "Detected 'bzip2' compression"
@@ -1093,11 +1186,32 @@ case "${r_filename##*.}" in
                  decompress_cmd='zstd'
                  print_debug "Detected 'zstd' compression"
           ;;
-          sql )
+          sql | cypher | json )
                  print_debug "Detected No compression"
           ;;
           *  )
-                 print_debug "Cannot tell what the extension is for compression"
+                 _magic=$(od -A n -N 4 -t x1 "${r_filename}" 2>/dev/null | tr -d ' \n')
+                 case "${_magic}" in
+                     1f8b* )
+                         decompress_cmd="z"
+                         print_debug "Detected 'gzip' compression (via magic bytes)"
+                     ;;
+                     425a68* )
+                         decompress_cmd="bz"
+                         print_debug "Detected 'bzip2' compression (via magic bytes)"
+                     ;;
+                     fd377a58* )
+                         decompress_cmd="xz"
+                         print_debug "Detected 'xzip' compression (via magic bytes)"
+                     ;;
+                     28b52ffd* )
+                         decompress_cmd="zstd"
+                         print_debug "Detected 'zstd' compression (via magic bytes)"
+                     ;;
+                     * )
+                         print_debug "Cannot tell what the extension is for compression"
+                     ;;
+                 esac
           ;;
 esac
 
@@ -1116,8 +1230,14 @@ case "${r_dbtype}" in
     pgsql | postgres* )
         print_info "Restoring '${r_filename}' into '${r_dbhost}'/'${r_dbname}'"
         export PGPASSWORD=${r_dbpass}
-        pv ${r_filename} | ${decompress_cmd}cat | psql  -d ${r_dbname} -h ${r_dbhost} -p ${r_dbport} -U ${r_dbuser}
+        pv ${r_filename} | ${decompress_cmd}cat | psql -d ${r_dbname} -h ${r_dbhost} -p ${r_dbport} -U ${r_dbuser}
         exit_code=$?
+        if [ "${exit_code}" = 0 ] ; then
+            psql -d ${r_dbname} -h ${r_dbhost} -p ${r_dbport} -U ${r_dbuser} -c "ANALYZE;" > /dev/null 2>&1
+            pgsql_table_count=$(psql -d ${r_dbname} -h ${r_dbhost} -p ${r_dbport} -U ${r_dbuser} -t -c "SELECT COUNT(*) FROM pg_stat_user_tables;" 2>/dev/null | tr -d ' \n')
+            pgsql_row_count=$(psql -d ${r_dbname} -h ${r_dbhost} -p ${r_dbport} -U ${r_dbuser} -t -c "SELECT COALESCE(SUM(n_live_tup),0) FROM pg_stat_user_tables;" 2>/dev/null | tr -d ' \n')
+            print_info "Restore summary — ${pgsql_table_count:-0} tables, ~${pgsql_row_count:-0} rows restored"
+        fi
     ;;
     mongo )
         cat << EOF
@@ -1161,6 +1281,258 @@ EOF
         mongorestore ${mongo_compression} -d=${r_dbname} -h=${r_dbhost} --port=${r_dbport} ${mongo_dropdb} ${mongo_user} ${mongo_pass} --archive=${r_filename} ${mongo_auth_database}
         exit_code=$?
     ;;
+    neo4j )
+        cat << EOF
+
+Do you wish to clear the existing database before restoring?
+    Y ) Yes - Delete all nodes, relationships, user indexes, and constraints
+    N ) No - Merge/add to existing data
+    Q ) Quit
+
+EOF
+
+        echo -e "${coff}"
+        read -p "$(echo -e ${clg}** ${cdgy}Enter Value \(${cwh}Y${cdgy}\) \| \(${cwh}N${cdgy}\) \| \(${cwh}Q${cdgy}\)  : ${cwh}${coff})" q_menu_neo4j_clear
+        case "${q_menu_neo4j_clear,,}" in
+            "n" | "no" )
+                unset neo4j_clear
+            ;;
+            "q" | "exit" )
+                print_info "Quitting Script"
+                exit 1
+            ;;
+            "y" | "yes" | * )
+                neo4j_clear=true
+            ;;
+        esac
+
+        print_info "Restoring '${r_filename}' into '${r_dbhost}'/'${r_dbname}'"
+
+        ## Clear database if requested — delete nodes, then drop every user index and every
+        ## constraint so a previously-failed import cannot leave behind 'UNIQUE_IMPORT_NAME' or
+        ## 'search' artifacts that would block a retry with "equivalent index already exists".
+        if [ "${neo4j_clear}" = "true" ] ; then
+            print_info "Clearing nodes and relationships from database '${r_dbname}'"
+            cypher-shell \
+                -a "neo4j://${r_dbhost}:${r_dbport}" \
+                -u "${r_dbuser}" \
+                -p "${r_dbpass}" \
+                -d "${r_dbname}" \
+                "MATCH (n) DETACH DELETE n;"
+
+            print_info "Dropping user-defined indexes from database '${r_dbname}'"
+            neo4j_indexes=$(cypher-shell \
+                -a "neo4j://${r_dbhost}:${r_dbport}" \
+                -u "${r_dbuser}" \
+                -p "${r_dbpass}" \
+                -d "${r_dbname}" \
+                --format plain \
+                "SHOW INDEXES YIELD name, type WHERE type <> 'LOOKUP' RETURN name;" 2>/dev/null \
+                | tail -n +2 | tr -d '"')
+            for idx in ${neo4j_indexes} ; do
+                cypher-shell \
+                    -a "neo4j://${r_dbhost}:${r_dbport}" \
+                    -u "${r_dbuser}" \
+                    -p "${r_dbpass}" \
+                    -d "${r_dbname}" \
+                    "DROP INDEX \`${idx}\` IF EXISTS;" >/dev/null 2>&1
+            done
+
+            print_info "Dropping constraints from database '${r_dbname}'"
+            neo4j_constraints=$(cypher-shell \
+                -a "neo4j://${r_dbhost}:${r_dbport}" \
+                -u "${r_dbuser}" \
+                -p "${r_dbpass}" \
+                -d "${r_dbname}" \
+                --format plain \
+                "SHOW CONSTRAINTS YIELD name RETURN name;" 2>/dev/null \
+                | tail -n +2 | tr -d '"')
+            for c in ${neo4j_constraints} ; do
+                cypher-shell \
+                    -a "neo4j://${r_dbhost}:${r_dbport}" \
+                    -u "${r_dbuser}" \
+                    -p "${r_dbpass}" \
+                    -d "${r_dbname}" \
+                    "DROP CONSTRAINT \`${c}\` IF EXISTS;" >/dev/null 2>&1
+            done
+        fi
+
+        ## Restore: pipe Cypher into cypher-shell.
+        ## Handle both clean Cypher (current backup format) and raw APOC stream output
+        ## (older backups where the 'cypherStatements' header and JSON-encoding were not stripped).
+        pv "${r_filename}" | ${decompress_cmd}cat \
+            | awk 'NR==1&&$0=="cypherStatements"{raw=1;next}raw{l=$0;sub(/^"/,"",l);sub(/"$/,"",l);gsub(/\\"/,"\"",l);gsub(/\\n/,"\n",l);print l;next}{print}' \
+            | cypher-shell \
+                -a "neo4j://${r_dbhost}:${r_dbport}" \
+                -u "${r_dbuser}" \
+                -p "${r_dbpass}" \
+                -d "${r_dbname}" \
+                --format plain
+        exit_code=$?
+
+        ## Verify — count nodes; a silent zero-node "success" must fail loudly.
+        print_info "Verifying restore — counting nodes in '${r_dbname}'"
+        neo4j_node_count=$(cypher-shell \
+            -a "neo4j://${r_dbhost}:${r_dbport}" \
+            -u "${r_dbuser}" \
+            -p "${r_dbpass}" \
+            -d "${r_dbname}" \
+            --format plain \
+            "MATCH (n) RETURN count(n) AS node_count;" 2>/dev/null \
+            | tail -n +2 | tr -d '[:space:]"')
+        if [ -z "${neo4j_node_count}" ] || [ "${neo4j_node_count}" = "0" ] ; then
+            print_error "VERIFY FAILED — Neo4j database '${r_dbname}' contains 0 nodes after restore"
+            restore_verify_failed="neo4j:${r_dbname}"
+            exit_code=4
+        else
+            print_info "Verify passed — Neo4j database '${r_dbname}' contains ${neo4j_node_count} nodes"
+        fi
+    ;;
+    couch* )
+        if [ -n "${r_dbuser}" ] && [ -n "${r_dbpass}" ]; then
+            _couch_auth="-u ${r_dbuser}:${r_dbpass}"
+        fi
+
+        cat << EOF
+
+Do you wish to drop any existing data before restoring?
+    Y ) Yes - Delete and recreate the database
+    N ) No - Merge/overwrite documents
+    Q ) Quit
+
+EOF
+
+        echo -e "${coff}"
+        read -p "$(echo -e ${clg}** ${cdgy}Enter Value \(${cwh}Y${cdgy}\) \| \(${cwh}N${cdgy}\) \| \(${cwh}Q${cdgy}\)  : ${cwh}${coff})" q_menu_couch_dropdb
+        case "${q_menu_couch_dropdb,,}" in
+            "n" | "update" )
+                unset couch_dropdb
+            ;;
+            "q" | "exit" )
+                print_info "Quitting Script"
+                exit 1
+            ;;
+            "y" | "yes" | * )
+                couch_dropdb=true
+            ;;
+        esac
+
+        print_info "Restoring '${r_filename}' into '${r_dbhost}'/'${r_dbname}'"
+
+        ## Drop and recreate if requested
+        if [ "${couch_dropdb}" = "true" ] ; then
+            print_info "Dropping database '${r_dbname}'"
+            curl -sSL ${_couch_auth} -X DELETE "${r_dbhost}:${r_dbport}/${r_dbname}" 2>/dev/null
+        fi
+
+        ## Create database (ignore error if exists)
+        curl -sSL ${_couch_auth} -X PUT "${r_dbhost}:${r_dbport}/${r_dbname}" 2>/dev/null
+
+        ## Restore: handle both new format ({"docs":[...]}) and old format ({"rows":[...]})
+        pv ${r_filename} | ${decompress_cmd}cat | \
+            jq -c 'if .docs then . else {docs: [.rows[].doc | del(._rev)]} end' | \
+            curl -sSL ${_couch_auth} -X POST "${r_dbhost}:${r_dbport}/${r_dbname}/_bulk_docs" \
+                -H "Content-Type: application/json" -d @-
+        exit_code=$?
+
+        ## Verify — count docs; a silent zero-doc "success" must fail loudly.
+        print_info "Verifying restore — counting documents in '${r_dbname}'"
+        couch_doc_count=$(curl -sSL ${_couch_auth} "${r_dbhost}:${r_dbport}/${r_dbname}" 2>/dev/null | jq -r '.doc_count // 0')
+        if [ -z "${couch_doc_count}" ] || [ "${couch_doc_count}" = "0" ] || [ "${couch_doc_count}" = "null" ] ; then
+            print_error "VERIFY FAILED — CouchDB database '${r_dbname}' contains 0 documents after restore"
+            restore_verify_failed="${restore_verify_failed:+${restore_verify_failed},}couch:${r_dbname}"
+            exit_code=4
+        else
+            print_info "Verify passed — CouchDB database '${r_dbname}' contains ${couch_doc_count} documents"
+        fi
+    ;;
+    redis )
+        cat << EOF
+
+Do you wish to flush the target Redis before restoring?
+    Y ) Yes - FLUSHALL, then import
+    N ) No  - Merge/overwrite into existing keyspace
+    Q ) Quit
+
+EOF
+
+        echo -e "${coff}"
+        read -p "$(echo -e ${clg}** ${cdgy}Enter Value \(${cwh}Y${cdgy}\) \| \(${cwh}N${cdgy}\) \| \(${cwh}Q${cdgy}\)  : ${cwh}${coff})" q_menu_redis_flush
+        case "${q_menu_redis_flush,,}" in
+            "n" | "no" )
+                unset redis_flush
+            ;;
+            "q" | "exit" )
+                print_info "Quitting Script"
+                exit 1
+            ;;
+            "y" | "yes" | * )
+                redis_flush=true
+            ;;
+        esac
+
+        print_info "Restoring '${r_filename}' into '${r_dbhost}:${r_dbport}'"
+
+        redis_auth_args=()
+        if [ -n "${r_dbpass}" ] ; then
+            if [ -n "${r_dbuser}" ] ; then
+                redis_auth_args+=(--user "${r_dbuser}" --pass "${r_dbpass}" --no-auth-warning)
+            else
+                redis_auth_args+=(-a "${r_dbpass}" --no-auth-warning)
+            fi
+        fi
+
+        ## rdbtools needs a seekable file (checksum trailer). Decompress first, work on a temp copy.
+        redis_tmp_rdb=$(mktemp --suffix=.rdb)
+        if [ -n "${decompress_cmd}" ] ; then
+            ${decompress_cmd}cat "${r_filename}" > "${redis_tmp_rdb}"
+        else
+            cp "${r_filename}" "${redis_tmp_rdb}"
+        fi
+
+        if [ "${redis_flush}" = "true" ] ; then
+            print_info "FLUSHALL on '${r_dbhost}:${r_dbport}'"
+            redis-cli -h "${r_dbhost}" -p "${r_dbport}" "${redis_auth_args[@]}" FLUSHALL
+        fi
+
+        ## Restore via direct RDB file placement + DEBUG RELOAD NOSAVE.
+        ## CONFIG GET dir returns the data path as Redis sees it; if that path is mounted into
+        ## this container at the same location the copy succeeds and the reload is instant.
+        ## Works with every RDB version the Redis server itself supports.
+        _redis_data_dir=$(redis-cli -h "${r_dbhost}" -p "${r_dbport}" "${redis_auth_args[@]}" CONFIG GET dir 2>/dev/null | awk 'NR==2{print;exit}')
+        _redis_dbfile=$(redis-cli -h "${r_dbhost}" -p "${r_dbport}" "${redis_auth_args[@]}" CONFIG GET dbfilename 2>/dev/null | awk 'NR==2{print;exit}')
+        _redis_dbfile="${_redis_dbfile:-dump.rdb}"
+
+        if [ -z "${_redis_data_dir}" ] || [ ! -d "${_redis_data_dir}" ] ; then
+            print_error "Redis data directory '${_redis_data_dir:-<unreachable>}' is not accessible from this container."
+            print_error "Mount the Redis data volume into this container at the same path the Redis server uses (commonly /data)."
+            print_error "Example (Compose): add 'volumes: - redis-data:/data' to the backup service."
+            exit_code=1
+        else
+            print_info "Writing RDB to '${_redis_data_dir}/${_redis_dbfile}'"
+            cp "${redis_tmp_rdb}" "${_redis_data_dir}/${_redis_dbfile}"
+            _reload_result=$(redis-cli -h "${r_dbhost}" -p "${r_dbport}" "${redis_auth_args[@]}" DEBUG RELOAD NOSAVE 2>&1)
+            if echo "${_reload_result}" | grep -qi "^ok$" ; then
+                exit_code=0
+            else
+                print_error "DEBUG RELOAD NOSAVE failed: ${_reload_result}"
+                print_error "Ensure the Redis DEBUG command is not disabled (rename-command DEBUG \"\")."
+                exit_code=1
+            fi
+        fi
+        rm -f "${redis_tmp_rdb}"
+
+        ## Verify — DBSIZE > 0.
+        print_info "Verifying restore — counting keys in '${r_dbhost}:${r_dbport}'"
+        redis_key_count=$(redis-cli -h "${r_dbhost}" -p "${r_dbport}" "${redis_auth_args[@]}" DBSIZE 2>/dev/null | tr -d '[:space:]')
+        if [ -z "${redis_key_count}" ] || [ "${redis_key_count}" = "0" ] || ! [[ "${redis_key_count}" =~ ^[0-9]+$ ]] ; then
+            print_error "VERIFY FAILED — Redis at '${r_dbhost}:${r_dbport}' contains 0 keys after restore (DBSIZE returned: '${redis_key_count}')"
+            restore_verify_failed="${restore_verify_failed:+${restore_verify_failed},}redis:${r_dbhost}"
+            exit_code=4
+        else
+            print_info "Verify passed — Redis at '${r_dbhost}:${r_dbport}' contains ${redis_key_count} keys"
+        fi
+    ;;
     * )
         print_info "Unable to restore DB of type '${r_dbtype}'"
         exit_code=3
@@ -1168,7 +1540,10 @@ EOF
 esac
 
 print_debug "Exit code: ${exit_code}"
-if [ "${exit_code}" = 0 ] ; then
+if [ -n "${restore_verify_failed}" ] ; then
+    print_error "RESTORE VERIFY FAILED for: ${restore_verify_failed}"
+    print_error "A restore that imports zero rows is NOT a successful restore. Investigate before relying on this database."
+elif [ "${exit_code}" = 0 ] ; then
     print_info "Restore complete!"
 else
     print_error "Restore reported errors"
