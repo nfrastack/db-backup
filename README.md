@@ -362,10 +362,12 @@ If `DEFAULT_BACKUP_LOCATION` = `blobxfer` then the following options are used:.
 | -------------------------------------- | ------------------------------------------------------------------- | ------------------- | ------- |
 | `DEFAULT_BLOBXFER_STORAGE_ACCOUNT`     | Microsoft Azure Cloud storage account name.                         |                     | x       |
 | `DEFAULT_BLOBXFER_STORAGE_ACCOUNT_KEY` | Microsoft Azure Cloud storage account key.                          |                     | x       |
+| `DEFAULT_BLOBXFER_REMOTE_DOWNLOAD`     | Download remote path before upload to keep local/remote in sync     | `TRUE`              | x       |
 | `DEFAULT_BLOBXFER_REMOTE_PATH`         | Remote Azure path                                                   | `/docker-db-backup` | x       |
 | `DEFAULT_BLOBXFER_MODE`                | Azure Storage mode e.g. `auto`, `file`, `append`, `block` or `page` | `auto`              | x       |
 
 - When `DEFAULT_BLOBXFER_MODE` is set to auto it will use blob containers by default. If the `DEFAULT_BLOBXFER_REMOTE_PATH` path does not exist a blob container with that name will be created.
+- Set `DEFAULT_BLOBXFER_REMOTE_DOWNLOAD=FALSE` to skip downloading remote files before upload. Keeping this set to `TRUE` is recommended when you use cleanup sync behavior.
 
 > This service uploads files from backup targed directory `DEFAULT_FILESYSTEM_PATH`.
 > If the a cleanup configuration in `DEFAULT_CLEANUP_TIME` is defined, the remote directory on Azure storage will also be cleaned automatically.
@@ -645,10 +647,12 @@ If `DB01_BACKUP_LOCATION` = `blobxfer` then the following options are used:.
 | -------------------------------------- | ------------------------------------------------------------------- | ------------------- | ------- |
 | `DB01_BLOBXFER_STORAGE_ACCOUNT`        | Microsoft Azure Cloud storage account name.                         |                     | x       |
 | `DB01_BLOBXFER_STORAGE_ACCOUNT_KEY`    | Microsoft Azure Cloud storage account key.                          |                     | x       |
+| `DB01_BLOBXFER_REMOTE_DOWNLOAD`        | Download remote path before upload to keep local/remote in sync     | `TRUE`              | x       |
 | `DB01_BLOBXFER_REMOTE_PATH`            | Remote Azure path                                                   | `/docker-db-backup` | x       |
 | `DB01_BLOBXFER_REMOTE_MODE`            | Azure Storage mode e.g. `auto`, `file`, `append`, `block` or `page` | `auto`              | x       |
 
 - When `DEFAULT_BLOBXFER_MODE` is set to auto it will use blob containers by default. If the `DEFAULT_BLOBXFER_REMOTE_PATH` path does not exist a blob container with that name will be created.
+- Set `DB01_BLOBXFER_REMOTE_DOWNLOAD=FALSE` to skip downloading remote files before upload. Keeping this set to `TRUE` is recommended when you use cleanup sync behavior.
 
 > This service uploads files from backup directory `DB01_BACKUP_FILESYSTEM_PATH`.
 > If the a cleanup configuration in `DB01_CLEANUP_TIME` is defined, the remote directory on Azure storage will also be cleaned automatically.

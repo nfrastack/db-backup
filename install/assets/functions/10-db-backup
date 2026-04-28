@@ -65,6 +65,7 @@ bootstrap_variables() {
                             DEFAULT_S3_CERT_CA_FILE \
                             DEFAULT_BLOBXFER_STORAGE_ACCOUNT \
                             DEFAULT_BLOBXFER_STORAGE_ACCOUNT_KEY \
+                            DEFAULT_BLOBXFER_REMOTE_DOWNLOAD \
                             DEFAULT_BLOBXFER_REMOTE_PATH \
                             DEFAULT_BLOBXFER_MODE \
                             DB"${backup_instance_number}"_AUTH \
@@ -93,10 +94,12 @@ bootstrap_variables() {
                             DB"${backup_instance_number}"_S3_CERT_CA_FILE \
                             DB"${backup_instance_number}"_BLOBXFER_STORAGE_ACCOUNT \
                             DB"${backup_instance_number}"_BLOBXFER_STORAGE_ACCOUNT_KEY \
+                            DB"${backup_instance_number}"_BLOBXFER_REMOTE_DOWNLOAD \
                             DB"${backup_instance_number}"_BLOBXFER_REMOTE_PATH \
                             DB"${backup_instance_number}"_BLOBXFER_MODE \
                             BLOBXFER_STORAGE_ACCOUNT \
                             BLOBXFER_STORAGE_ACCOUNT_KEY \
+                            BLOBXFER_REMOTE_DOWNLOAD \
                             DB_HOST \
                             DB_NAME \
                             DB_PORT \
@@ -206,6 +209,7 @@ bootstrap_variables() {
         transform_backup_instance_variable "${backup_instance_number}" BLOBXFER_REMOTE_PATH backup_job_blobxfer_remote_path
         transform_backup_instance_variable "${backup_instance_number}" BLOBXFER_STORAGE_ACCOUNT backup_job_blobxfer_storage_account
         transform_backup_instance_variable "${backup_instance_number}" BLOBXFER_STORAGE_ACCOUNT_KEY backup_job_blobxfer_storage_account_key
+        transform_backup_instance_variable "${backup_instance_number}" BLOBXFER_REMOTE_DOWNLOAD backup_job_blobxfer_remote_download
         transform_backup_instance_variable "${backup_instance_number}" BLOBXFER_MODE backup_job_blobxfer_mode
         transform_backup_instance_variable "${backup_instance_number}" CHECKSUM backup_job_checksum
         transform_backup_instance_variable "${backup_instance_number}" CLEANUP_TIME backup_job_cleanup_time
@@ -1109,6 +1113,8 @@ cleanup_old_data() {
 
                     if  [ -z "${backup_job_blobxfer_storage_account}" ] || [ -z "${backup_job_blobxfer_storage_account_key}" ]; then
                         write_log warn "Variable _BLOBXFER_STORAGE_ACCOUNT or _BLOBXFER_STORAGE_ACCOUNT_KEY is not set. Skipping blobxfer functions"
+                    elif var_false "${backup_job_blobxfer_remote_download}"; then
+                        write_log info "Skipping remote cleanup sync because _BLOBXFER_REMOTE_DOWNLOAD is disabled"
                     else
                         write_log info "Syncing changes via blobxfer"
                         silent run_as_user blobxfer upload --no-overwrite --mode ${backup_job_blobxfer_mode} --remote-path ${backup_job_blobxfer_remote_path} --storage-account ${backup_job_blobxfer_storage_account} --storage-account-key ${backup_job_blobxfer_storage_account_key} --local-path ${backup_job_filesystem_path} --delete --delete-only
@@ -1674,8 +1680,24 @@ EOF
                 if  [ -z "${backup_job_blobxfer_storage_account}" ] || [ -z "${backup_job_blobxfer_storage_account_key}" ]; then
                     write_log warn "Variable _BLOBXFER_STORAGE_ACCOUNT or _BLOBXFER_STORAGE_ACCOUNT_KEY is not set. Skipping blobxfer functions"
                 else
-                    write_log info "Synchronize local storage from blob container with blobxfer"
-                    ${play_fair} blobxfer download --no-overwrite --mode ${backup_job_blobxfer_mode} --remote-path ${backup_job_blobxfer_remote_path} --storage-account ${backup_job_blobxfer_storage_account} --storage-account-key ${backup_job_blobxfer_storage_account_key} --local-path ${backup_job_filesystem_path} --restore-file-lmt --delete
+                    if var_true "${backup_job_blobxfer_remote_download}"; then
+                        write_log info "Synchronize local storage from blob container with blobxfer"
+                        ${play_fair} blobxfer download --no-overwrite --mode ${backup_job_blobxfer_mode} --remote-path ${backup_job_blobxfer_remote_path} --storage-account ${backup_job_blobxfer_storage_account} --storage-account-key ${backup_job_blobxfer_storage_account_key} --local-path ${backup_job_filesystem_path} --restore-file-lmt --delete
+
+                        # Avoid recursively re-uploading the downloaded remote path when a nested remote directory is configured.
+                        blobxfer_remote_path_clean=$(echo "${backup_job_blobxfer_remote_path}" | sed -e 's#^/*##' -e 's#/*$##')
+                        case "${blobxfer_remote_path_clean}" in
+                            */*)
+                                blobxfer_local_mirror_path="${backup_job_filesystem_path}/${blobxfer_remote_path_clean}"
+                                if [ -d "${blobxfer_local_mirror_path}" ]; then
+                                    write_log debug "Removing local blobxfer mirror path ${blobxfer_local_mirror_path} to prevent recursive nesting"
+                                    run_as_user rm -rf "${blobxfer_local_mirror_path}"
+                                fi
+                            ;;
+                        esac
+                    else
+                        write_log info "Skipping blobxfer remote download because _BLOBXFER_REMOTE_DOWNLOAD is disabled"
+                    fi
 
                     write_log info "Moving backup to external storage with blobxfer"
                     mkdir -p "${backup_job_filesystem_path}"
