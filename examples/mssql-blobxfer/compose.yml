@@ -58,6 +58,8 @@ services:
       - DB01_BLOBXFER_STORAGE_ACCOUNT={TODO Add Storage Name}
       # Add here azure storage account key
       - DB01_BLOBXFER_STORAGE_ACCOUNT_KEY={TODO Add Key}
+      # Keep TRUE to sync remote/local state before upload
+      - DB01_BLOBXFER_REMOTE_DOWNLOAD=TRUE
       # Optional nested path, e.g. test/weekly (leading/trailing slashes are not required)
       - DB01_BLOBXFER_REMOTE_PATH=backup01/docker-db-backup
     restart: always
