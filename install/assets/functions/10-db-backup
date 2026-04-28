@@ -1677,6 +1677,18 @@ EOF
                     write_log info "Synchronize local storage from blob container with blobxfer"
                     ${play_fair} blobxfer download --no-overwrite --mode ${backup_job_blobxfer_mode} --remote-path ${backup_job_blobxfer_remote_path} --storage-account ${backup_job_blobxfer_storage_account} --storage-account-key ${backup_job_blobxfer_storage_account_key} --local-path ${backup_job_filesystem_path} --restore-file-lmt --delete
 
+                    # Avoid recursively re-uploading the downloaded remote path when a nested remote directory is configured.
+                    blobxfer_remote_path_clean=$(echo "${backup_job_blobxfer_remote_path}" | sed -e 's#^/*##' -e 's#/*$##')
+                    case "${blobxfer_remote_path_clean}" in
+                        */*)
+                            blobxfer_local_mirror_path="${backup_job_filesystem_path}/${blobxfer_remote_path_clean}"
+                            if [ -d "${blobxfer_local_mirror_path}" ]; then
+                                write_log debug "Removing local blobxfer mirror path ${blobxfer_local_mirror_path} to prevent recursive nesting"
+                                run_as_user rm -rf "${blobxfer_local_mirror_path}"
+                            fi
+                        ;;
+                    esac
+
                     write_log info "Moving backup to external storage with blobxfer"
                     mkdir -p "${backup_job_filesystem_path}"
                     if [ "${backup_job_checksum}" != "none" ] ; then run_as_user mv "${temporary_directory}"/*."${checksum_extension}" "${backup_job_filesystem_path}"/; fi
