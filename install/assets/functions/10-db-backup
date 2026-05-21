@@ -736,7 +736,8 @@ backup_mysql() {
                 pre_dbbackup "${db}"
                 write_log notice "Dumping MySQL/MariaDB database: '${db}' ${compression_string}"
                 if var_true "${DEBUG_BACKUP_MYSQL}" ; then debug on; fi
-                run_as_user ${play_fair} ${_mysql_prefix}${_mysql_bin_prefix}dump --max-allowed-packet=${backup_job_mysql_max_allowed_packet} -h ${backup_job_db_host} -P ${backup_job_db_port} -u${backup_job_db_user} ${events} ${single_transaction} ${stored_procedures} ${mysql_tls_args} ${backup_job_extra_opts} ${backup_job_extra_backup_opts} $db | ${compress_cmd} | run_as_user tee "${temporary_directory}"/"${backup_job_filename}" > /dev/null
+                extra_backup_opts="${backup_job_extra_backup_opts//\{db\}/$db}"
+                run_as_user ${play_fair} ${_mysql_prefix}${_mysql_bin_prefix}dump --max-allowed-packet=${backup_job_mysql_max_allowed_packet} -h ${backup_job_db_host} -P ${backup_job_db_port} -u${backup_job_db_user} ${events} ${single_transaction} ${stored_procedures} ${mysql_tls_args} ${backup_job_extra_opts} ${extra_backup_opts} $db | ${compress_cmd} | run_as_user tee "${temporary_directory}"/"${backup_job_filename}" > /dev/null
                 exit_code=$((PIPESTATUS[0] + PIPESTATUS[1] + PIPESTATUS[2]))
                 if var_true "${DEBUG_BACKUP_MYSQL}" ; then debug off; fi
                 check_exit_code backup "${backup_job_filename}"
@@ -829,7 +830,8 @@ backup_pgsql() {
                 pre_dbbackup "${db}"
                 write_log notice "Dumping PostgresSQL database: '${db}' ${compression_string}"
                 if var_true "${DEBUG_BACKUP_PGSQL}" ; then debug on; fi
-                run_as_user ${play_fair} pg_dump -h "${backup_job_db_host}" -p "${backup_job_db_port}" -U "${backup_job_db_user}" $db ${backup_job_extra_opts} ${backup_job_extra_backup_opts} | ${compress_cmd} | run_as_user tee "${temporary_directory}"/"${backup_job_filename}" > /dev/null
+                extra_backup_opts="${backup_job_extra_backup_opts//\{db\}/$db}"
+                run_as_user ${play_fair} pg_dump -h "${backup_job_db_host}" -p "${backup_job_db_port}" -U "${backup_job_db_user}" $db ${backup_job_extra_opts} ${extra_backup_opts} | ${compress_cmd} | run_as_user tee "${temporary_directory}"/"${backup_job_filename}" > /dev/null
                 exit_code=$((PIPESTATUS[0] + PIPESTATUS[1] + PIPESTATUS[2]))
                 if var_true "${DEBUG_BACKUP_PGSQL}" ; then debug off; fi
                 check_exit_code backup "${backup_job_filename}"
