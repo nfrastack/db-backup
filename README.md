@@ -266,7 +266,7 @@ Encryption occurs after compression and the encrypted filename will have a `.gpg
 | Variable                           | Description                                                                                               | Default                   | `_FILE` |
 | ---------------------------------- | --------------------------------------------------------------------------------------------------------- | ------------------------- | ------- |
 | `DEFAULT_PORT`                     | MySQL / MariaDB Port                                                                                      | `3306`                    | x       |
-| `DEFAULT_EXTRA_BACKUP_OPTS`        | Pass extra arguments to the backup command only, add them here e.g. `--extra-command`                     |                           |         |
+| `DEFAULT_EXTRA_BACKUP_OPTS`        | Pass extra arguments to the backup command only, add them here e.g. `--extra-command`. Supports `{db}` placeholder for current database name in split mode (e.g. `--ignore-table={db}.logs`) |                           |         |
 | `DEFAULT_EXTRA_ENUMERATION_OPTS`   | Pass extra arguments to the database enumeration command only, add them here e.g. `--extra-command`       |                           |         |
 | `DEFAULT_EXTRA_OPTS`               | Pass extra arguments to the backup and database enumeration command, add them here e.g. `--extra-command` |                           |         |
 | `DEFAULT_MYSQL_CLIENT`             | Choose between `mariadb` or `mysql` client to perform dump operations for compatibility purposes          | `mariadb`                 |         |
