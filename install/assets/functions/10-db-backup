@@ -1131,8 +1131,13 @@ cleanup_old_data() {
                         if [[ $s3_createdate -le $s3_olderthan ]] ; then
                             s3_filename=$(echo $s3_file | awk {'print $4'})
                             if [ "$s3_filename" != "" ] ; then
-                                write_log debug "Deleting $s3_filename"
-                                run_as_user aws ${PARAM_AWS_ENDPOINT_URL} s3 rm s3://${backup_job_s3_bucket}/${backup_job_s3_path}/${s3_filename} ${s3_ssl} ${s3_ca_cert} ${backup_job_s3_extra_opts}
+                                if { [ -n "${backup_job_filename_base}" ] && [[ "${s3_filename,,}" == "${backup_job_filename_base,,}"* ]] ; } || \
+                                   { var_true "${_postgres_backup_globals}" && [ -n "${backup_job_global_base}" ] && [[ "${s3_filename,,}" == "${backup_job_global_base,,}"* ]] ; } ; then
+                                    write_log debug "Deleting $s3_filename"
+                                    run_as_user aws ${PARAM_AWS_ENDPOINT_URL} s3 rm s3://${backup_job_s3_bucket}/${backup_job_s3_path}/${s3_filename} ${s3_ssl} ${s3_ca_cert} ${backup_job_s3_extra_opts}
+                                else
+                                    write_log debug "Skipping $s3_filename (does not match this backup job's filename prefix)"
+                                fi
                             fi
                         fi
                     done
