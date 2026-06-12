@@ -8,7 +8,7 @@ ENV INFLUX1_CLIENT_VERSION=1.8.0 \
     INFLUX2_CLIENT_VERSION=2.7.5 \
     MSODBC_VERSION=18.6.1.1-1 \
     MSSQL_VERSION=18.6.1.1-1 \
-    MYSQL_VERSION=mysql-8.4.8 \
+    MYSQL_VERSION=mysql-9.7.0 \
     MYSQL_REPO_URL=https://github.com/mysql/mysql-server \
     AWS_CLI_VERSION=1.44.56 \
     POSTGRES_VERSION=18.3 \
@@ -221,6 +221,7 @@ RUN source /assets/functions/00-container && \
         -DCMAKE_INSTALL_PREFIX=/opt/mysql \
         -DFORCE_INSOURCE_BUILD=1 \
         -DWITHOUT_SERVER:BOOL=ON \
+        -DWITH_CURL=0 \
         && \
     make -j$(nproc) install && \
     \
