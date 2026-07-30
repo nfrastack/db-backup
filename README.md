@@ -6,7 +6,7 @@ Backup multiple types of database servers on a scheduled basis with many customi
 
 * CouchDB, InfluxDB, MySQL/MariaDB, Microsoft SQL, MongoDB, Postgres, Redis, SQLite3 support
 * Dump to local filesystem or backup to S3 Compatible services, and Azure
-* Multiple backup job support (DB01, DB02, ... DB99)
+* Multiple backup job support (DB01, DB02, DB03) - Up to DB99 for supporters. 
 * Flexible scheduling (interval, cron, HHMM, datetime)
 * Blackout periods to skip backups during certain hours
 * Per-job credentials, storage targets, compression, encryption
@@ -439,7 +439,10 @@ If for some reason your filesystem or host is not detecting it right, use the en
 #### Job Backup Options
 
 If `DEFAULT_` variables are set and you do not wish for the settings to carry over into your jobs, you can set the appropriate environment variable with the value of `unset`.
-Otherwise, override them per backup job. Additional backup jobs can be scheduled by using `DB02_`,`DB03_`,`DB04_` ... prefixes. A limit of 3 can be created when not in advanced mode. See [Specific Database Options](#specific-database-options) which may overrule this list.
+Otherwise, override them per backup job. Additional backup jobs can be scheduled by using `DB02_`,`DB03_`,`DB04_` ... prefixes. 
+
+A limit of 3 can be created when not in advanced mode. 
+
 
 | Parameter   | Description                                                                                    | Default | `_FILE` | Adv. |
 | ----------- | ---------------------------------------------------------------------------------------------- | ------- | ------- | ---- |
