@@ -1333,16 +1333,20 @@ create_schedulers() {
     if var_true "${DEBUG_CREATE_SCHEDULERS}" ; then debug on; fi
 
     backup() {
-        local backup_instances=$(set -o posix ; set | grep -Pc "^(DB[0-9]._HOST=|.*MONGO_CUSTOM_URI=)")
-        print_debug "[create_schedulers] Found '${backup_instances}' DB_HOST instances"
+        # Build the instance list from the actual configured DB<NN>_HOST / DB<NN>_MONGO_CUSTOM_URI
+        # numbers rather than a count, so non-contiguous numbering (e.g. DB01 + DB04 with DB02/DB03
+        # unset) doesn't silently drop or misassign jobs.
+        local backup_instance_list
+        backup_instance_list=$(set -o posix ; set | grep -Po "^DB[0-9]+_(HOST|MONGO_CUSTOM_URI)=" | grep -Po "[0-9]+" | sort -un)
+        print_debug "[create_schedulers] Found DB_HOST instances: '${backup_instance_list}'"
 
-        if [ -n "${DB_HOST}" ] && [ "${backup_instances}" ]; then
-            backup_instances=1;
+        if [ -n "${DB_HOST}" ]; then
+            backup_instance_list=1
             print_debug "[create_schedulers] Detected using old DB_ variables"
         fi
 
-        for (( instance = 01; instance <= backup_instances; )) ; do
-            instance=$(printf "%02d" $instance)
+        for instance_number in ${backup_instance_list} ; do
+            instance=$(printf "%02d" "${instance_number}")
             cp -R /assets/dbbackup/template-dbbackup /etc/services.available/dbbackup-"${instance}"
             sed -i "s|{{BACKUP_NUMBER}}|${instance}|g" /etc/services.available/dbbackup-"${instance}"/run
             if [ "${MODE,,}" = "manual" ] ; then service_stop dbbackup-"${instance}" ; fi
@@ -1368,8 +1372,6 @@ EOF
             else
                 echo "/usr/bin/backup${instance}-now now" > /usr/bin/backup-now
             fi
-
-            instance=$(echo "${instance} +1" | bc)
         done
     }
 
