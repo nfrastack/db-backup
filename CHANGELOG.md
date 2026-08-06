@@ -1,3 +1,9 @@
+## 4.9.1 2026-08-06 <code at nfrastack dot com>
+
+   ### Changed
+      - Fix issue with MySQL pre backup connectivity check when ssl disabled
+
+
 ## 4.9.0 2026-07-29 <code at nfrastack dot com>
 
 The db-backup:4.9.x series will be the last before the 5.x.x release which is expected in August of 2026.

@@ -343,7 +343,14 @@ EOF
                         mysql_tls_args="${mysql_tls_args} --tls_version=${backup_job_mysql_tls_version}"
                     fi
                 else
-                    mysql_tls_args="--skip-ssl"
+                    case "${backup_job_mysql_client,,}" in
+                        mariadb )
+                            mysql_tls_args="--skip-ssl"
+                        ;;
+                        mysql )
+                            mysql_tls_args="--ssl-mode=DISABLED"
+                        ;;
+                    esac
                 fi
             ;;
             "mssql" | "microsoftsql" )
@@ -1634,7 +1641,7 @@ EOZP
         if [ -n "${zabbix_checksum_time}" ] ; then echo "${zabbix_checksum_time}" | silent dbbackup_run_as_user tee -a "${zabbix_payload}" ; fi
         if [ -n "${zabbix_encrypt_time}" ] ; then echo "${zabbix_encrypt_time}" | silent dbbackup_run_as_user tee -a "${zabbix_payload}"  ; fi
 
-        silent dbbackup_run_as_user zabbix_sender -c "${ZABBIX_CONFIG_PATH}"/"${ZABBIX_CONFIG_FILE}" -i "${zabbix_payload}"
+                silent dbbackup_run_as_user zabbix_sender -c "${ZABBIX_CONFIG_PATH}"/"${ZABBIX_CONFIG_FILE}" -i "${zabbix_payload}"
 
         if [ "$?" != "0" ] ; then dbbackup_write_log error "Error sending statistics, consider disabling with 'CONTAINER_ENABLE_MONITORING=FALSE'" ; fi
         unset zabbix_checksum_time
