@@ -662,9 +662,9 @@ dbbackup_backup_pgsql() {
         print_notice "Dumping PostgresSQL globals: with 'pg_dumpall -g' ${compression_string}"
         if var_true "${DEBUG_BACKUP_PGSQL}" ; then dbbackup_debug on; fi
         dbbackup_run_as_user ${play_fair} pg_dumpall -h "${backup_job_db_host}" -U "${backup_job_db_user}" -p "${backup_job_db_port}" -g ${backup_job_extra_opts} ${backup_job_extra_backup_opts} | ${compress_cmd} | dbbackup_run_as_user tee "${temporary_directory}"/"${backup_job_filename}" > /dev/null
-        exit_code=$?
+        exit_code=$((PIPESTATUS[0] + PIPESTATUS[1] + PIPESTATUS[2]))
         if var_true "${DEBUG_BACKUP_PGSQL}" ; then dbbackup_debug off; fi
-        dbbackup_check_exit_code "${backup_job_filename}"
+        dbbackup_check_exit_code backup "${backup_job_filename}"
         dbbackup_timer backup finish
         dbbackup_file_encryption
         dbbackup_generate_checksum
