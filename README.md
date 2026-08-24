@@ -143,11 +143,12 @@ Images are built for `amd64` by default, with optional support for `arm64` and o
 - The quickest way to get started is using [docker-compose](https://docs.docker.com/compose/). See the examples folder for a series of example compose.yml that can be modified for development or production use.
 
 - Set various [environment variables](#environment-variables) to understand the capabilities of this image.
-- Map [persistent storage](#data-volumes) for access to configuration and data files for backup.
+- Map [persistent storage](#persistent-storage) for access to configuration and data files for backup.
 
 ### Persistent Storage
 
 The following directories are used for configuration and can be mapped for persistent storage.
+
 | Directory              | Description                                                                         |
 | ---------------------- | ----------------------------------------------------------------------------------- |
 | `/backup`              | Backups                                                                             |
@@ -184,6 +185,7 @@ Below is the complete list of available options that can be used to customize yo
 | `BACKUP_JOB_CONCURRENCY` | How many backup jobs to run concurrently                                                                                         | `1`             |
 
 #### Job Defaults
+
 If these are set and no other defaults or variables are set explicitly, they will be added to any of the backup jobs.
 
 | Variable                          | Description                                                                           | Default      |
@@ -213,7 +215,7 @@ Encryption occurs after compression and the encrypted filename will have a `.gpg
 | ----------------------------- | -------------------------------------------- | ------- | ------- |
 | `DEFAULT_ENCRYPT`             | Encrypt file after backing up with GPG       | `FALSE` |         |
 | `DEFAULT_ENCRYPT_PASSPHRASE`  | Passphrase to encrypt file with GPG          |         | x       |
-| *or*                          |                                              |         |         |
+| _or_                          |                                              |         |         |
 | `DEFAULT_ENCRYPT_PUBLIC_KEY`  | Path of public key to encrypt file with GPG  |         | x       |
 | `DEFAULT_ENCRYPT_PRIVATE_KEY` | Path of private key to encrypt file with GPG |         | x       |
 
@@ -222,20 +224,19 @@ Encryption occurs after compression and the encrypted filename will have a `.gpg
 | Variable                        | Description                                                                                                                                    | Default |
 | ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
 | `DEFAULT_BACKUP_INTERVAL`       | How often to do a backup, in minutes after the first backup. Defaults to 1440 minutes, or once per day.                                        | `1440`  |
-| `DEFAULT_BACKUP_BEGIN`          | What time to do the initial backup. Defaults to immediate. (`+1`)                                                                              | `+0`    |
+| `DEFAULT_BACKUP_BEGIN`          | What time to do the initial backup. Defaults to immediate. (`+0`)                                                                              | `+0`    |
 |                                 | Must be in one of four formats:                                                                                                                |         |
 |                                 | Absolute HHMM, e.g. `2330` or `0415`                                                                                                           |         |
 |                                 | Relative +MM, i.e. how many minutes after starting the container, e.g. `+0` (immediate), `+10` (in 10 minutes), or `+90` in an hour and a half |         |
 |                                 | Full datestamp e.g. `2023-12-21 23:30:00`                                                                                                      |         |
-|                                 | Cron expression e.g. `30 23 * * *` [Understand the format](https://en.wikipedia.org/wiki/Cron) - *BACKUP_INTERVAL is ignored*                  |         |
+|                                 | Cron expression e.g. `30 23 * * *` [Understand the format](https://en.wikipedia.org/wiki/Cron) - _BACKUP_INTERVAL is ignored_                  |         |
 | `DEFAULT_CLEANUP_TIME`          | Value in minutes to delete old backups (only fired when backup interval executes)                                                              | `FALSE` |
 |                                 | 1440 would delete anything above 1 day old. You don't need to set this variable if you want to hold onto everything.                           |         |
-| `DEFAULT_ARCHIVE_TIME`          | Value in minutes to move all files files older than (x) from                                                                                   |         |
-| `DEFAULT_BACKUP_BLACKOUT_BEGIN` | Use `HHMM` notation to start a blackout period where no backups occur eg `0420`                                                                |         |
-| `DEFAULT_BACKUP_BLACKOUT_END`   | Use `HHMM` notation to set the end period where no backups occur eg `0430`                                                                     |         |
+| `DEFAULT_ARCHIVE_TIME`          | Value in minutes to move all files older than (x) from `DEFAULT_FILESYSTEM_PATH` to `DEFAULT_FILESYSTEM_ARCHIVE_PATH`                          |         |
+| `DEFAULT_BLACKOUT_BEGIN`        | Use `HHMM` notation to start a blackout period where no backups occur eg `0420`                                                                |         |
+| `DEFAULT_BLACKOUT_END`          | Use `HHMM` notation to set the end period where no backups occur eg `0430`                                                                     |         |
 
 > You may need to wrap your `DEFAULT_BACKUP_BEGIN` value in quotes for it to properly parse. There have been reports of backups that start with a `0` get converted into a different format which will not allow the timer to start at the correct time.
-
 
 ##### Default Database Options
 
@@ -274,13 +275,12 @@ Encryption occurs after compression and the encrypted filename will have a `.gpg
 | `DEFAULT_MYSQL_TLS_CERT_FILE`      | Filename to load client certificate for connecting via TLS                                                |                           | x       |
 | `DEFAULT_MYSQL_TLS_KEY_FILE`       | Filename to load client key for connecting via TLS                                                        |                           | x       |
 
-
 ###### Microsoft SQL
 
 | Variable             | Description                             | Default    | `_FILE` |
 | -------------------- | --------------------------------------- | ---------- | ------- |
 | `DEFAULT_PORT`       | Microsoft SQL Port                      | `1433`     | x       |
-| `DEFAULT_MSSQL_MODE` | Backup `DATABASE` or `TRANSACTION` logs | `DATABASE` |
+| `DEFAULT_MSSQL_MODE` | Backup `DATABASE` or `TRANSACTION` logs | `DATABASE` |         |
 
 ###### MongoDB
 
@@ -310,14 +310,13 @@ Encryption occurs after compression and the encrypted filename will have a `.gpg
 | `DEFAULT_PORT`                   | Default Redis Port                                                                                  | `6379`  | x       |
 | `DEFAULT_EXTRA_ENUMERATION_OPTS` | Pass extra arguments to the database enumeration command only, add them here e.g. `--extra-command` |         |         |
 
-
 ##### Default Storage Options
 
 Options that are related to the value of `DEFAULT_BACKUP_LOCATION`
 
 ###### Filesystem
 
-If `DEFAULT_BACKUP_LOCTION` = `FILESYSTEM` then the following options are used:
+If `DEFAULT_BACKUP_LOCATION` = `FILESYSTEM` then the following options are used:
 
 | Variable                             | Description                                                                                           | Default                               |
 | ------------------------------------ | ----------------------------------------------------------------------------------------------------- | ------------------------------------- |
@@ -349,7 +348,7 @@ If `DEFAULT_BACKUP_LOCATION` = `S3` then the following options are used:
 
 ###### Azure
 
-If `DEFAULT_BACKUP_LOCATION` = `blobxfer` then the following options are used:.
+If `DEFAULT_BACKUP_LOCATION` = `blobxfer` then the following options are used:
 
 | Parameter                              | Description                                                         | Default             | `_FILE` |
 | -------------------------------------- | ------------------------------------------------------------------- | ------------------- | ------- |
@@ -360,8 +359,8 @@ If `DEFAULT_BACKUP_LOCATION` = `blobxfer` then the following options are used:.
 
 - When `DEFAULT_BLOBXFER_MODE` is set to auto it will use blob containers by default. If the `DEFAULT_BLOBXFER_REMOTE_PATH` path does not exist a blob container with that name will be created.
 
-> This service uploads files from backup targed directory `DEFAULT_FILESYSTEM_PATH`.
-> If the a cleanup configuration in `DEFAULT_CLEANUP_TIME` is defined, the remote directory on Azure storage will also be cleaned automatically.
+> This service uploads files from backup target directory `DEFAULT_FILESYSTEM_PATH`.
+> If a cleanup configuration in `DEFAULT_CLEANUP_TIME` is defined, the remote directory on Azure storage will also be cleaned automatically.
 
 ##### Hooks
 
@@ -385,15 +384,17 @@ $ cat pre-script.sh
 # #### Example Pre Script
 # #### $1=DBXX_TYPE (Type of Backup)
 # #### $2=DBXX_HOST (Backup Host)
-# #### $3=DBXX_NAME (Name of Database backed up
+# #### $3=DBXX_NAME (Name of Database backed up)
 # #### $4=BACKUP START TIME (Seconds since Epoch)
 # #### $5=BACKUP FILENAME (Filename)
 
 echo "${1} Backup Starting on ${2} for ${3} at ${4}. Filename: ${5}"
 ```
 
-    ## script DBXX_TYPE DBXX_HOST DBXX_NAME STARTEPOCH BACKUP_FILENAME
-    ${f} "${backup_job_db_type}" "${backup_job_db_host}" "${backup_job_db_name}" "${backup_routines_start_time}" "${backup_job_file}"
+```text
+## script DBXX_TYPE DBXX_HOST DBXX_NAME STARTEPOCH BACKUP_FILENAME
+${f} "${backup_job_db_type}" "${backup_job_db_host}" "${backup_job_db_name}" "${backup_routines_start_time}" "${backup_job_file}"
+```
 
 Outputs the following on the console:
 
@@ -401,7 +402,7 @@ Outputs the following on the console:
 
 ###### Post backup
 
-If you want to execute a custom script at the end of a backup, you can drop bash scripts with the extension of `.sh` in the location defined in `DB01_SCRIPT_LOCATION_POST`. Also to support legacy users `/assets/custom-scripts` is also scanned and executed.See the following example to utilize:
+If you want to execute a custom script at the end of a backup, you can drop bash scripts with the extension of `.sh` in the location defined in `DB01_SCRIPT_LOCATION_POST`. Also to support legacy users `/assets/custom-scripts` is also scanned and executed. See the following example to utilize:
 
 ```bash
 $ cat post-script.sh
@@ -411,7 +412,7 @@ $ cat post-script.sh
 # #### $1=EXIT_CODE (After running backup routine)
 # #### $2=DBXX_TYPE (Type of Backup)
 # #### $3=DBXX_HOST (Backup Host)
-# #### #4=DBXX_NAME (Name of Database backed up
+# #### $4=DBXX_NAME (Name of Database backed up)
 # #### $5=BACKUP START TIME (Seconds since Epoch)
 # #### $6=BACKUP FINISH TIME (Seconds since Epoch)
 # #### $7=BACKUP TOTAL TIME (Seconds between Start and Finish)
@@ -423,8 +424,10 @@ $ cat post-script.sh
 echo "${1} ${2} Backup Completed on ${3} for ${4} on ${5} ending ${6} for a duration of ${7} seconds. Filename: ${8} Size: ${9} bytes MD5: ${10}"
 ```
 
-      ## script EXIT_CODE DB_TYPE DB_HOST DB_NAME STARTEPOCH FINISHEPOCH DURATIONEPOCH BACKUP_FILENAME FILESIZE CHECKSUMVALUE
-      ${f} "${exit_code}" "${dbtype}" "${backup_job_db_host}" "${backup_job_db_name}" "${backup_routines_start_time}" "${backup_routines_finish_time}" "${backup_routines_total_time}" "${backup_job_file}" "${filesize}" "${checksum_value}" "${move_exit_code}
+```text
+## script EXIT_CODE DB_TYPE DB_HOST DB_NAME STARTEPOCH FINISHEPOCH DURATIONEPOCH BACKUP_FILENAME FILESIZE CHECKSUMVALUE
+${f} "${exit_code}" "${dbtype}" "${backup_job_db_host}" "${backup_job_db_name}" "${backup_routines_start_time}" "${backup_routines_finish_time}" "${backup_routines_total_time}" "${backup_job_file}" "${filesize}" "${checksum_value}" "${move_exit_code}
+```
 
 Outputs the following on the console:
 
@@ -434,7 +437,6 @@ If you wish to change the size value from bytes to megabytes set environment var
 
 You must make your scripts executable otherwise there is an internal check that will skip trying to run it otherwise.
 If for some reason your filesystem or host is not detecting it right, use the environment variable `DB01_POST_SCRIPT_SKIP_X_VERIFY=TRUE` to bypass.
-
 
 #### Job Backup Options
 
@@ -451,7 +453,6 @@ A limit of 3 can be created when not in advanced mode.
 | `DB01_NAME` | Schema Name e.g. `database`                                                                    |         | x       |      |
 | `DB01_USER` | username for the database(s) - Can use `root` for MySQL                                        |         | x       |      |
 | `DB01_PASS` | (optional if DB doesn't require it) password for the database                                  |         | x       |      | |
-
 
 | Variable                       | Description                                                                                               | Default      |
 | ------------------------------ | --------------------------------------------------------------------------------------------------------- | ------------ |
@@ -479,12 +480,11 @@ A limit of 3 can be created when not in advanced mode.
 
 Encryption will occur after compression and the resulting filename will have a `.gpg` suffix
 
-
 | Variable                   | Description                                  | Default | `_FILE` |
 | -------------------------- | -------------------------------------------- | ------- | ------- |
 | `DB01_ENCRYPT`             | Encrypt file after backing up with GPG       | `FALSE` |         |
 | `DB01_ENCRYPT_PASSPHRASE`  | Passphrase to encrypt file with GPG          |         | x       |
-| *or*                       |                                              |         |         |
+| _or_                       |                                              |         |         |
 | `DB01_ENCRYPT_PUBLIC_KEY`  | Path of public key to encrypt file with GPG  |         | x       |
 | `DB01_ENCRYPT_PRIVATE_KEY` | Path of private key to encrypt file with GPG |         | x       |
 
@@ -493,18 +493,18 @@ Encryption will occur after compression and the resulting filename will have a `
 | Variable                     | Description                                                                                                                                    | Default |
 | ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
 | `DB01_BACKUP_INTERVAL`       | How often to do a backup, in minutes after the first backup. Defaults to 1440 minutes, or once per day.                                        | `1440`  |
-| `DB01_BACKUP_BEGIN`          | What time to do the initial backup. Defaults to immediate. (`+1`)                                                                              | `+0`    |
+| `DB01_BACKUP_BEGIN`          | What time to do the initial backup. Defaults to immediate. (`+0`)                                                                              | `+0`    |
 |                              | Must be in one of four formats:                                                                                                                |         |
 |                              | Absolute HHMM, e.g. `2330` or `0415`                                                                                                           |         |
 |                              | Relative +MM, i.e. how many minutes after starting the container, e.g. `+0` (immediate), `+10` (in 10 minutes), or `+90` in an hour and a half |         |
 |                              | Full datestamp e.g. `2023-12-21 23:30:00`                                                                                                      |         |
-|                              | Cron expression e.g. `30 23 * * *`  [Understand the format](https://en.wikipedia.org/wiki/Cron) - *BACKUP_INTERVAL is ignored*                 |         |
+|                              | Cron expression e.g. `30 23 * * *`  [Understand the format](https://en.wikipedia.org/wiki/Cron) - _BACKUP_INTERVAL is ignored_                 |         |
 | `DB01_CLEANUP_TIME`          | Value in minutes to delete old backups (only fired when backup interval executes)                                                              | `FALSE` |
 |                              | 1440 would delete anything above 1 day old. You don't need to set this variable if you want to hold onto everything.                           |         |
-| `DB01_ARCHIVE_TIME`          | Value in minutes to move all files files older than (x) from `DB01_BACKUP_FILESYSTEM_PATH`                                                     |         |
+| `DB01_ARCHIVE_TIME`          | Value in minutes to move all files older than (x) from `DB01_BACKUP_FILESYSTEM_PATH`                                                           |         |
 |                              | to `DB01_BACKUP_FILESYSTEM_ARCHIVE_PATH` - which is useful when pairing against an external backup system.                                     |         |
-| `DB01_BACKUP_BLACKOUT_BEGIN` | Use `HHMM` notation to start a blackout period where no backups occur eg `0420`                                                                |         |
-| `DB01_BACKUP_BLACKOUT_END`   | Use `HHMM` notation to set the end period where no backups occur eg `0430`                                                                     |         |
+| `DB01_BLACKOUT_BEGIN`        | Use `HHMM` notation to start a blackout period where no backups occur eg `0420`                                                                |         |
+| `DB01_BLACKOUT_END`          | Use `HHMM` notation to set the end period where no backups occur eg `0430`                                                                     |         |
 
 ##### Specific Database Options
 
@@ -527,7 +527,6 @@ Encryption will occur after compression and the resulting filename will have a `
 > You may use `DB_NAME=ALL` to backup the entire set of databases.
 > For `DB_HOST` use syntax of `http(s)://db-name`
 
-
 ###### MariaDB/MySQL
 
 | Variable                        | Description                                                                                               | Default                   | `_FILE` |
@@ -537,7 +536,7 @@ Encryption will occur after compression and the resulting filename will have a `
 | `DB01_EXTRA_ENUMERATION_OPTS`   | Pass extra arguments to the database enumeration command only, add them here e.g. `--extra-command`       |                           |         |
 | `DB01_NAME`                     | Schema Name e.g. `database` or `ALL` to backup all databases the user has access to.                      |                           |         |
 |                                 | Backup multiple by separating with commas eg `db1,db2`                                                    |                           | x       |
-| `DB01_NAME_EXCLUDE`             | If using `ALL` - use this as to exclude databases separated via commas from being backed up               |                           | x       |
+| `DB01_NAME_EXCLUDE`             | If using `ALL` - use this to exclude databases separated via commas from being backed up                  |                           | x       |
 | `DB01_SPLIT_DB`                 | If using `ALL` - use this to split each database into its own file as opposed to one singular file        | `FALSE`                   |         |
 | `DB01_PORT`                     | MySQL / MariaDB Port                                                                                      | `3306`                    | x       |
 | `DB01_MYSQL_EVENTS`             | Backup Events for                                                                                         | `TRUE`                    |         |
@@ -551,13 +550,12 @@ Encryption will occur after compression and the resulting filename will have a `
 | `DB01_MYSQL_TLS_CERT_FILE`      | Filename to load client certificate for connecting via TLS                                                |                           | x       |
 | `DB01_MYSQL_TLS_KEY_FILE`       | Filename to load client key for connecting via TLS                                                        |                           | x       |
 
-
 ###### Microsoft SQL
 
 | Variable          | Description                             | Default    | `_FILE` |
 | ----------------- | --------------------------------------- | ---------- | ------- |
 | `DB01_PORT`       | Microsoft SQL Port                      | `1433`     | x       |
-| `DB01_MSSQL_MODE` | Backup `DATABASE` or `TRANSACTION` logs | `DATABASE` |
+| `DB01_MSSQL_MODE` | Backup `DATABASE` or `TRANSACTION` logs | `DATABASE` |         |
 
 ###### MongoDB
 
@@ -574,7 +572,7 @@ Encryption will occur after compression and the resulting filename will have a `
 | Variable                      | Description                                                                                               | Default | `_FILE` |
 | ----------------------------- | --------------------------------------------------------------------------------------------------------- | ------- | ------- |
 | `DB01_AUTH`                   | (Optional) Authentication Database                                                                        |         |         |
-| `DB01_BACKUP_GLOBALS`         | Backup Globals after backing up database (forces `TRUE` if `_NAME=ALL``)                                  | `FALSE` |         |
+| `DB01_BACKUP_GLOBALS`         | Backup Globals after backing up database (forces `TRUE` if `_NAME=ALL`)                                   | `FALSE` |         |
 | `DB01_EXTRA_OPTS`             | Pass extra arguments to the backup and database enumeration command, add them here e.g. `--extra-command` |         |         |
 | `DB01_EXTRA_BACKUP_OPTS`      | Pass extra arguments to the backup command only, add them here e.g. `--extra-command`                     |         |         |
 | `DB01_EXTRA_ENUMERATION_OPTS` | Pass extra arguments to the database enumeration command only, add them here e.g. `--extra-command`       |         |         |
@@ -603,7 +601,7 @@ Options that are related to the value of `DB01_BACKUP_LOCATION`
 
 ###### Filesystem
 
-If `DB01_BACKUP_LOCTION` = `FILESYSTEM` then the following options are used:
+If `DB01_BACKUP_LOCATION` = `FILESYSTEM` then the following options are used:
 
 | Variable                          | Description                                                                                           | Default                            |
 | --------------------------------- | ----------------------------------------------------------------------------------------------------- | ---------------------------------- |
@@ -635,7 +633,7 @@ If `DB01_BACKUP_LOCATION` = `S3` then the following options are used:
 
 ###### Azure
 
-If `DB01_BACKUP_LOCATION` = `blobxfer` then the following options are used:.
+If `DB01_BACKUP_LOCATION` = `blobxfer` then the following options are used:
 
 | Parameter                              | Description                                                         | Default             | `_FILE` |
 | -------------------------------------- | ------------------------------------------------------------------- | ------------------- | ------- |
@@ -647,7 +645,7 @@ If `DB01_BACKUP_LOCATION` = `blobxfer` then the following options are used:.
 - When `DEFAULT_BLOBXFER_MODE` is set to auto it will use blob containers by default. If the `DEFAULT_BLOBXFER_REMOTE_PATH` path does not exist a blob container with that name will be created.
 
 > This service uploads files from backup directory `DB01_BACKUP_FILESYSTEM_PATH`.
-> If the a cleanup configuration in `DB01_CLEANUP_TIME` is defined, the remote directory on Azure storage will also be cleaned automatically.
+> If a cleanup configuration in `DB01_CLEANUP_TIME` is defined, the remote directory on Azure storage will also be cleaned automatically.
 
 ##### Hooks
 
@@ -671,15 +669,17 @@ $ cat pre-script.sh
 # #### Example Pre Script
 # #### $1=DB01_TYPE (Type of Backup)
 # #### $2=DB01_HOST (Backup Host)
-# #### $3=DB01_NAME (Name of Database backed up
+# #### $3=DB01_NAME (Name of Database backed up)
 # #### $4=BACKUP START TIME (Seconds since Epoch)
 # #### $5=BACKUP FILENAME (Filename)
 
 echo "${1} Backup Starting on ${2} for ${3} at ${4}. Filename: ${5}"
 ```
 
-    ## script DB01_TYPE DB01_HOST DB01_NAME STARTEPOCH BACKUP_FILENAME
-    ${f} "${backup_job_db_type}" "${backup_job_db_host}" "${backup_job_db_name}" "${backup_routines_start_time}" "${backup_job_filename}"
+```text
+## script DB01_TYPE DB01_HOST DB01_NAME STARTEPOCH BACKUP_FILENAME
+${f} "${backup_job_db_type}" "${backup_job_db_host}" "${backup_job_db_name}" "${backup_routines_start_time}" "${backup_job_filename}"
+```
 
 Outputs the following on the console:
 
@@ -687,7 +687,7 @@ Outputs the following on the console:
 
 ###### Post backup
 
-If you want to execute a custom script at the end of a backup, you can drop bash scripts with the extension of `.sh` in the location defined in `DB01_SCRIPT_LOCATION_POST`. Also to support legacy users `/assets/custom-scripts` is also scanned and executed.See the following example to utilize:
+If you want to execute a custom script at the end of a backup, you can drop bash scripts with the extension of `.sh` in the location defined in `DB01_SCRIPT_LOCATION_POST`. Also to support legacy users `/assets/custom-scripts` is also scanned and executed. See the following example to utilize:
 
 ```bash
 $ cat post-script.sh
@@ -697,7 +697,7 @@ $ cat post-script.sh
 # #### $1=EXIT_CODE (After running backup routine)
 # #### $2=DB_TYPE (Type of Backup)
 # #### $3=DB_HOST (Backup Host)
-# #### #4=DB_NAME (Name of Database backed up
+# #### $4=DB_NAME (Name of Database backed up)
 # #### $5=BACKUP START TIME (Seconds since Epoch)
 # #### $6=BACKUP FINISH TIME (Seconds since Epoch)
 # #### $7=BACKUP TOTAL TIME (Seconds between Start and Finish)
@@ -709,8 +709,10 @@ $ cat post-script.sh
 echo "${1} ${2} Backup Completed on ${3} for ${4} on ${5} ending ${6} for a duration of ${7} seconds. Filename: ${8} Size: ${9} bytes MD5: ${10}"
 ```
 
-      ## script EXIT_CODE DB_TYPE DB_HOST DB_NAME STARTEPOCH FINISHEPOCH DURATIONEPOCH BACKUP_FILENAME FILESIZE CHECKSUMVALUE
-      ${f} "${exit_code}" "${dbtype}" "${dbhost}" "${dbname}" "${backup_routines_start_time}" "${backup_routines_finish_time}" "${backup_routines_total_time}" "${backup_job_filename}" "${filesize}" "${checksum_value}" "${move_exit_code}
+```text
+## script EXIT_CODE DB_TYPE DB_HOST DB_NAME STARTEPOCH FINISHEPOCH DURATIONEPOCH BACKUP_FILENAME FILESIZE CHECKSUMVALUE
+${f} "${exit_code}" "${dbtype}" "${dbhost}" "${dbname}" "${backup_routines_start_time}" "${backup_routines_finish_time}" "${backup_routines_total_time}" "${backup_job_filename}" "${filesize}" "${checksum_value}" "${move_exit_code}
+```
 
 Outputs the following on the console:
 
@@ -721,7 +723,6 @@ If you wish to change the size value from bytes to megabytes set environment var
 You must make your scripts executable otherwise there is an internal check that will skip trying to run it otherwise.
 If for some reason your filesystem or host is not detecting it right, use the environment variable `DB01_POST_SCRIPT_SKIP_X_VERIFY=TRUE` to bypass.
 
-
 #### Notifications
 
 This image has capabilities on sending notifications via a handful of services when a backup job fails. This is a global option that cannot be individually set per backup job.
@@ -729,13 +730,13 @@ This image has capabilities on sending notifications via a handful of services w
 | Parameter              | Description                                                                       | Default |
 | ---------------------- | --------------------------------------------------------------------------------- | ------- |
 | `ENABLE_NOTIFICATIONS` | Enable Notifications                                                              | `FALSE` |
-| `NOTIFICATION_TYPE`    | `CUSTOM` `EMAIL` `MATRIX` `MATTERMOST` `ROCKETCHAT` - Seperate Multiple by commas |         |
+| `NOTIFICATION_TYPE`    | `CUSTOM` `EMAIL` `MATRIX` `MATTERMOST` `ROCKETCHAT` - Separate Multiple by commas |         |
 
 ##### Custom Notifications
 
 The following is sent to the custom script. Use how you wish:
 
-````
+````text
 $1 unix timestamp
 $2 logfile
 $3 errorcode
@@ -747,7 +748,6 @@ $5 body/error message
 | ---------------------------- | ------------------------------------------------------- | ------- |
 | `NOTIFICATION_CUSTOM_SCRIPT` | Path and name of custom script to execute notification. |         |
 
-
 ##### Email Notifications
 
 See more details in the base image listed above for more mail environment variables.
@@ -755,7 +755,7 @@ See more details in the base image listed above for more mail environment variab
 | Parameter   | Description                                                                               | Default | `_FILE` |
 | ----------- | ----------------------------------------------------------------------------------------- | ------- | ------- |
 | `MAIL_FROM` | What email address to send mail from for errors                                           |         |         |
-| `MAIL_TO`   | What email address to send mail to for errors. Send to multiple by seperating with comma. |         |         |
+| `MAIL_TO`   | What email address to send mail to for errors. Send to multiple by separating with comma. |         |         |
 | `SMTP_HOST` | What SMTP server to use for sending mail                                                  |         | x       |
 | `SMTP_PORT` | What SMTP port to use for sending mail                                                    |         | x       |
 
@@ -763,45 +763,47 @@ See more details in the base image listed above for more mail environment variab
 
 Fetch a `MATRIX_ACCESS_TOKEN`:
 
-````
+````bash
 curl -XPOST -d '{"type":"m.login.password", "user":"myuserid", "password":"mypass"}' "https://matrix.org/_matrix/client/r0/login"
 ````
 
 Copy the JSON response `access_token` that will look something like this:
 
-````
+````json
 {"access_token":"MDAxO...blahblah","refresh_token":"MDAxO...blahblah","home_server":"matrix.org","user_id":"@myuserid:matrix.org"}
 ````
 
 | Parameter             | Description                                                                              | Default | `_FILE` |
 | --------------------- | ---------------------------------------------------------------------------------------- | ------- | ------- |
-| `MATRIX_HOST`         | URL (https://matrix.example.com) of Matrix Homeserver                                    |         | x       |
-| `MATRIX_ROOM`         | Room ID eg `\!abcdef:example.com` to send to. Send to multiple by seperating with comma. |         | x       |
+| `MATRIX_HOST`         | URL (<https://matrix.example.com>) of Matrix Homeserver                                  |         | x       |
+| `MATRIX_ROOM`         | Room ID eg `\!abcdef:example.com` to send to. Send to multiple by separating with comma. |         | x       |
 | `MATRIX_ACCESS_TOKEN` | Access token of user authorized to send to room                                          |         | x       |
 
 ##### Mattermost Notifications
+
 | Parameter                | Description                                                                                  | Default | `_FILE` |
 | ------------------------ | -------------------------------------------------------------------------------------------- | ------- | ------- |
 | `MATTERMOST_WEBHOOK_URL` | Full URL to send webhook notifications to                                                    |         | x       |
-| `MATTERMOST_RECIPIENT`   | Channel or User to send Webhook notifications to. Send to multiple by seperating with comma. |         | x       |
+| `MATTERMOST_RECIPIENT`   | Channel or User to send Webhook notifications to. Send to multiple by separating with comma. |         | x       |
 | `MATTERMOST_USERNAME`    | Username to send as eg `tiredofit`                                                           |         | x       |
 
 ##### Rocketchat Notifications
+
 | Parameter                | Description                                                                                  | Default | `_FILE` |
 | ------------------------ | -------------------------------------------------------------------------------------------- | ------- | ------- |
 | `ROCKETCHAT_WEBHOOK_URL` | Full URL to send webhook notifications to                                                    |         | x       |
-| `ROCKETCHAT_RECIPIENT`   | Channel or User to send Webhook notifications to. Send to multiple by seperating with comma. |         | x       |
+| `ROCKETCHAT_RECIPIENT`   | Channel or User to send Webhook notifications to. Send to multiple by separating with comma. |         | x       |
 | `ROCKETCHAT_USERNAME`    | Username to send as eg `tiredofit`                                                           |         | x       |
 
 ## Maintenance
 
 ### Shell Access
 
-For debugging and maintenance purposes you may want access the containers shell.
+For debugging and maintenance purposes you may want to access the container's shell.
 
-`bash
+```bash
 docker exec -it (whatever your container name is) bash
-`
+```
 
 ### Manual Backups
 
@@ -826,13 +828,13 @@ You will be presented with a series of menus allowing you to choose:
 The image will try to do auto detection based on the filename for the type, hostname, and database name.
 The image will also allow you to use environment variables or Docker secrets used to backup the images
 
-The script can also be executed skipping the interactive mode by using the following syntax/
+The script can also be executed skipping the interactive mode by using the following syntax:
 
-    `restore <filename> <db_type> <db_hostname> <db_name> <db_user> <db_pass> <db_port>`
+```text
+restore <filename> <db_type> <db_hostname> <db_name> <db_user> <db_pass> <db_port>
+```
 
 If you only enter some of the arguments you will be prompted to fill them in.
-
-
 
 ## Support
 
