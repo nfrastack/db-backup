@@ -1,4 +1,4 @@
-# nfrastack/container-db-backup
+# nfrastack/db-backup
 
 ## About
 
