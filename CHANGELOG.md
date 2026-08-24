@@ -1,3 +1,9 @@
+## 4.9.2 2026-08-24 <code at nfrastack dot com>
+
+   ### Changed
+      - Fix MSSQL libraries not getting installed
+
+
 ## 4.9.1 2026-08-06 <code at nfrastack dot com>
 
    ### Changed

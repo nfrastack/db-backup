@@ -22,7 +22,7 @@ ARG \
     INFLUX1_CLIENT_VERSION=1.8.0 \
     INFLUX2_CLIENT_VERSION=2.7.5 \
     MSODBC_VERSION=18.6.1.1-1 \
-    MSSQL_VERSION=118.6.1.1-1 \
+    MSSQL_VERSION=18.6.1.1-1 \
     MYSQL_VERSION=mysql-9.7.2 \
     MYSQL_REPO_URL=https://github.com/mysql/mysql-server
 
