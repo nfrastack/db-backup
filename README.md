@@ -764,7 +764,7 @@ See more details in the base image listed above for more mail environment variab
 Fetch a `MATRIX_ACCESS_TOKEN`:
 
 ````
-curl -XPOST -d '{"type":"m.login.password", "user":"myuserid", "password":"mypass"}' "https://matrix.org/_matrix/client/r0/login"
+curl -XPOST -H 'Content-Type: application/json' -d '{"type":"m.login.password", "user":"myuserid", "password":"mypass"}' "https://matrix.org/_matrix/client/r0/login"
 ````
 
 Copy the JSON response `access_token` that will look something like this:
