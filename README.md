@@ -1,40 +1,26 @@
-# github.com/tiredofit/docker-db-backup
-
-[![GitHub release](https://img.shields.io/github/v/tag/tiredofit/docker-db-backup?style=flat-square)](https://github.com/tiredofit/docker-db-backup/releases/latest)
-[![Build Status](https://img.shields.io/github/actions/workflow/status/tiredofit/docker-db-backup/main.yml?branch=main&style=flat-square)](https://github.com/tiredofit/docker-db-backup/actions)
-[![Docker Stars](https://img.shields.io/docker/stars/tiredofit/db-backup.svg?style=flat-square&logo=docker)](https://hub.docker.com/r/tiredofit/db-backup/)
-[![Docker Pulls](https://img.shields.io/docker/pulls/tiredofit/db-backup.svg?style=flat-square&logo=docker)](https://hub.docker.com/r/tiredofit/db-backup/)
-[![Become a sponsor](https://img.shields.io/badge/sponsor-tiredofit-181717.svg?logo=github&style=flat-square)](https://www.tiredofit.ca/sponsor)
-[![Paypal Donate](https://img.shields.io/badge/donate-paypal-00457c.svg?logo=paypal&style=flat-square)](https://www.paypal.me/tiredofit)
-
----
+# nfrastack/db-backup
 
 ## About
 
-This will build a container for backing up multiple types of DB Servers
+Backup multiple types of database servers on a scheduled basis with many customizable options.
 
-Backs up CouchDB, InfluxDB, MySQL/MariaDB, Microsoft SQL, MongoDB, Postgres, Redis servers.
-
-- dump to local filesystem or backup to S3 Compatible services, and Azure.
-- multiple backup job support
-  - selectable when to start the first dump, whether time of day or relative to container start time
-  - selectable interval
-  - selectable omit scheduling during periods of time
-  - selectable database user and password
-  - selectable cleanup and archive capabilities
-  - selectable database name support - all databases, single, or multiple databases
-  - backup all to separate files or one singular file
-- checksum support choose to have an MD5 or SHA1 hash generated after backup for verification
-- compression support (none, gz, bz, xz, zstd)
-- encryption support (passphrase and public key)
-- notify upon job failure to email, matrix, mattermost, rocketchat, custom script
-- zabbix metrics support
-- hooks to execute pre and post backup job for customization purposes
-- companion script to aid in restores
+* CouchDB, InfluxDB, MySQL/MariaDB, Microsoft SQL, MongoDB, Postgres, Redis, SQLite3 support
+* Dump to local filesystem or backup to S3 Compatible services, and Azure
+* Multiple backup job support (DB01, DB02, DB03) - Up to DB99 for supporters. 
+* Flexible scheduling (interval, cron, HHMM, datetime)
+* Blackout periods to skip backups during certain hours
+* Per-job credentials, storage targets, compression, encryption
+* Checksum support (MD5, SHA1)
+* Compression support (none, gzip, bzip2, xz, zstd)
+* GPG encryption (passphrase or public key)
+* Notification on failure (email, Matrix, Mattermost, Rocket.Chat, custom script)
+* Zabbix monitoring metrics
+* Pre/post backup hook scripts
+* Interactive and CLI restore tool
 
 ## Maintainer
 
-- [Dave Conroy](https://github.com/tiredofit)
+- [Nfrastack](https://www.nfrastack.com)
 
 ## Table of Contents
 
@@ -118,31 +104,37 @@ Backs up CouchDB, InfluxDB, MySQL/MariaDB, Microsoft SQL, MongoDB, Postgres, Red
 
 ### Build from Source
 
-Clone this repository and build the image with `docker build <arguments> (imagename) .`
+This image relies on a customized base image in order to work.
+
+```bash
+docker build \
+  --build-arg BASE_IMAGE=ghcr.io/nfrastack/container-base:latest \
+  -t container-db-backup:test \
+  .
+```
 
 ### Prebuilt Images
 
-Builds of the image are available on [Docker Hub](https://hub.docker.com/r/tiredofit/db-backup)
+Feature limited builds of the image are available on the [Github Container Registry](https://github.com/nfrastack/container-db-backup/pkgs/container/container-db-backup) and [Docker Hub](https://hub.docker.com/r/nfrastack/db-backup).
 
-Builds of the image are also available on the [Github Container Registry](https://github.com/tiredofit/docker-db-backup/pkgs/container/docker-db-backup)
+To unlock advanced features, one must provide a code to be able to change specific environment variables from defaults. Support the development to gain access to a code.
 
-```bash
-docker pull ghcr.io/tiredofit/docker-db-backup:(imagetag)
+To get access to the image use your container orchestrator to pull from the following locations:
+
+```
+ghcr.io/nfrastack/container-db-backup:(image_tag)
+docker.io/nfrastack/db-backup:(image_tag)
 ```
 
-The following image tags are available along with their tagged release based on what's written in the [Changelog](CHANGELOG.md):
+The following image tags are available:
 
-| Alpine Base | Tag       |
-| ----------- | --------- |
-| latest      | `:latest` |
-
-```bash
-docker pull docker.io/tiredofit/db-backup:(imagetag)
-```
+| Base      | Tag       |
+| --------- | --------- |
+| Alpine    | `:latest` |
 
 #### Multi Architecture
 
-Images are built primarily for `amd64` architecture, and may also include builds for `arm/v7`, `arm64` and others. These variants are all unsupported. Consider [sponsoring](https://www.tiredofit.ca/sponsor) my work so that I can work with various hardware. To see if this image supports multiple architectures, type `docker manifest (image):(tag)`
+Images are built for `amd64` by default, with optional support for `arm64` and other architectures.
 
 ## Configuration
 
@@ -167,13 +159,16 @@ The following directories are used for configuration and can be mapped for persi
 
 #### Base Images used
 
-This image relies on an [Alpine Linux](https://hub.docker.com/r/tiredofit/alpine) base image that relies on an [init system](https://github.com/just-containers/s6-overlay) for added capabilities. Outgoing SMTP capabilities are handled via `msmtp`. Individual container performance monitoring is performed by [zabbix-agent](https://zabbix.org). Additional tools include: `bash`,`curl`,`less`,`logrotate`, `nano`.
-
+This image relies on a customized base image in order to work.
 Be sure to view the following repositories to understand all the customizable options:
 
-| Image                                                  | Description                            |
-| ------------------------------------------------------ | -------------------------------------- |
-| [OS Base](https://github.com/tiredofit/docker-alpine/) | Customized Image based on Alpine Linux |
+| Image                                                   | Description |
+| ------------------------------------------------------- | ----------- |
+| [OS Base](https://github.com/nfrastack/container-base/) | Base Image  |
+
+Below is the complete list of available options that can be used to customize your installation.
+
+- Variables showing an `x` under the `Adv.` column can only be set if the containers advanced functionality is enabled.
 
 #### Container Options
 
@@ -214,12 +209,13 @@ If these are set and no other defaults or variables are set explicitly, they wil
 
 Encryption occurs after compression and the encrypted filename will have a `.gpg` suffix
 
-| Variable                     | Description                                 | Default |
-| ---------------------------- | ------------------------------------------- | ------- |
-| `DEFAULT_ENCRYPT`            | Encrypt file after backing up with GPG      | `FALSE` |
-| `DEFAULT_ENCRYPT_PASSPHRASE` | Passphrase to encrypt file with GPG         |         |
-| *or*                         |                                             |         |
-| `DEFAULT_ENCRYPT_PUBKEY`     | Path of public key to encrypt file with GPG |         |
+| Variable                      | Description                                  | Default | `_FILE` |
+| ----------------------------- | -------------------------------------------- | ------- | ------- |
+| `DEFAULT_ENCRYPT`             | Encrypt file after backing up with GPG       | `FALSE` |         |
+| `DEFAULT_ENCRYPT_PASSPHRASE`  | Passphrase to encrypt file with GPG          |         | x       |
+| *or*                          |                                              |         |         |
+| `DEFAULT_ENCRYPT_PUBLIC_KEY`  | Path of public key to encrypt file with GPG  |         | x       |
+| `DEFAULT_ENCRYPT_PRIVATE_KEY` | Path of private key to encrypt file with GPG |         | x       |
 
 ##### Scheduling Options
 
@@ -266,6 +262,7 @@ Encryption occurs after compression and the encrypted filename will have a `.gpg
 | `DEFAULT_EXTRA_BACKUP_OPTS`        | Pass extra arguments to the backup command only, add them here e.g. `--extra-command`                     |                           |         |
 | `DEFAULT_EXTRA_ENUMERATION_OPTS`   | Pass extra arguments to the database enumeration command only, add them here e.g. `--extra-command`       |                           |         |
 | `DEFAULT_EXTRA_OPTS`               | Pass extra arguments to the backup and database enumeration command, add them here e.g. `--extra-command` |                           |         |
+| `DEFAULT_MYSQL_CLIENT`             | Choose between `mariadb` or `mysql` client to perform dump operations for compatibility purposes          | `mariadb`                 |         |
 | `DEFAULT_MYSQL_EVENTS`             | Backup Events                                                                                             | `TRUE`                    |         |
 | `DEFAULT_MYSQL_MAX_ALLOWED_PACKET` | Max allowed packet                                                                                        | `512M`                    |         |
 | `DEFAULT_MYSQL_SINGLE_TRANSACTION` | Backup in a single transaction                                                                            | `TRUE`                    |         |
@@ -322,12 +319,13 @@ Options that are related to the value of `DEFAULT_BACKUP_LOCATION`
 
 If `DEFAULT_BACKUP_LOCTION` = `FILESYSTEM` then the following options are used:
 
-| Variable                          | Description                                                                                           | Default                               |
-| --------------------------------- | ----------------------------------------------------------------------------------------------------- | ------------------------------------- |
-| `DEFAULT_CREATE_LATEST_SYMLINK`   | Create a symbolic link pointing to last backup in this format: `latest-(DB_TYPE)-(DB_NAME)-(DB_HOST)` | `TRUE`                                |
-| `DEFAULT_FILESYSTEM_PATH`         | Directory where the database dumps are kept.                                                          | `/backup`                             |
-| `DEFAULT_FILESYSTEM_ARCHIVE_PATH` | Optional Directory where the database dumps archives are kept                                         | `${DEFAULT_FILESYSTEM_PATH}/archive/` |
-| `DEFAULT_FILESYSTEM_PERMISSION`   | Directory and File permissions to apply to files.                                                     | `700`                                 |
+| Variable                             | Description                                                                                           | Default                               |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------- | ------------------------------------- |
+| `DEFAULT_CREATE_LATEST_SYMLINK`      | Create a symbolic link pointing to last backup in this format: `latest-(DB_TYPE)_(DB_NAME)_(DB_HOST)` | `TRUE`                                |
+| `DEFAULT_FILESYSTEM_PATH`            | Directory where the database dumps are kept.                                                          | `/backup`                             |
+| `DEFAULT_FILESYSTEM_PATH_PERMISSION` | Permissions to apply to backup directory                                                              | `700`                                 |
+| `DEFAULT_FILESYSTEM_ARCHIVE_PATH`    | Optional Directory where the database dumps archives are kept                                         | `${DEFAULT_FILESYSTEM_PATH}/archive/` |
+| `DEFAULT_FILESYSTEM_PERMISSION`      | Permissions to apply to files.                                                                        | `600`                                 |
 
 ###### S3
 
@@ -353,11 +351,14 @@ If `DEFAULT_BACKUP_LOCATION` = `S3` then the following options are used:
 
 If `DEFAULT_BACKUP_LOCATION` = `blobxfer` then the following options are used:.
 
-| Parameter                              | Description                                 | Default             | `_FILE` |
-| -------------------------------------- | ------------------------------------------- | ------------------- | ------- |
-| `DEFAULT_BLOBXFER_STORAGE_ACCOUNT`     | Microsoft Azure Cloud storage account name. |                     | x       |
-| `DEFAULT_BLOBXFER_STORAGE_ACCOUNT_KEY` | Microsoft Azure Cloud storage account key.  |                     | x       |
-| `DEFAULT_BLOBXFER_REMOTE_PATH`         | Remote Azure path                           | `/docker-db-backup` | x       |
+| Parameter                              | Description                                                         | Default             | `_FILE` |
+| -------------------------------------- | ------------------------------------------------------------------- | ------------------- | ------- |
+| `DEFAULT_BLOBXFER_STORAGE_ACCOUNT`     | Microsoft Azure Cloud storage account name.                         |                     | x       |
+| `DEFAULT_BLOBXFER_STORAGE_ACCOUNT_KEY` | Microsoft Azure Cloud storage account key.                          |                     | x       |
+| `DEFAULT_BLOBXFER_REMOTE_PATH`         | Remote Azure path                                                   | `/docker-db-backup` | x       |
+| `DEFAULT_BLOBXFER_MODE`                | Azure Storage mode e.g. `auto`, `file`, `append`, `block` or `page` | `auto`              | x       |
+
+- When `DEFAULT_BLOBXFER_MODE` is set to auto it will use blob containers by default. If the `DEFAULT_BLOBXFER_REMOTE_PATH` path does not exist a blob container with that name will be created.
 
 > This service uploads files from backup targed directory `DEFAULT_FILESYSTEM_PATH`.
 > If the a cleanup configuration in `DEFAULT_CLEANUP_TIME` is defined, the remote directory on Azure storage will also be cleaned automatically.
@@ -438,15 +439,18 @@ If for some reason your filesystem or host is not detecting it right, use the en
 #### Job Backup Options
 
 If `DEFAULT_` variables are set and you do not wish for the settings to carry over into your jobs, you can set the appropriate environment variable with the value of `unset`.
-Otherwise, override them per backup job. Additional backup jobs can be scheduled by using `DB02_`,`DB03_`,`DB04_` ... prefixes. See [Specific Database Options](#specific-database-options) which may overrule this list.
+Otherwise, override them per backup job. Additional backup jobs can be scheduled by using `DB02_`,`DB03_`,`DB04_` ... prefixes. 
 
-| Parameter   | Description                                                                                    | Default | `_FILE` |
-| ----------- | ---------------------------------------------------------------------------------------------- | ------- | ------- |
-| `DB01_TYPE` | Type of DB Server to backup `couch` `influx` `mysql` `mssql` `pgsql` `mongo` `redis` `sqlite3` |         |         |
-| `DB01_HOST` | Server Hostname e.g. `mariadb`. For `sqlite3`, full path to DB file e.g. `/backup/db.sqlite3`  |         | x       |
-| `DB01_NAME` | Schema Name e.g. `database`                                                                    |         | x       |
-| `DB01_USER` | username for the database(s) - Can use `root` for MySQL                                        |         | x       |
-| `DB01_PASS` | (optional if DB doesn't require it) password for the database                                  |         | x       |
+A limit of 3 can be created when not in advanced mode. 
+
+
+| Parameter   | Description                                                                                    | Default | `_FILE` | Adv. |
+| ----------- | ---------------------------------------------------------------------------------------------- | ------- | ------- | ---- |
+| `DB01_TYPE` | Type of DB Server to backup `couch` `influx` `mysql` `mssql` `pgsql` `mongo` `redis` `sqlite3` |         |         |      |
+| `DB01_HOST` | Server Hostname e.g. `mariadb`. For `sqlite3`, full path to DB file e.g. `/backup/db.sqlite3`  |         | x       |      |
+| `DB01_NAME` | Schema Name e.g. `database`                                                                    |         | x       |      |
+| `DB01_USER` | username for the database(s) - Can use `root` for MySQL                                        |         | x       |      |
+| `DB01_PASS` | (optional if DB doesn't require it) password for the database                                  |         | x       |      | |
 
 
 | Variable                       | Description                                                                                               | Default      |
@@ -475,12 +479,14 @@ Otherwise, override them per backup job. Additional backup jobs can be scheduled
 
 Encryption will occur after compression and the resulting filename will have a `.gpg` suffix
 
-| Variable                  | Description                                 | Default |
-| ------------------------- | ------------------------------------------- | ------- |
-| `DB01_ENCRYPT`            | Encrypt file after backing up with GPG      | `FALSE` |
-| `DB01_ENCRYPT_PASSPHRASE` | Passphrase to encrypt file with GPG         |         |
-| *or*                      |                                             |         |
-| `DB01_ENCRYPT_PUBKEY`     | Path of public key to encrypt file with GPG |         |
+
+| Variable                   | Description                                  | Default | `_FILE` |
+| -------------------------- | -------------------------------------------- | ------- | ------- |
+| `DB01_ENCRYPT`             | Encrypt file after backing up with GPG       | `FALSE` |         |
+| `DB01_ENCRYPT_PASSPHRASE`  | Passphrase to encrypt file with GPG          |         | x       |
+| *or*                       |                                              |         |         |
+| `DB01_ENCRYPT_PUBLIC_KEY`  | Path of public key to encrypt file with GPG  |         | x       |
+| `DB01_ENCRYPT_PRIVATE_KEY` | Path of private key to encrypt file with GPG |         | x       |
 
 ##### Scheduling Options
 
@@ -492,7 +498,7 @@ Encryption will occur after compression and the resulting filename will have a `
 |                              | Absolute HHMM, e.g. `2330` or `0415`                                                                                                           |         |
 |                              | Relative +MM, i.e. how many minutes after starting the container, e.g. `+0` (immediate), `+10` (in 10 minutes), or `+90` in an hour and a half |         |
 |                              | Full datestamp e.g. `2023-12-21 23:30:00`                                                                                                      |         |
-|                              | Cron expression e.g. `30 23 * * *`  [Understand the format](https://en.wikipedia.org/wiki/Cron) - *BACKUP_INTERVAL is ignored*              |         |
+|                              | Cron expression e.g. `30 23 * * *`  [Understand the format](https://en.wikipedia.org/wiki/Cron) - *BACKUP_INTERVAL is ignored*                 |         |
 | `DB01_CLEANUP_TIME`          | Value in minutes to delete old backups (only fired when backup interval executes)                                                              | `FALSE` |
 |                              | 1440 would delete anything above 1 day old. You don't need to set this variable if you want to hold onto everything.                           |         |
 | `DB01_ARCHIVE_TIME`          | Value in minutes to move all files files older than (x) from `DB01_BACKUP_FILESYSTEM_PATH`                                                     |         |
@@ -532,6 +538,7 @@ Encryption will occur after compression and the resulting filename will have a `
 | `DB01_NAME`                     | Schema Name e.g. `database` or `ALL` to backup all databases the user has access to.                      |                           |         |
 |                                 | Backup multiple by separating with commas eg `db1,db2`                                                    |                           | x       |
 | `DB01_NAME_EXCLUDE`             | If using `ALL` - use this as to exclude databases separated via commas from being backed up               |                           | x       |
+| `DB01_SPLIT_DB`                 | If using `ALL` - use this to split each database into its own file as opposed to one singular file        | `FALSE`                   |         |
 | `DB01_PORT`                     | MySQL / MariaDB Port                                                                                      | `3306`                    | x       |
 | `DB01_MYSQL_EVENTS`             | Backup Events for                                                                                         | `TRUE`                    |         |
 | `DB01_MYSQL_MAX_ALLOWED_PACKET` | Max allowed packet                                                                                        | `512M`                    |         |
@@ -573,6 +580,7 @@ Encryption will occur after compression and the resulting filename will have a `
 | `DB01_EXTRA_ENUMERATION_OPTS` | Pass extra arguments to the database enumeration command only, add them here e.g. `--extra-command`       |         |         |
 | `DB01_NAME`                   | Schema Name e.g. `database` or `ALL` to backup all databases the user has access to.                      |         |         |
 |                               | Backup multiple by separating with commas eg `db1,db2`                                                    |         | x       |
+| `DB01_SPLIT_DB`               | If using `ALL` - use this to split each database into its own file as opposed to one singular file        | `FALSE` |         |
 | `DB01_PORT`                   | PostgreSQL Port                                                                                           | `5432`  | x       |
 
 ###### Redis
@@ -597,12 +605,13 @@ Options that are related to the value of `DB01_BACKUP_LOCATION`
 
 If `DB01_BACKUP_LOCTION` = `FILESYSTEM` then the following options are used:
 
-| Variable                       | Description                                                                                           | Default                           |
-| ------------------------------ | ----------------------------------------------------------------------------------------------------- | --------------------------------- |
-| `DB01_CREATE_LATEST_SYMLINK`   | Create a symbolic link pointing to last backup in this format: `latest-(DB_TYPE)-(DB_NAME)-(DB_HOST)` | `TRUE`                            |
-| `DB01_FILESYSTEM_PATH`         | Directory where the database dumps are kept.                                                          | `/backup`                         |
-| `DB01_FILESYSTEM_ARCHIVE_PATH` | Optional Directory where the database dumps archives are kept                                         | `${DB01_FILESYSTEM_PATH/archive/` |
-| `DB01_FILESYSTEM_PERMISSION`   | Directory and File permissions to apply to files.                                                     | `700`                             |
+| Variable                          | Description                                                                                           | Default                            |
+| --------------------------------- | ----------------------------------------------------------------------------------------------------- | ---------------------------------- |
+| `DB01_CREATE_LATEST_SYMLINK`      | Create a symbolic link pointing to last backup in this format: `latest-(DB_TYPE)-(DB_NAME)-(DB_HOST)` | `TRUE`                             |
+| `DB01_FILESYSTEM_PATH`            | Directory where the database dumps are kept.                                                          | `/backup`                          |
+| `DB01_FILESYSTEM_PATH_PERMISSION` | Permissions to apply to backup directory                                                              | `700`                              |
+| `DB01_FILESYSTEM_ARCHIVE_PATH`    | Optional Directory where the database dumps archives are kept                                         | `${DB01_FILESYSTEM_PATH}/archive/` |
+| `DB01_FILESYSTEM_PERMISSION`      | Directory and File permissions to apply to files.                                                     | `600`                              |
 
 ###### S3
 
@@ -628,11 +637,14 @@ If `DB01_BACKUP_LOCATION` = `S3` then the following options are used:
 
 If `DB01_BACKUP_LOCATION` = `blobxfer` then the following options are used:.
 
-| Parameter                           | Description                                 | Default             | `_FILE` |
-| ----------------------------------- | ------------------------------------------- | ------------------- | ------- |
-| `DB01_BLOBXFER_STORAGE_ACCOUNT`     | Microsoft Azure Cloud storage account name. |                     | x       |
-| `DB01_BLOBXFER_STORAGE_ACCOUNT_KEY` | Microsoft Azure Cloud storage account key.  |                     | x       |
-| `DB01_BLOBXFER_REMOTE_PATH`         | Remote Azure path                           | `/docker-db-backup` | x       |
+| Parameter                              | Description                                                         | Default             | `_FILE` |
+| -------------------------------------- | ------------------------------------------------------------------- | ------------------- | ------- |
+| `DB01_BLOBXFER_STORAGE_ACCOUNT`        | Microsoft Azure Cloud storage account name.                         |                     | x       |
+| `DB01_BLOBXFER_STORAGE_ACCOUNT_KEY`    | Microsoft Azure Cloud storage account key.                          |                     | x       |
+| `DB01_BLOBXFER_REMOTE_PATH`            | Remote Azure path                                                   | `/docker-db-backup` | x       |
+| `DB01_BLOBXFER_REMOTE_MODE`            | Azure Storage mode e.g. `auto`, `file`, `append`, `block` or `page` | `auto`              | x       |
+
+- When `DEFAULT_BLOBXFER_MODE` is set to auto it will use blob containers by default. If the `DEFAULT_BLOBXFER_REMOTE_PATH` path does not exist a blob container with that name will be created.
 
 > This service uploads files from backup directory `DB01_BACKUP_FILESYSTEM_PATH`.
 > If the a cleanup configuration in `DB01_CLEANUP_TIME` is defined, the remote directory on Azure storage will also be cleaned automatically.
@@ -737,6 +749,9 @@ $5 body/error message
 
 
 ##### Email Notifications
+
+See more details in the base image listed above for more mail environment variables.
+
 | Parameter   | Description                                                                               | Default | `_FILE` |
 | ----------- | ----------------------------------------------------------------------------------------- | ------- | ------- |
 | `MAIL_FROM` | What email address to send mail from for errors                                           |         |         |
@@ -792,7 +807,7 @@ docker exec -it (whatever your container name is) bash
 
 Manual Backups can be performed by entering the container and typing `backup-now`. This will execute all the backup tasks that are scheduled by means of the `BACKUPXX_` variables. Alternatively if you wanted to execute a job on its own you could simply type `backup01-now` (or whatever your number would be). There is no concurrency, and jobs will be executed sequentially.
 
-- Recently there was a request to have the container work with Kubernetes cron scheduling. This can theoretically be accomplished by setting the container `MODE=MANUAL` and then setting `MANUAL_RUN_FOREVER=FALSE` - You would also want to disable a few features from the upstream base images specifically `CONTAINER_ENABLE_SCHEDULING` and `CONTAINER_ENABLE_MONITORING`. This should allow the container to start, execute a backup by executing and then exit cleanly. An alternative way to running the script is to execute `/etc/services.available/10-db-backup/run`.
+- For Kubernetes CronJob usage: set `MODE=MANUAL` and `MANUAL_RUN_FOREVER=FALSE`. Disable `CONTAINER_ENABLE_SCHEDULING`. The container will start, execute a backup, and exit cleanly.
 
 ### Restoring Databases
 

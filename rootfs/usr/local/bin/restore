@@ -1,9 +1,12 @@
 #!/command/with-contenv /bin/bash
+# SPDX-FileCopyrightText: © 2026 Nfrastack <code@nfrastack.com>
+#
+# SPDX-License-Identifier: MIT
 
-source /assets/functions/00-container
-source /assets/defaults/10-db-backup
-source /assets/functions/10-db-backup
-PROCESS_NAME="db-backup-restore"
+source /container/base/functions/container/init
+source /container/defaults/10-dbbackup
+source /container/functions/10-dbbackup
+SERVICE_NAME="db-backup-restore"
 
 oldcolumns=$COLUMNS
 
@@ -37,7 +40,7 @@ else
         "-h" )
             cat <<EOF
 ${IMAGE_NAME} Restore Tool ${IMAGE_VERSION}
-(c) 2023 Dave Conroy (https://github.com/tiredofit) (https://www.tiredofit.ca)
+(c) 2026 Nfrastack (https://www.nfrastack.com)
 
 This script will assist you in recovering databases taken by the Docker image.
 You will be presented with a series of menus allowing you to choose:
@@ -912,9 +915,85 @@ get_filename() {
     r_filename=${opt}
 }
 
+get_ssl() {
+    if grep -q "^DB${detected_host_num}_MYSQL_ENABLE_TLS=" "${restore_vars}" ; then
+        detected_ssl_value=$(grep "^DB${detected_host_num}_MYSQL_ENABLE_TLS=" "${restore_vars}" | head -n1 | cut -d '=' -f 2)
+    fi
+
+    if [[ -z "${detected_ssl_value}" ]]; then
+        print_debug "Parsed SSL Variant: 1 - No Env Variable Found"
+        default_ssl="false"  # Default if no env variable
+        q_ssl_variant=1
+        q_ssl_menu_opt_default="| (${cwh}N${cdgy}) * "
+        q_ssl_menu="" #No menu option
+    else
+        print_debug "Parsed SSL Variant: 2 - Env Variable DB${detected_host_num}_MYSQL_ENABLE_TLS = '${detected_ssl_value}'"
+        default_ssl="${detected_ssl_value,,}"
+        q_ssl_variant=2
+        q_ssl_menu="E ) Environment Variable DB${detected_host_num}_MYSQL_ENABLE_TLS: '${detected_ssl_value}'"
+        q_ssl_menu_opt_default="| (${cwh}E${cdgy}) * "
+    fi
+
+    cat <<EOF
+
+Do you wish to use SSL for the connection?
+${q_ssl_menu}
+
+    Y ) Yes
+    N ) No
+    Q ) Quit
+
+EOF
+
+    r_ssl=""
+    case "${q_ssl_variant}" in
+        1)  # No env variable, ask directly
+            while true; do
+                read -r -p "$(echo -e ${clg}** ${cdgy}Enter Value \(${cwh}Y${cdgy}\) \| \(${cwh}N\*${cdgy}\)  : ${cwh}${coff}) " q_ssl
+                case "${q_ssl,,}" in 
+                    y*)
+                        r_ssl="true"
+                        break
+                        ;;
+                    n* | "")
+                        r_ssl="false"
+                        break
+                        ;;
+                    q*)
+                        print_info "Quitting Script"
+                        exit 1
+                        ;;
+                esac
+            done
+            ;;
+        2)  # Env variable exists, offer it as an option
+            while true; do
+                read -r -p "$(echo -e ${clg}** ${cdgy}Enter Value \(${cwh}E\*${cdgy}\) \| \(${cwh}Y${cdgy}\) \| \(${cwh}N${cdgy}\) : ${cwh}${coff}) " q_ssl
+                case "${q_ssl,,}" in
+                    e* | "") # Default to env variable if just enter is pressed.
+                        r_ssl="${detected_ssl_value}"
+                        break
+                        ;;
+                    y*)
+                        r_ssl="true"
+                        break
+                        ;;
+                    n*)
+                        r_ssl="false"
+                        break
+                        ;;
+                    q*)
+                        print_info "Quitting Script"
+                        exit 1
+                        ;;
+                esac
+            done
+            ;;
+    esac
+}
+
 #### SCRIPT START
 trap control_c INT
-bootstrap_variables restore_init
 
 cat << EOF
 
@@ -984,6 +1063,20 @@ else
 fi
 print_debug "Database Port '${r_dbport}'"
 
+## Question SSL connection
+if [[ "${r_dbtype,,}" == "mariadb" || "${r_dbtype,,}" == "mysql" ]]; then
+    if [ -n "${8}" ]; then
+        r_ssl="${8}"
+    else
+        get_ssl
+    fi
+    print_debug "SSL enable: '${r_ssl}'"
+else
+    r_ssl="false"
+    print_debug "SSL disabled for ${r_dbtype}"
+fi
+
+
 ## Parse Extension
 case "${r_filename##*.}" in
           bz* )
@@ -1013,8 +1106,13 @@ esac
 ## Perform a restore
 case "${r_dbtype}" in
     mariadb | mysql )
+        if [[ "${r_ssl,,}" == "false" ]]; then
+            mysql_ssl_option="--disable-ssl"
+        else
+            mysql_ssl_option=""
+        fi
         print_info "Restoring '${r_filename}' into '${r_dbhost}'/'${r_dbname}'"
-        pv ${r_filename} | ${decompress_cmd}cat | mysql -u${r_dbuser} -p${r_dbpass} -P${r_dbport} -h${r_dbhost} ${r_dbname}
+        pv ${r_filename} | ${decompress_cmd}cat | mariadb -u${r_dbuser} -p${r_dbpass} -P${r_dbport} -h${r_dbhost} ${mysql_ssl_option} ${r_dbname}
         exit_code=$?
     ;;
     pgsql | postgres* )
@@ -1036,15 +1134,15 @@ EOF
         echo -e "${coff}"
         read -p "$(echo -e ${clg}** ${cdgy}Enter Value \(${cwh}Y${cdgy}\) \| \(${cwh}N${cdgy}\) \| \(${cwh}Q${cdgy}\)  : ${cwh}${coff})" q_menu_mongo_dropdb
         case "${q_menu_mongo_dropdb,,}" in
-            "y" | "yes" | * )
-                mongo_dropdb="--drop"
-            ;;
             "n" | "update" )
                 unset mongo_dropdb
             ;;
             "q" | "exit" )
                 print_info "Quitting Script"
                 exit 1
+            ;;
+            "y" | "yes" | * )
+                mongo_dropdb="--drop"
             ;;
         esac
 

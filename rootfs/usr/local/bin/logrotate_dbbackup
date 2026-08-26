@@ -1,13 +1,16 @@
 #!/command/with-contenv bash
+# SPDX-FileCopyrightText: © 2026 Nfrastack <code@nfrastack.com>
+#
+# SPDX-License-Identifier: MIT
 
-source /assets/functions/00-container
-source /assets/defaults/05-logging
-source /assets/defaults/10-db-backup
+source /container/base/functions/container/init
+source /container/base/defaults/05-logging
+source /container/defaults/10-dbbackup
 
 ## Compress each log 2 days old
 timestamp_2dayold_unixtime="$(stat -c %Y "${LOG_PATH}"/"$(date --date='2 days ago' +'%Y%m%d')")"
 for logfile in "${LOG_PATH}"/"$(date --date='2 days ago' +'%Y%m%d')"/"$(date --date='2 days ago' +'%Y%m%d')"_*.log ; do
-    sudo -u restic zstd --rm --rsyncable "${logfile}"
+    sudo -u "${DBBACKUP_USER}" zstd --rm --rsyncable "${logfile}"
 done
 touch -t $(date -d"@${timestamp_2dayold_unixtime}" +'%Y%m%d%H%m.%S') "${LOG_PATH}"/"$(date --date='2 days ago' +'%Y%m%d')"
 

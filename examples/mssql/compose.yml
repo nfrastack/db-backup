@@ -46,7 +46,7 @@ services:
       - DB01_NAME=test1
       - DB01_USER=sa
       - DB01_PASS=5hQa0utRFBpIY3yhoIyE
-      - DB01_DUMP_INTERVAL=1            # backup every minute
+      - DB01_BACKUP_INTERVAL=1            # backup every minute
       # - DB01_DUMP_BEGIN=0000      # backup starts at midnight vs unset immediately
       - DB01_CLEANUP_TIME=5         # clean backups they are older than 5 minute
       - DB01_CHECKSUM=NONE
