@@ -1,6 +1,4 @@
 .github/
-examples/
 .git/
 .gitattributes
 .gitignore
-zabbix_templates/
