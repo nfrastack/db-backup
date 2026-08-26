@@ -28,7 +28,7 @@ You may view and compile this code, but running the Supported features in produc
 
 The container image itself is licensed under the MIT License. See [`container/LICENSE`](container/LICENSE).
 
-The `dbb` binary bundled in the image is MIT-licensed; it is built from the AGPL core plus the NSLv1 `supported/` tree (full build), or from the
+The `dbb` binary bundled in the image is *not* MIT licensed - it is built from the AGPL core plus the NSLv1 `supported/` tree (full build), or from the
 AGPL core alone (community build). See the sections above for those licenses.
 
 ---
