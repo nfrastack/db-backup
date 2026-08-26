@@ -1,51 +1,78 @@
-# Security Policy
+# Security
 
-## Supported Versions
+How to report security vulnerabilities in db-backup responsibly.
 
-We use [Semantic Versioning](https://semver.org/).
+## Reporting a vulnerability
 
-| Version | Supported |
-|---------|-----------|
-| 5.x.x   | yes       |
-| < 5.x   | no        |
+**Do not open a public GitHub issue for security vulnerabilities.**
 
-Bug fix releases (`5.0.1`, `5.0.2`) are cut as needed from the latest minor line.
-Each version is supported until the next one ships.
+Use one of these private channels:
 
-## Reporting a Vulnerability
+- **Email**: [security@nfrastack.com](mailto:security@nfrastack.com?subject=%5BSECURITY%5D%20db-backup%20vulnerability%20report) with a `[SECURITY]` subject prefix
+- **GitHub private vulnerability reporting**: [Report a vulnerability](https://github.com/nfrastack/db-backup/security/advisories/new) on the repository Security tab
 
-If you've discovered a security vulnerability in db-backup, please report it
-responsibly via [GitHub Security Advisories](https://github.com/nfrastack/db-backup/security/advisories/new).
+Both land in the same place. Email is monitored, the GitHub advisory system keeps everything off the public tracker until a fix is ready.
 
-**Please do not open a public issue for security vulnerabilities.**
+## What to include
 
-You can expect an initial response within 72 hours. We will work with you to
-understand the issue, develop a fix, and coordinate disclosure timing.
+- Affected db-backup version (`dbb version`)
+- Platform and architecture (eg `linux/amd64`, container vs bare binary)
+- Steps to reproduce or a proof of concept
+- Impact assessment - what an attacker could do with this
+- Any relevant configuration (redact credentials and hostnames)
 
-### What to include
+You do not need to be certain it is exploitable. If something looks wrong, report it.
 
-- Affected version(s) and component (dump, restore, scheduler, license, storage backend)
-- Steps to reproduce or proof of concept
-- Impact assessment (data exposure, privilege escalation, credential leak, etc.)
-- Any known workarounds
+## Response timeline
+
+| Stage             | Target                                  |
+| ----------------- | --------------------------------------- |
+| Acknowledgement   | 48 hours                                |
+| Status update     | 7 days                                  |
+| Fix or mitigation | Best effort, communicated during triage |
+
+## Disclosure policy
+
+Coordinated disclosure. Once a fix is available we will publish an advisory with credit to you unless you prefer to remain anonymous. We ask that you allow up to 90 days from initial report before public disclosure so users have time to patch.
 
 ## Scope
 
-db-backup handles credentials, connects to database servers, encrypts and
-transports backup data, and runs inside containers. The following are in scope:
+The following are in scope:
 
-- Credential exposure (hardcoded secrets, improper env/file handling, log leakage)
-- SQL injection or command injection through configuration values
-- Authentication bypass or privilege escalation in engine connections
-- Backup integrity (unauthorized modification of dump data or sidecar metadata)
-- License bypass or spoofing
-- Container escape or unsafe default permissions
-- Supply chain issues in Go dependencies
+- The `dbb` binary and its container image
+- Encryption implementation (age, GPG/OpenPGP, OpenSSL)
+- Configuration parsing and secret resolution (`file://`, `env://`)
+- License verification mechanism
+- Container entrypoint and init scripts
 
-Out of scope: misconfigured databases, weak passwords chosen by operators,
-or vulnerabilities in upstream database engines themselves.
+The following are out of scope:
 
-## Acknowledgements
+- Social engineering of Nfrastack staff or users
+- Denial of service attacks against public infrastructure
+- Physical attacks on hardware
+- Vulnerabilities in third party dependencies that are not reachable through db-backup
 
-We credit security researchers who responsibly disclose vulnerabilities in
-release notes upon request.
+## Supported versions
+
+Security fixes are applied to the latest release only. Older versions should upgrade.
+
+## PGP
+
+If you prefer to send an encrypted report, use this public key:
+
+```
+-----BEGIN PGP PUBLIC KEY BLOCK-----
+
+mDMEao5M4xYJKwYBBAHaRw8BAQdAS89LMRi6PgsNoZOSYcrw7RHXl7MqjklQ4+lB
+lB/L4DG0K05mcmFzdGFjayBTZWN1cml0eSA8c2VjdXJpdHlAbmZyYXN0YWNrLmNv
+bT6IlgQTFgoAPhYhBECYxkkaS7zjJcUfWl6+RL+jml7GBQJqjkzjAhsDBQkJZgGA
+BQsJCAcCBhUKCQgLAgQWAgMBAh4BAheAAAoJEF6+RL+jml7Gq1sA/0dNrsCNMv76
+MuaPcak9T6+AprWXni3CU4yDpRYeDBekAP9y85wsm7dUVV1Sj3QOOBhAIkwtRGkf
+LVZKljWQ3cnHArg4BGqOTOMSCisGAQQBl1UBBQEBB0AUQGyiAQox6wqUprPcfpYw
++dzOxxZhwMZ+cg6LDIn4TAMBCAeIfgQYFgoAJhYhBECYxkkaS7zjJcUfWl6+RL+j
+ml7GBQJqjkzjAhsMBQkJZgGAAAoJEF6+RL+jml7Gr3sBAJ/fpOJ6JBpvO6izvaX8
+XCp34BI6VDfOrfBLEI1Lakv9AP9h4Xp9YWo1N5UP4OAJuwpi9ypYEyXtCb0gggYu
+Dgs1AA==
+=/LEX
+-----END PGP PUBLIC KEY BLOCK-----
+```
