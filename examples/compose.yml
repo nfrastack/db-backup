@@ -52,7 +52,7 @@ services:
       #- DB02_BACKUP_INTERVAL=60       # (override) Backup every 60 minutes
       #- DB02_BACKUP_BEGIN=+10         # (override) Backup starts in ten minutes
       #- DB02_CLEANUP_TIME=240         # (override) Cleanup backups they are older than 240 minutes
-      #- DB02_CHECKSUM=MD5             # (override) Create a SHA1 checksum
+      #- DB02_CHECKSUM=MD5             # (override) Create a MD5 checksum
       #- DB02_COMPRESSION=BZ           # (override) Compress with BZIP
 
     restart: always
