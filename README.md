@@ -317,7 +317,7 @@ Options that are related to the value of `DEFAULT_BACKUP_LOCATION`
 
 ###### Filesystem
 
-If `DEFAULT_BACKUP_LOCTION` = `FILESYSTEM` then the following options are used:
+If `DEFAULT_BACKUP_LOCATION` = `FILESYSTEM` then the following options are used:
 
 | Variable                             | Description                                                                                           | Default                               |
 | ------------------------------------ | ----------------------------------------------------------------------------------------------------- | ------------------------------------- |
