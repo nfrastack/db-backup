@@ -333,6 +333,7 @@ If `DEFAULT_BACKUP_LOCATION` = `S3` then the following options are used:
 
 | Parameter                     | Description                                                                               | Default | `_FILE` |
 | ----------------------------- | ----------------------------------------------------------------------------------------- | ------- | ------- |
+| `DEFAULT_S3_TARGETS`          | Comma separated list of S3 targets to upload each backup to, e.g. `hetzner,impossible`    |         |         |
 | `DEFAULT_S3_BUCKET`           | S3 Bucket name e.g. `mybucket`                                                            |         | x       |
 | `DEFAULT_S3_KEY_ID`           | S3 Key ID (Optional)                                                                      |         | x       |
 | `DEFAULT_S3_KEY_SECRET`       | S3 Key Secret (Optional)                                                                  |         | x       |
@@ -346,6 +347,51 @@ If `DEFAULT_BACKUP_LOCATION` = `S3` then the following options are used:
 | `DEFAULT_S3_CERT_SKIP_VERIFY` | Skip verifying self signed certificates when connecting                                   | `TRUE`  |         |
 
 - When `DEFAULT_S3_KEY_ID` and/or `DEFAULT_S3_KEY_SECRET` is not set, will try to use IAM role assigned (if any) for uploading the backup files to S3 bucket.
+
+**Multiple S3 targets**
+
+Set `DEFAULT_S3_TARGETS` (or `DB01_S3_TARGETS` for a single job) to a comma separated list of
+names to upload every backup to more than one S3 endpoint. All targets receive the very same
+file, so the endpoints hold identical content:
+
+```yaml
+DEFAULT_S3_TARGETS: hetzner,impossible
+DEFAULT_S3_PATH: db                                      ## shared by both targets
+
+S3_HETZNER_HOST: fsn1.your-objectstorage.com
+S3_HETZNER_BUCKET: backups
+S3_HETZNER_KEY_ID: xxxxxxxx
+S3_HETZNER_KEY_SECRET: xxxxxxxx
+S3_HETZNER_REGION: eu-central
+
+S3_IMPOSSIBLE_HOST: eu-central-2.storage.impossibleapi.net
+S3_IMPOSSIBLE_BUCKET: backups-offsite
+S3_IMPOSSIBLE_KEY_ID: yyyyyyyy
+S3_IMPOSSIBLE_KEY_SECRET: yyyyyyyy
+S3_IMPOSSIBLE_REGION: eu-central-2
+```
+
+- Every S3 option above also exists per target as `S3_<TARGET>_<OPTION>` and per job as
+  `DB01_S3_<TARGET>_<OPTION>`. The value used for a target is the first one that is set of:
+
+  `DB01_S3_<TARGET>_<OPTION>` → `S3_<TARGET>_<OPTION>` → `DB01_S3_<OPTION>` → `S3_<OPTION>` → `DEFAULT_S3_<OPTION>`
+
+  Options that all targets share are therefore written once as `DEFAULT_S3_<OPTION>`, and only
+  what actually differs is repeated per target.
+- Target names are case insensitive, and any character that is not a letter or a digit becomes an
+  underscore - a target named `impossible-cloud` is configured through `S3_IMPOSSIBLE_CLOUD_*`.
+- `_FILE` secrets work for the per target variables too, e.g. `S3_HETZNER_KEY_SECRET_FILE`.
+- Every target is attempted, including after an earlier one failed, so a broken endpoint does not
+  stop the healthy ones from receiving their backup. A failed target is logged as an error naming
+  that target, raises the usual `Moving of backup ... reported errors` notification, and is handed
+  to post scripts as `$11` (`MOVE_EXIT_CODE`).
+- An unreachable endpoint is retried by `aws-cli` before it gives up, which can hold up the job for
+  several minutes. Shorten this per target with e.g.
+  `S3_HETZNER_EXTRA_OPTS: --cli-connect-timeout 10 --cli-read-timeout 30`.
+- `DEFAULT_CLEANUP_TIME` applies to all targets alike. Cleanup is skipped for a job that ran into
+  errors, so a failing target also postpones the cleanup on the healthy ones.
+- Leaving `S3_TARGETS` unset keeps the previous single target behaviour of the `DEFAULT_S3_*` and
+  `DB01_S3_*` variables unchanged.
 
 ###### Azure
 
@@ -619,6 +665,7 @@ If `DB01_BACKUP_LOCATION` = `S3` then the following options are used:
 
 | Parameter                  | Description                                                                               | Default | `_FILE` |
 | -------------------------- | ----------------------------------------------------------------------------------------- | ------- | ------- |
+| `DB01_S3_TARGETS`          | Comma separated list of S3 targets to upload each backup to, e.g. `hetzner,impossible`    |         |         |
 | `DB01_S3_BUCKET`           | S3 Bucket name e.g. `mybucket`                                                            |         | x       |
 | `DB01_S3_KEY_ID`           | S3 Key ID (Optional)                                                                      |         | x       |
 | `DB01_S3_KEY_SECRET`       | S3 Key Secret (Optional)                                                                  |         | x       |
@@ -632,6 +679,12 @@ If `DB01_BACKUP_LOCATION` = `S3` then the following options are used:
 | `DB01_S3_CERT_SKIP_VERIFY` | Skip verifying self signed certificates when connecting                                   | `TRUE`  |         |
 
 > When `DB01_S3_KEY_ID` and/or `DB01_S3_KEY_SECRET` is not set, will try to use IAM role assigned (if any) for uploading the backup files to S3 bucket.
+
+**Multiple S3 targets**
+
+Set `DB01_S3_TARGETS` to a comma separated list of names to upload this job's backups to more than
+one S3 endpoint, each target configured through `DB01_S3_<TARGET>_<OPTION>`. See
+[Multiple S3 targets](#s3) under the job defaults for the lookup order and the behaviour on failure.
 
 ###### Azure
 

@@ -112,6 +112,23 @@ dbbackup_bootstrap_variables() {
                             S3_PROTOCOL \
                             S3_EXTRA_OPTS
                                                                                   ## Legacy after DEFAULT
+
+        ## Multiple S3 targets - resolve the target list straight from the environment so
+        ## that the per target variables can take part in the '_FILE' secret handling too.
+        s3_target_list_var="DB${backup_instance_number}_S3_TARGETS"
+        s3_target_list="${!s3_target_list_var:-${S3_TARGETS:-${DEFAULT_S3_TARGETS:-}}}"
+        if [ -n "${s3_target_list}" ] ; then
+            s3_target_file_vars=""
+            for s3_target_entry in ${s3_target_list//,/ } ; do
+                s3_target_id="${s3_target_entry^^}"
+                s3_target_id="${s3_target_id//[^A-Z0-9]/_}"
+                for s3_target_key in BUCKET CERT_CA_FILE EXTRA_OPTS HOST KEY_ID KEY_SECRET PATH PROTOCOL REGION ; do
+                    s3_target_file_vars="${s3_target_file_vars} DB${backup_instance_number}_S3_${s3_target_id}_${s3_target_key} S3_${s3_target_id}_${s3_target_key}"
+                done
+            done
+            transform_var file ${s3_target_file_vars}
+        fi
+
         set -o posix ; set | grep -E "^DB${backup_instance_number}_|^DEFAULT_|^DB_|^ARCHIVE|^BACKUP_|^BLOBXFER_|^CHECKSUM|^COMPRESSION|^CREATE_|^ENABLE_|^EXTRA_|^GZ_|^INFLUX_|^MYSQL_|^MONGO_|^PARALLEL|^PRE_|^POST_|^S3|^SKIP|^SPLIT" > "${backup_instance_vars}"
 
         ##
@@ -222,6 +239,7 @@ dbbackup_bootstrap_variables() {
         transform_backup_instance_variable "${backup_instance_number}" S3_PATH backup_job_s3_path
         transform_backup_instance_variable "${backup_instance_number}" S3_PROTOCOL backup_job_s3_protocol
         transform_backup_instance_variable "${backup_instance_number}" S3_REGION backup_job_s3_region
+        transform_backup_instance_variable "${backup_instance_number}" S3_TARGETS backup_job_s3_targets
         transform_backup_instance_variable "${backup_instance_number}" SCRIPT_LOCATION_POST backup_job_script_location_post
         transform_backup_instance_variable "${backup_instance_number}" SCRIPT_LOCATION_PRE backup_job_script_location_pre
         transform_backup_instance_variable "${backup_instance_number}" SIZE_VALUE backup_job_size_value
@@ -229,6 +247,38 @@ dbbackup_bootstrap_variables() {
         transform_backup_instance_variable "${backup_instance_number}" SPLIT_DB backup_job_split_db
         transform_backup_instance_variable "${backup_instance_number}" TYPE backup_job_db_type
         transform_backup_instance_variable "${backup_instance_number}" USER backup_job_db_user
+
+
+        ## Multiple S3 targets - resolve every target listed in S3_TARGETS into its own
+        ## set of backup_job_s3_<target>_<key> variables. Precedence per key:
+        ## DB<NN>_S3_<TARGET>_<KEY> > S3_<TARGET>_<KEY> > the single target variables
+        ## handled by transform_backup_instance_variable.
+        transform_s3_target_variable() {
+            local s3_t_instance="${1}"
+            local s3_t_target="${2}"
+            local s3_t_key="${3}"
+            local s3_t_out="${4}"
+            unset "${s3_t_out}"
+            if grep -q "^DB${s3_t_instance}_S3_${s3_t_target}_${s3_t_key}=" "${backup_instance_vars}" && [ "$(grep "^DB${s3_t_instance}_S3_${s3_t_target}_${s3_t_key}=" "${backup_instance_vars}" | cut -d = -f2)" != "unset" ]; then
+                export "${s3_t_out}"="$(grep "^DB${s3_t_instance}_S3_${s3_t_target}_${s3_t_key}=" "${backup_instance_vars}" | cut -d = -f2-)"
+            elif grep -q "^S3_${s3_t_target}_${s3_t_key}=" "${backup_instance_vars}" && [ "$(grep "^S3_${s3_t_target}_${s3_t_key}=" "${backup_instance_vars}" | cut -d = -f2)" != "unset" ]; then
+                export "${s3_t_out}"="$(grep "^S3_${s3_t_target}_${s3_t_key}=" "${backup_instance_vars}" | cut -d = -f2-)"
+            else
+                transform_backup_instance_variable "${s3_t_instance}" "S3_${s3_t_key}" "${s3_t_out}"
+            fi
+        }
+
+        if [ -n "${backup_job_s3_targets}" ] ; then
+            for s3_target_entry in ${backup_job_s3_targets//,/ } ; do
+                s3_target_id="${s3_target_entry^^}"
+                s3_target_id="${s3_target_id//[^A-Z0-9]/_}"
+                s3_target_name="${s3_target_entry,,}"
+                s3_target_name="${s3_target_name//[^a-z0-9]/_}"
+                for s3_target_key in BUCKET CERT_CA_FILE CERT_SKIP_VERIFY EXTRA_OPTS HOST KEY_ID KEY_SECRET PATH PROTOCOL REGION ; do
+                    transform_s3_target_variable "${backup_instance_number}" "${s3_target_id}" "${s3_target_key}" "backup_job_s3_${s3_target_name}_${s3_target_key,,}"
+                done
+            done
+        fi
 
         backup_job_backup_begin=$(echo "${backup_job_backup_begin}" | sed -e "s|'||g" -e 's|"||g')
         if var_true "${DEBUG_BACKUP_INSTANCE_VARIABLE}" ; then cat <<EOF
@@ -969,6 +1019,64 @@ dbbackup_check_exit_code() {
     if var_true "${DEBUG_CHECK_EXIT_CODE}" ; then dbbackup_debug off; fi
 }
 
+dbbackup_s3_target_names() {
+    ## Fill the s3_target_names array with the S3 targets configured via S3_TARGETS.
+    ## Without S3_TARGETS the array holds a single empty entry, which makes the callers
+    ## fall back to the single target S3_ variables - the behaviour before this feature.
+    s3_target_names=()
+    if [ -n "${backup_job_s3_targets}" ] ; then
+        local s3_target_entry
+        for s3_target_entry in ${backup_job_s3_targets//,/ } ; do
+            s3_target_entry="${s3_target_entry,,}"
+            s3_target_names+=("${s3_target_entry//[^a-z0-9]/_}")
+        done
+    else
+        s3_target_names=("")
+    fi
+}
+
+dbbackup_s3_target_environment() {
+    ## Prepare the aws cli environment and the s3_target_* variables for a single S3
+    ## target. An empty target name selects the single target S3_ variables.
+    local s3_target="${1}"
+    local s3_target_key
+    local s3_target_var
+
+    for s3_target_key in bucket cert_ca_file cert_skip_verify extra_opts host key_id key_secret path protocol region ; do
+        if [ -n "${s3_target}" ] ; then
+            s3_target_var="backup_job_s3_${s3_target}_${s3_target_key}"
+        else
+            s3_target_var="backup_job_s3_${s3_target_key}"
+        fi
+        printf -v "s3_target_${s3_target_key}" "%s" "${!s3_target_var:-}"
+    done
+
+    if [ -n "${s3_target_key_id}" ] && [ -n "${s3_target_key_secret}" ]; then
+        export AWS_ACCESS_KEY_ID=${s3_target_key_id}
+        export AWS_SECRET_ACCESS_KEY=${s3_target_key_secret}
+    else
+        dbbackup_write_log debug "Variable S3_KEY_ID or S3_KEY_SECRET is not set${s3_target:+ for target '${s3_target}'}. Please ensure sufficiant IAM role is assigned."
+    fi
+    export AWS_DEFAULT_REGION=${s3_target_region}
+
+    s3_ca_cert=""
+    s3_ssl=""
+    PARAM_AWS_ENDPOINT_URL=""
+
+    if [ -f "${s3_target_cert_ca_file}" ] ; then
+        dbbackup_write_log debug "Using Custom CA for S3 Backups"
+        s3_ca_cert="--ca-bundle ${s3_target_cert_ca_file}"
+    fi
+    if var_true "${s3_target_cert_skip_verify}" ; then
+        dbbackup_write_log debug "Skipping SSL verification for HTTPS S3 Hosts"
+        s3_ssl="--no-verify-ssl"
+    fi
+
+    [[ ( -n "${s3_target_host}" ) ]] && PARAM_AWS_ENDPOINT_URL=" --endpoint-url ${s3_target_protocol}://${s3_target_host}"
+
+    return 0
+}
+
 dbbackup_cleanup_old_data() {
     if var_true "${DEBUG_CLEANUP_OLD_DATA}" ; then dbbackup_debug on; fi
     if [ -n "${backup_job_cleanup_time}" ]; then
@@ -998,18 +1106,22 @@ dbbackup_cleanup_old_data() {
                     fi
                 ;;
                 "s3" | "minio" )
-                    dbbackup_write_log info "Cleaning up old backups on S3 storage"
-                    dbbackup_run_as_user aws ${PARAM_AWS_ENDPOINT_URL} s3 ls s3://${backup_job_s3_bucket}/${backup_job_s3_path}/ ${s3_ssl} ${s3_ca_cert} ${backup_job_s3_extra_opts} | grep " DIR " -v | grep " PRE " -v | while read -r s3_file; do
-                        s3_createdate=$(echo $s3_file | awk {'print $1" "$2'})
-                        s3_createdate=$(date -d "$s3_createdate" "+%s")
-                        s3_olderthan=$(echo $(( $(date +%s)-${backup_job_cleanup_time}*60 )))
-                        if [[ $s3_createdate -le $s3_olderthan ]] ; then
-                            s3_filename=$(echo $s3_file | awk {'print $4'})
-                            if [ "$s3_filename" != "" ] ; then
-                                dbbackup_write_log debug "Deleting $s3_filename"
-                                dbbackup_run_as_user aws ${PARAM_AWS_ENDPOINT_URL} s3 rm s3://${backup_job_s3_bucket}/${backup_job_s3_path}/${s3_filename} ${s3_ssl} ${s3_ca_cert} ${backup_job_s3_extra_opts}
+                    dbbackup_s3_target_names
+                    for s3_target in "${s3_target_names[@]}" ; do
+                        dbbackup_write_log info "Cleaning up old backups on S3 storage${s3_target:+ - target '${s3_target}'}"
+                        dbbackup_s3_target_environment "${s3_target}"
+                        dbbackup_run_as_user aws ${PARAM_AWS_ENDPOINT_URL} s3 ls s3://${s3_target_bucket}/${s3_target_path}/ ${s3_ssl} ${s3_ca_cert} ${s3_target_extra_opts} | grep " DIR " -v | grep " PRE " -v | while read -r s3_file; do
+                            s3_createdate=$(echo $s3_file | awk {'print $1" "$2'})
+                            s3_createdate=$(date -d "$s3_createdate" "+%s")
+                            s3_olderthan=$(echo $(( $(date +%s)-${backup_job_cleanup_time}*60 )))
+                            if [[ $s3_createdate -le $s3_olderthan ]] ; then
+                                s3_filename=$(echo $s3_file | awk {'print $4'})
+                                if [ "$s3_filename" != "" ] ; then
+                                    dbbackup_write_log debug "Deleting $s3_filename"
+                                    dbbackup_run_as_user aws ${PARAM_AWS_ENDPOINT_URL} s3 rm s3://${s3_target_bucket}/${s3_target_path}/${s3_filename} ${s3_ssl} ${s3_ca_cert} ${s3_target_extra_opts}
+                                fi
                             fi
-                        fi
+                        done
                     done
                 ;;
             esac
@@ -1512,29 +1624,30 @@ EOF
                 fi
             ;;
             "s3" | "minio" )
-                dbbackup_write_log debug "Moving backup to S3 Bucket"
-                if [ -n "${backup_job_s3_key_id}" ] && [ -n "${backup_job_s3_key_secret}" ]; then
-                    export AWS_ACCESS_KEY_ID=${backup_job_s3_key_id}
-                    export AWS_SECRET_ACCESS_KEY=${backup_job_s3_key_secret}
-                else
-                    dbbackup_write_log debug "Variable S3_KEY_ID or S3_KEY_SECRET is not set. Please ensure sufficiant IAM role is assigned."
-                fi
-                export AWS_DEFAULT_REGION=${backup_job_s3_region}
-                if [ -f "${backup_job_s3_cert_ca_file}" ] ; then
-                    dbbackup_write_log debug "Using Custom CA for S3 Backups"
-                    s3_ca_cert="--ca-bundle ${backup_job_s3_cert_ca_file}"
-                fi
-                if var_true "${backup_job_s3_cert_skip_verify}" ; then
-                    dbbackup_write_log debug "Skipping SSL verification for HTTPS S3 Hosts"
-                    s3_ssl="--no-verify-ssl"
-                fi
+                dbbackup_s3_target_names
+                move_exit_code=0
+                for s3_target in "${s3_target_names[@]}" ; do
+                    dbbackup_write_log debug "Moving backup to S3 Bucket${s3_target:+ - target '${s3_target}'}"
+                    dbbackup_s3_target_environment "${s3_target}"
 
-                [[ ( -n "${backup_job_s3_host}" ) ]] && PARAM_AWS_ENDPOINT_URL=" --endpoint-url ${backup_job_s3_protocol}://${backup_job_s3_host}"
+                    silent aws ${PARAM_AWS_ENDPOINT_URL} s3 cp ${temporary_directory}/${backup_job_filename} s3://${s3_target_bucket}/${s3_target_path}/${backup_job_filename} ${s3_ssl} ${s3_ca_cert} ${s3_target_extra_opts}
+                    s3_target_exit_code=$?
+                    if [ "${s3_target_exit_code}" != "0" ] ; then
+                        dbbackup_write_log error "Failed moving backup to S3 Bucket${s3_target:+ - target '${s3_target}'} - exit code ${s3_target_exit_code}"
+                        move_exit_code=${s3_target_exit_code}
+                    fi
 
-                silent aws ${PARAM_AWS_ENDPOINT_URL} s3 cp ${temporary_directory}/${backup_job_filename} s3://${backup_job_s3_bucket}/${backup_job_s3_path}/${backup_job_filename} ${s3_ssl} ${s3_ca_cert} ${backup_job_s3_extra_opts}
-                move_exit_code=$?
+                    if [ "${backup_job_checksum}" != "none" ] ; then
+                        silent dbbackup_run_as_user ${play_fair} aws ${PARAM_AWS_ENDPOINT_URL} s3 cp ${temporary_directory}/*.${checksum_extension} s3://${s3_target_bucket}/${s3_target_path}/ ${s3_ssl} ${s3_ca_cert} ${s3_target_extra_opts}
+                        s3_target_exit_code=$?
+                        if [ "${s3_target_exit_code}" != "0" ] ; then
+                            dbbackup_write_log error "Failed moving checksum to S3 Bucket${s3_target:+ - target '${s3_target}'} - exit code ${s3_target_exit_code}"
+                            move_exit_code=${s3_target_exit_code}
+                        fi
+                    fi
+                done
+
                 if [ "${backup_job_checksum}" != "none" ] ; then
-                    silent dbbackup_run_as_user ${play_fair} aws ${PARAM_AWS_ENDPOINT_URL} s3 cp ${temporary_directory}/*.${checksum_extension} s3://${backup_job_s3_bucket}/${backup_job_s3_path}/ ${s3_ssl} ${s3_ca_cert} ${backup_job_s3_extra_opts}
                     dbbackup_run_as_user rm -rf "${temporary_directory}"/"${backup_job_filename}"."${checksum_extension}"
                 fi
 

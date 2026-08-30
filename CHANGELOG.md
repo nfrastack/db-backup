@@ -1,3 +1,18 @@
+## 4.10.0 2026-08-30 <foellmann at wus-technik dot com>
+
+   ### Added
+      - Multiple S3 targets per backup job via `S3_TARGETS`, uploading each backup to every
+        configured endpoint with identical content
+      - Per target configuration as `S3_<TARGET>_<OPTION>` / `DB01_S3_<TARGET>_<OPTION>`, falling
+        back to the existing single target `S3_` variables for everything a target does not override
+      - `_FILE` secret support for the per target variables
+
+   ### Changed
+      - S3 cleanup now sets up its own aws-cli environment per target instead of relying on the
+        values left behind by the preceding upload
+      - A failed S3 upload names the target it failed on and no longer aborts the remaining targets
+
+
 ## 4.9.2 2026-08-24 <code at nfrastack dot com>
 
    ### Changed
