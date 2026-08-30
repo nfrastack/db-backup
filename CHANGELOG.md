@@ -1,3 +1,20 @@
+## 4.9.3 2026-08-30 <foellmann at wus-technik dot com>
+
+   ### Changed
+      - Zabbix template: fix the tiered "No backups detected" triggers - the 3, 4 and 5 day
+        expressions each also required the backup to be younger than 2 days and could therefore
+        never fire, and the 2 day trigger resolved itself once a backup aged past 3 days, leaving
+        a permanently failing job unalarmed
+      - Zabbix template: `Backup 20% Smaller in Size` compared against 0.2 (80% smaller) instead
+        of 0.8, and both size ratio triggers now guard against a zero previous value
+      - Zabbix template: export version raised to 7.4, backup size given `B` units, and the
+        template description pointed at the current repository
+
+   ### Added
+      - Zabbix template: `No statistics received` trigger with a `{$DBBACKUP.NODATA.PERIOD}`
+        macro, catching a backup job that stops reporting altogether
+
+
 ## 4.9.2 2026-08-24 <code at nfrastack dot com>
 
    ### Changed
