@@ -1630,10 +1630,15 @@ dbbackup_post_dbbackup() {
         silent dbbackup_run_as_user zabbix_sender -c "${ZABBIX_CONFIG_PATH}"/"${ZABBIX_CONFIG_FILE}" -k dbbackup.backup -o '[{"{#NAME}":"'${backup_job_db_host}.${backup_job_db_name}'"}]'
         local zabbix_payload=$(dbbackup_run_as_user mktemp)
 
+        ## The backup only counts as successful when it also reached its destination -
+        ## exit_code covers the dump alone, move_exit_code the move to the backup location.
+        local zabbix_status="${exit_code}"
+        if [ "${move_exit_code:-0}" != "0" ] ; then zabbix_status=1 ; fi
+
         cat <<EOZP | silent dbbackup_run_as_user tee "${zabbix_payload}"
 - dbbackup.backup.size.[${backup_job_db_host}.${backup_job_db_name}] "${dbbackup_size}"
 - dbbackup.backup.datetime.[${backup_job_db_host}.${backup_job_db_name}] "${dbbackup_date}"
-- dbbackup.backup.status.[${backup_job_db_host}.${backup_job_db_name}] "${exit_code}"
+- dbbackup.backup.status.[${backup_job_db_host}.${backup_job_db_name}] "${zabbix_status}"
 - dbbackup.backup.duration.[${backup_job_db_host}.${backup_job_db_name}] "$((dbbackup_finish_time-dbbackup_start_time))"
 - dbbackup.backup.filename.[${backup_job_db_host}.${backup_job_db_name}] "${backup_job_filename}"
 EOZP
