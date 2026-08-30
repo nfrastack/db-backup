@@ -1,3 +1,11 @@
+## 4.9.3 2026-08-30 <foellmann at wus-technik dot com>
+
+   ### Changed
+      - Report a failed move to the backup location as a failed backup to Zabbix, so that the
+        `[{#NAME}] Backup - Failed with errors` trigger fires when a dump never reached its
+        destination
+
+
 ## 4.9.2 2026-08-24 <code at nfrastack dot com>
 
    ### Changed
