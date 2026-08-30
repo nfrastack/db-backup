@@ -201,7 +201,7 @@ If these are set and no other defaults or variables are set explicitly, they wil
 | `DEFAULT_COMPRESSION`                  | Use either Gzip `GZ`, Bzip2 `BZ`, XZip `XZ`, ZSTD `ZSTD` or none `NONE`                        | `ZSTD`         |
 | `DEFAULT_COMPRESSION_LEVEL`            | Numerical value of what level of compression to use, most allow `1` to `9`                     | `3`            |
 |                                        | except for `ZSTD` which allows for `1` to `19`                                                 |                |
-| `DEFAULT_GZ_RSYNCABLE`                 | Use `--rsyncable` (gzip only) for faster rsync transfers and incremental backup deduplication. | `FALSE`        |
+| `DEFAULT_GZ_RSYNCABLE`                 | Use `--rsyncable` (gzip/zstd only) for faster rsync transfers and incremental backup deduplication. | `FALSE`        |
 | `DEFAULT_ENABLE_PARALLEL_COMPRESSION`  | Use multiple cores when compressing backups `TRUE` or `FALSE`                                  | `TRUE`         |
 | `DEFAULT_PARALLEL_COMPRESSION_THREADS` | Maximum amount of threads to use when compressing - Integer value e.g. `8`                     | `autodetected` |
 
@@ -471,7 +471,7 @@ A limit of 3 can be created when not in advanced mode.
 | `DB01_COMPRESSION`                  | Use either Gzip `GZ`, Bzip2 `BZ`, XZip `XZ`, ZSTD `ZSTD` or none `NONE`                        | `ZSTD`         |
 | `DB01_COMPRESSION_LEVEL`            | Numerical value of what level of compression to use, most allow `1` to `9`                     | `3`            |
 |                                     | except for `ZSTD` which allows for `1` to `19`                                                 |                |
-| `DB01_GZ_RSYNCABLE`                 | Use `--rsyncable` (gzip only) for faster rsync transfers and incremental backup deduplication. | `FALSE`        |
+| `DB01_GZ_RSYNCABLE`                 | Use `--rsyncable` (gzip/zstd only) for faster rsync transfers and incremental backup deduplication. | `FALSE`        |
 | `DB01_ENABLE_PARALLEL_COMPRESSION`  | Use multiple cores when compressing backups `TRUE` or `FALSE`                                  | `TRUE`         |
 | `DB01_PARALLEL_COMPRESSION_THREADS` | Maximum amount of threads to use when compressing - Integer value e.g. `8`                     | `autodetected` |
 
