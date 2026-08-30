@@ -1,0 +1,76 @@
+#
+# Example for uploading every backup to two S3 endpoints at once
+#
+# Both endpoints receive the identical dump and checksum file. Options that both targets
+# share are written once as DEFAULT_S3_*, only what differs is repeated per target.
+#
+
+services:
+  example-multi-s3-db:
+    hostname: example-db-host
+    image: docker.io/library/mariadb:11
+    container_name: example-multi-s3-db
+    restart: unless-stopped
+    networks:
+      example-multi-s3-net:
+    environment:
+      MARIADB_ROOT_PASSWORD: rootpass
+      MARIADB_DATABASE: example
+
+  # First endpoint - stands in for any S3 compatible service
+  example-multi-s3-minio:
+    hostname: minio
+    image: quay.io/minio/minio:latest
+    container_name: example-multi-s3-minio
+    restart: unless-stopped
+    command: server /data
+    networks:
+      example-multi-s3-net:
+    environment:
+      MINIO_ROOT_USER: miniokey
+      MINIO_ROOT_PASSWORD: miniosecret
+
+  example-multi-s3-db-backup:
+    container_name: example-multi-s3-db-backup
+    image: nfrastack/db-backup
+    restart: always
+    networks:
+      example-multi-s3-net:
+    environment:
+      - TIMEZONE=Europe/Berlin
+      - CONTAINER_ENABLE_MONITORING=FALSE
+      - CONTAINER_NAME=example-multi-s3-db-backup
+      # - DEBUG_MODE=TRUE
+
+      - DB01_TYPE=mysql
+      - DB01_HOST=example-db-host
+      - DB01_NAME=example
+      - DB01_USER=root
+      - DB01_PASS=rootpass
+      - DB01_BACKUP_INTERVAL=1           # backup every minute
+      - DB01_CLEANUP_TIME=60             # applies to every target alike
+
+      - DEFAULT_BACKUP_LOCATION=S3
+      - DEFAULT_S3_PATH=example          # shared by both targets
+
+      # Upload to both targets, in this order
+      - DEFAULT_S3_TARGETS=local,offsite
+
+      - S3_LOCAL_HOST=minio:9000
+      - S3_LOCAL_PROTOCOL=http
+      - S3_LOCAL_BUCKET=backups
+      - S3_LOCAL_KEY_ID=miniokey
+      - S3_LOCAL_KEY_SECRET=miniosecret
+      - S3_LOCAL_REGION=us-east-1
+
+      - S3_OFFSITE_HOST=s3.example.com
+      - S3_OFFSITE_BUCKET=backups-offsite
+      - S3_OFFSITE_KEY_ID=xxxxxxxx
+      - S3_OFFSITE_KEY_SECRET=xxxxxxxx
+      - S3_OFFSITE_REGION=eu-central-1
+      # Do not let an unreachable offsite endpoint stall the job for minutes
+      - S3_OFFSITE_EXTRA_OPTS=--cli-connect-timeout 10 --cli-read-timeout 30
+
+networks:
+  example-multi-s3-net:
+    name: example-multi-s3-net
