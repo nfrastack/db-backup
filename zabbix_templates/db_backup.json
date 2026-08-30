@@ -1,6 +1,6 @@
 {
     "zabbix_export": {
-        "version": "6.4",
+        "version": "7.4",
         "template_groups": [
             {
                 "uuid": "10b88d2b3a3a4c72b43bdce9310e1162",
@@ -16,7 +16,7 @@
                 "uuid": "5a16c1bd694145389eed5ee803d954cc",
                 "template": "DB Backup4",
                 "name": "DB Backup4",
-                "description": "Template for Docker DB Backup Image\n\nMeant for use specifically with https://github.com/tiredofit/docker-db-backup Version > 4.0.0\n\nSupports auto discovery of backup jobs and creates graphs and triggers",
+                "description": "Template for Docker DB Backup Image\n\nMeant for use specifically with https://github.com/nfrastack/db-backup Version > 4.0.0\n\nSupports auto discovery of backup jobs and creates graphs and triggers",
                 "groups": [
                     {
                         "name": "DB/Backup"
@@ -82,28 +82,28 @@
                                 "trigger_prototypes": [
                                     {
                                         "uuid": "3681b56bb882466fb304a48b4beb15f0",
-                                        "expression": "fuzzytime(/DB Backup4/dbbackup.backup.datetime.[{#NAME}],172800s)=0 and fuzzytime(/DB Backup4/dbbackup.backup.datetime.[{#NAME}],259200s)<>0 and fuzzytime(/DB Backup4/dbbackup.backup.datetime.[{#NAME}],345600s)<>0 and fuzzytime(/DB Backup4/dbbackup.backup.datetime.[{#NAME}],432800s)<>0",
+                                        "expression": "fuzzytime(/DB Backup4/dbbackup.backup.datetime.[{#NAME}],172800s)=0 and fuzzytime(/DB Backup4/dbbackup.backup.datetime.[{#NAME}],259200s)<>0",
                                         "name": "[{#NAME}] No backups detected in 2 days",
                                         "priority": "HIGH",
                                         "manual_close": "YES"
                                     },
                                     {
                                         "uuid": "6c70136c84994197b6396a143b4e956f",
-                                        "expression": "fuzzytime(/DB Backup4/dbbackup.backup.datetime.[{#NAME}],172800s)<>0 and fuzzytime(/DB Backup4/dbbackup.backup.datetime.[{#NAME}],259200s)=0 and fuzzytime(/DB Backup4/dbbackup.backup.datetime.[{#NAME}],345600s)<>0 and fuzzytime(/DB Backup4/dbbackup.backup.datetime.[{#NAME}],432800s)<>0",
+                                        "expression": "fuzzytime(/DB Backup4/dbbackup.backup.datetime.[{#NAME}],259200s)=0 and fuzzytime(/DB Backup4/dbbackup.backup.datetime.[{#NAME}],345600s)<>0",
                                         "name": "[{#NAME}] No backups detected in 3 days",
                                         "priority": "DISASTER",
                                         "manual_close": "YES"
                                     },
                                     {
                                         "uuid": "d2038025cab643019cb9610c301f0cb9",
-                                        "expression": "fuzzytime(/DB Backup4/dbbackup.backup.datetime.[{#NAME}],172800s)<>0 and fuzzytime(/DB Backup4/dbbackup.backup.datetime.[{#NAME}],259200s)<>0 and fuzzytime(/DB Backup4/dbbackup.backup.datetime.[{#NAME}],345600s)=0 and fuzzytime(/DB Backup4/dbbackup.backup.datetime.[{#NAME}],432800s)<>0",
+                                        "expression": "fuzzytime(/DB Backup4/dbbackup.backup.datetime.[{#NAME}],345600s)=0 and fuzzytime(/DB Backup4/dbbackup.backup.datetime.[{#NAME}],432000s)<>0",
                                         "name": "[{#NAME}] No backups detected in 4 days",
                                         "priority": "DISASTER",
                                         "manual_close": "YES"
                                     },
                                     {
                                         "uuid": "ea85f02d032c4a1dbc1b6e91a3b2b37b",
-                                        "expression": "fuzzytime(/DB Backup4/dbbackup.backup.datetime.[{#NAME}],172800s)<>0 and fuzzytime(/DB Backup4/dbbackup.backup.datetime.[{#NAME}],259200s)<>0 and fuzzytime(/DB Backup4/dbbackup.backup.datetime.[{#NAME}],345600s)<>0 and fuzzytime(/DB Backup4/dbbackup.backup.datetime.[{#NAME}],432800s)=0",
+                                        "expression": "fuzzytime(/DB Backup4/dbbackup.backup.datetime.[{#NAME}],432000s)=0",
                                         "name": "[{#NAME}] No backups detected in 5 days",
                                         "priority": "DISASTER",
                                         "manual_close": "YES"
@@ -164,6 +164,7 @@
                                 "key": "dbbackup.backup.size.[{#NAME}]",
                                 "delay": "0",
                                 "history": "7d",
+                                "units": "B",
                                 "description": "Backup Size",
                                 "tags": [
                                     {
@@ -174,15 +175,15 @@
                                 "trigger_prototypes": [
                                     {
                                         "uuid": "849f8660bee04427aff55af47b6f509c",
-                                        "expression": "last(/DB Backup4/dbbackup.backup.size.[{#NAME}])/last(/DB Backup4/dbbackup.backup.size.[{#NAME}],#2)>1.2",
+                                        "expression": "last(/DB Backup4/dbbackup.backup.size.[{#NAME}],#2)>0 and last(/DB Backup4/dbbackup.backup.size.[{#NAME}])/last(/DB Backup4/dbbackup.backup.size.[{#NAME}],#2)>1.2",
                                         "name": "[{#NAME}] Backup 20% Greater in size",
                                         "priority": "WARNING",
                                         "manual_close": "YES"
                                     },
                                     {
                                         "uuid": "74d16a7680544c65af22cc568ce3d59d",
-                                        "expression": "last(/DB Backup4/dbbackup.backup.size.[{#NAME}])/last(/DB Backup4/dbbackup.backup.size.[{#NAME}],#2)<0.2",
-                                        "name": "[{#NAME}]  Backup 20% Smaller in Size",
+                                        "expression": "last(/DB Backup4/dbbackup.backup.size.[{#NAME}],#2)>0 and last(/DB Backup4/dbbackup.backup.size.[{#NAME}])/last(/DB Backup4/dbbackup.backup.size.[{#NAME}],#2)<0.8",
+                                        "name": "[{#NAME}] Backup 20% Smaller in Size",
                                         "priority": "WARNING",
                                         "manual_close": "YES"
                                     },
@@ -219,6 +220,14 @@
                                         "name": "[{#NAME}] Backup - Failed with errors",
                                         "priority": "WARNING",
                                         "manual_close": "YES"
+                                    },
+                                    {
+                                        "uuid": "6714ee70e9274e9888c85294bd96a866",
+                                        "expression": "nodata(/DB Backup4/dbbackup.backup.status.[{#NAME}],{$DBBACKUP.NODATA.PERIOD})=1",
+                                        "name": "[{#NAME}] Backup - No statistics received for {$DBBACKUP.NODATA.PERIOD}",
+                                        "priority": "AVERAGE",
+                                        "manual_close": "YES",
+                                        "description": "The backup job stopped reporting to Zabbix at all - the container is down, scheduling is disabled or monitoring is misconfigured. Unlike the age based triggers this does not depend on the last reported backup timestamp."
                                     }
                                 ]
                             }
@@ -291,6 +300,13 @@
                     {
                         "tag": "Service",
                         "value": "Database"
+                    }
+                ],
+                "macros": [
+                    {
+                        "macro": "{$DBBACKUP.NODATA.PERIOD}",
+                        "value": "2d",
+                        "description": "How long a backup job may stay silent before the 'No statistics received' trigger fires."
                     }
                 ],
                 "valuemaps": [
