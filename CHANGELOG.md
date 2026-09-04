@@ -1,4 +1,10 @@
-## 4.9.2 2026-08-24 <code at nfrastack dot com>
+## 5.0.0 2026-09-03 <code at nfrastack dot com>
+
+   ### Added
+
+      - Complete rewrite of application - See documentation https://nfrastack.com/db-backup
+
+# 4.9.2 2026-08-24 <code at nfrastack dot com>
 
    ### Changed
       - Fix MSSQL libraries not getting installed

@@ -1,0 +1,1479 @@
+# SPDX-FileCopyrightText: © 2026 Nfrastack <code@nfrastack.com>
+#
+# SPDX-License-Identifier: MIT
+
+dbbackup_bootstrap_filesystem() {
+    create_folder \
+                    "${CONFIG_PATH}, \
+                     ${STATE_PATH}, \
+                     ${TEMP_PATH}, \
+                     ${DEFAULT_FILESYSTEM_PATH}" \
+                    "${DBBACKUP_USER}:${DBBACKUP_GROUP}" \
+                    "${DEFAULT_FILESYSTEM_PATH_PERMISSION}"
+
+    if [ "${LOG_TYPE,,}" = "file" ] || [ "${LOG_TYPE,,}" = "both" ]; then
+        create_folder "${LOG_PATH}" "${DBBACKUP_USER}:${DBBACKUP_GROUP}" "${DEFAULT_FILESYSTEM_PATH_PERMISSION}"
+        create_logrotate db-backup "${LOG_PATH%/}"/"${LOG_FILE}" none "${DBBACKUP_USER}" "${DBBACKUP_GROUP}"
+    fi
+}
+
+dbbackup_generate_configuration() {
+    if [ "${SETUP_TYPE,,}" = "manual" ]; then
+        print_info "SETUP_TYPE=MANUAL - skipping automatic environment variable configuration"
+        if [ ! -f "${CONFIG_PATH%/}/${CONFIG_FILE}" ]; then
+            print_error "SETUP_TYPE=MANUAL but no config file at ${CONFIG_PATH%/}/${CONFIG_FILE}"
+            print_error "Mount a db-backup.yml at ${CONFIG_PATH} or set SETUP_TYPE=AUTO"
+            exit 1
+        fi
+        return 0
+    fi
+
+    local CONFIG_FILE_PATH
+    CONFIG_FILE_PATH="${CONFIG_PATH%/}/${CONFIG_FILE}"
+    mkdir -p "${CONFIG_PATH%/}"
+
+    # don't nuke the user config
+    if [ -f "${CONFIG_FILE_PATH}" ]; then
+        if printenv | grep -qE '^DB[0-9]+_TYPE='; then
+            print_warn "DB* environment variables are set but a config file already exists at ${CONFIG_FILE_PATH}"
+            print_warn "The config file takes precedence - the DB* env vars are being ignored"
+            print_warn "Remove the config file to use environment variables configuration"
+        fi
+        return 0
+    fi
+
+    print_info "Generating configuration from environment variables"
+    set -a
+
+    yq -n '{}' > "${CONFIG_FILE_PATH}"
+
+    _dbbackup_warn_bare_aliases
+    _dbbackup_warn_notifications
+
+    for _dbb_d in \
+        DEFAULT_AZURE_ACCOUNT DEFAULT_AZURE_KEY DEFAULT_AZURE_CONTAINER DEFAULT_AZURE_PATH \
+        DEFAULT_BACKUP_INTERVAL DEFAULT_BACKUP_LOCATION DEFAULT_BLACKOUT_BEGIN DEFAULT_BLACKOUT_DAYS DEFAULT_BLACKOUT_END \
+        DEFAULT_CHECKSUM DEFAULT_COMPRESSION DEFAULT_COMPRESSION_LEVEL DEFAULT_COMPRESSION_RSYNCABLE DEFAULT_COMPRESSION_THREADS \
+        DEFAULT_CONNECTIVITY_METHOD DEFAULT_CONNECTIVITY_RETRY_INTERVAL DEFAULT_CONNECTIVITY_TIMEOUT \
+        DEFAULT_FILESYSTEM_PATH DEFAULT_FILESYSTEM_PATH_PERMISSION DEFAULT_FILESYSTEM_PERMISSION \
+        DEFAULT_GCS_BUCKET DEFAULT_GCS_KEY DEFAULT_GCS_PATH DEFAULT_GZ_RSYNCABLE \
+        DEFAULT_LOG_LEVEL DEFAULT_MAINTENANCE DEFAULT_MAINTENANCE_ANALYZE DEFAULT_MAINTENANCE_CHECK_TABLES DEFAULT_MAINTENANCE_COMPACT \
+        DEFAULT_MAINTENANCE_MEMORY_PURGE DEFAULT_MAINTENANCE_OPTIMIZE DEFAULT_MAINTENANCE_REINDEX DEFAULT_MAINTENANCE_SCHEDULE DEFAULT_MAINTENANCE_VACUUM \
+        DEFAULT_S3_BUCKET DEFAULT_S3_HOST DEFAULT_S3_KEY_ID DEFAULT_S3_KEY_SECRET DEFAULT_S3_PATH DEFAULT_S3_PROTOCOL DEFAULT_S3_REGION \
+        DEFAULT_TLS_CA_FILE DEFAULT_TLS_CERT_FILE DEFAULT_TLS_ENABLE DEFAULT_TLS_KEY_FILE DEFAULT_TLS_VERIFY DEFAULT_TLS_VERSION \
+        DEFAULT_WEBDAV_PASS DEFAULT_WEBDAV_PATH DEFAULT_WEBDAV_URL DEFAULT_WEBDAV_USER; do
+        _dbbackup_dnorm "${_dbb_d}"
+    done
+    unset _dbb_d
+
+    # defaults
+    local d_checksum d_storage d_storage_path d_file_mode d_dir_mode d_user d_group
+    d_checksum="${DEFAULT_CHECKSUM,,}"
+    d_storage="${DEFAULT_BACKUP_LOCATION,,}"
+    d_storage_path="${DEFAULT_FILESYSTEM_PATH}"
+    d_file_mode="${DEFAULT_FILESYSTEM_PERMISSION}"
+    d_dir_mode="${DEFAULT_FILESYSTEM_PATH_PERMISSION}"
+    d_user="${DBBACKUP_USER}"
+    d_group="${DBBACKUP_GROUP}"
+    if [ -n "${DEFAULT_COMPRESSION}" ] || [ -n "${DEFAULT_COMPRESSION_LEVEL}" ] || [ -n "${DEFAULT_COMPRESSION_THREADS}" ] || [ -n "${DEFAULT_COMPRESSION_RSYNCABLE}" ]; then
+        if [ -n "${DEFAULT_COMPRESSION}" ]; then
+            DBB_C="${DEFAULT_COMPRESSION,,}"
+        else
+            DBB_C="zstd"
+        fi
+        if [ -n "${DEFAULT_COMPRESSION_LEVEL}" ]; then
+            DBB_CL="${DEFAULT_COMPRESSION_LEVEL}"
+        else
+            DBB_CL="3"
+        fi
+        if [ -n "${DEFAULT_COMPRESSION_THREADS}" ]; then
+            DBB_T="${DEFAULT_COMPRESSION_THREADS}"
+        else
+            DBB_T="1"
+        fi
+        yq -i '.defaults.compression = {"type": strenv(DBB_C), "level": (strenv(DBB_CL) | tonumber), "threads": (strenv(DBB_T) | tonumber)}' "${CONFIG_FILE_PATH}"
+        if [ "$(_dbbackup_tyone "${DEFAULT_COMPRESSION_RSYNCABLE}")" = "true" ]; then
+            yq -i '.defaults.compression.rsyncable = true' "${CONFIG_FILE_PATH}"
+        fi
+        if [ -n "${DEFAULT_GZ_RSYNCABLE}" ]; then
+            print_warn "[DEPRECATED] DEFAULT_GZ_RSYNCABLE - use DEFAULT_COMPRESSION_RSYNCABLE instead"
+            if [ "$(_dbbackup_tyone "${DEFAULT_GZ_RSYNCABLE}")" = "true" ]; then
+                yq -i '.defaults.compression.rsyncable = true' "${CONFIG_FILE_PATH}"
+            fi
+        fi
+    fi
+
+    if [ -n "${DEFAULT_CHECKSUM}" ]; then
+        DBB_K="${d_checksum}"
+        yq -i '.defaults.checksum = strenv(DBB_K)' "${CONFIG_FILE_PATH}"
+    fi
+
+    DBB_S="$d_storage"
+    DBB_P="$d_storage_path"
+    DBB_U="$d_user"
+    DBB_G="$d_group"
+    yq -i   '   .defaults.storage.backend = strenv(DBB_S) |
+                .defaults.storage.path = strenv(DBB_P) |
+                .defaults.storage.user = strenv(DBB_U) |
+                .defaults.storage.group = strenv(DBB_G)
+            ' \
+        "${CONFIG_FILE_PATH}"
+    DBB_FM="$d_file_mode"
+    yq -i '.defaults.storage.file_mode = strenv(DBB_FM)' "${CONFIG_FILE_PATH}"
+    DBB_DM="$d_dir_mode"
+    yq -i '.defaults.storage.dir_mode = strenv(DBB_DM)' "${CONFIG_FILE_PATH}"
+
+    # backend specific defaults (filesystem above)
+    case "${d_storage,,}" in
+        azure )
+            if [ -n "${DEFAULT_AZURE_ACCOUNT}" ]; then DBB_V="${DEFAULT_AZURE_ACCOUNT}"; yq -i '.defaults.storage.account = strenv(DBB_V)' "${CONFIG_FILE_PATH}"; fi
+            if [ -n "${DEFAULT_AZURE_KEY}" ]; then DBB_V="${DEFAULT_AZURE_KEY}"; yq -i '.defaults.storage.key = strenv(DBB_V)' "${CONFIG_FILE_PATH}"; fi
+            if [ -n "${DEFAULT_AZURE_CONTAINER}" ]; then DBB_V="${DEFAULT_AZURE_CONTAINER}"; yq -i '.defaults.storage.bucket = strenv(DBB_V)' "${CONFIG_FILE_PATH}"; fi
+            if [ -n "${DEFAULT_AZURE_PATH}" ]; then DBB_V="${DEFAULT_AZURE_PATH}"; yq -i '.defaults.storage.path = strenv(DBB_V)' "${CONFIG_FILE_PATH}"; fi
+        ;;
+        gcs )
+            if [ -n "${DEFAULT_GCS_BUCKET}" ]; then DBB_V="${DEFAULT_GCS_BUCKET}"; yq -i '.defaults.storage.bucket = strenv(DBB_V)' "${CONFIG_FILE_PATH}"; fi
+            if [ -n "${DEFAULT_GCS_KEY}" ]; then DBB_V="${DEFAULT_GCS_KEY}"; yq -i '.defaults.storage.key = strenv(DBB_V)' "${CONFIG_FILE_PATH}"; fi
+            if [ -n "${DEFAULT_GCS_PATH}" ]; then DBB_V="${DEFAULT_GCS_PATH}"; yq -i '.defaults.storage.path = strenv(DBB_V)' "${CONFIG_FILE_PATH}"; fi
+        ;;
+        s3 )
+            if [ -n "${DEFAULT_S3_BUCKET}" ]; then DBB_V="${DEFAULT_S3_BUCKET}"; yq -i '.defaults.storage.bucket = strenv(DBB_V)' "${CONFIG_FILE_PATH}"; fi
+            if [ -n "${DEFAULT_S3_PATH}" ]; then DBB_V="${DEFAULT_S3_PATH}"; yq -i '.defaults.storage.path = strenv(DBB_V)' "${CONFIG_FILE_PATH}"; fi
+            if [ -n "${DEFAULT_S3_REGION}" ]; then DBB_V="${DEFAULT_S3_REGION}"; yq -i '.defaults.storage.region = strenv(DBB_V)' "${CONFIG_FILE_PATH}"; fi
+            if [ -n "${DEFAULT_S3_HOST}" ]; then DBB_V="${DEFAULT_S3_HOST}"; if [ -n "${DEFAULT_S3_PROTOCOL}" ]; then DBB_V="${DEFAULT_S3_PROTOCOL}://${DEFAULT_S3_HOST}"; fi; yq -i '.defaults.storage.endpoint = strenv(DBB_V)' "${CONFIG_FILE_PATH}"; fi
+            if [ -n "${DEFAULT_S3_KEY_ID}" ]; then DBB_V="${DEFAULT_S3_KEY_ID}"; yq -i '.defaults.storage.key_id = strenv(DBB_V)' "${CONFIG_FILE_PATH}"; fi
+            if [ -n "${DEFAULT_S3_KEY_SECRET}" ]; then DBB_V="${DEFAULT_S3_KEY_SECRET}"; yq -i '.defaults.storage.key_secret = strenv(DBB_V)' "${CONFIG_FILE_PATH}"; fi
+        ;;
+        webdav )
+            if [ -n "${DEFAULT_WEBDAV_URL}" ]; then DBB_V="${DEFAULT_WEBDAV_URL}"; yq -i '.defaults.storage.url = strenv(DBB_V)' "${CONFIG_FILE_PATH}"; fi
+            if [ -n "${DEFAULT_WEBDAV_USER}" ]; then DBB_V="${DEFAULT_WEBDAV_USER}"; yq -i '.defaults.storage.user = strenv(DBB_V)' "${CONFIG_FILE_PATH}"; fi
+            if [ -n "${DEFAULT_WEBDAV_PASS}" ]; then DBB_V="${DEFAULT_WEBDAV_PASS}"; yq -i '.defaults.storage.pass = strenv(DBB_V)' "${CONFIG_FILE_PATH}"; fi
+            if [ -n "${DEFAULT_WEBDAV_PATH}" ]; then DBB_V="${DEFAULT_WEBDAV_PATH}"; yq -i '.defaults.storage.path = strenv(DBB_V)' "${CONFIG_FILE_PATH}"; fi
+        ;;
+    esac
+
+    # concurrency
+    if [ -n "${BACKUP_JOB_CONCURRENCY}" ]; then
+        DBB_CONCURRENCY="${BACKUP_JOB_CONCURRENCY}"
+        yq -i '.concurrency = (strenv(DBB_CONCURRENCY) | tonumber)' "${CONFIG_FILE_PATH}"
+    fi
+
+    # logging
+    local dbb_lv d_log_type
+    d_log_type="${LOG_TYPE}"; d_log_type="${d_log_type,,}"
+    dbb_lv="${LOG_LEVEL}"
+    if [ -z "${dbb_lv}" ]; then
+        dbb_lv="${DEFAULT_LOG_LEVEL}"
+    fi
+
+    if [ -n "${dbb_lv}" ]; then
+        dbb_lv="$(_dbbackup_log_level "${dbb_lv}")"
+        DBB_V="${dbb_lv}"
+        yq -i '.log.level = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+    fi
+    if [ -n "${d_log_type}" ]; then
+        case "${d_log_type,,}" in
+            file | both )
+                DBB_V="${d_log_type}"
+                yq -i '.log.type = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+                DBB_V="${LOG_PATH%/}/${LOG_FILE}"
+                yq -i '.log.path = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+                if [ -n "$d_user" ]; then
+                    DBB_V="${d_user}"
+                    yq -i '.log.user = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+                fi
+                if [ -n "$d_group" ]; then
+                    DBB_V="${d_group}"
+                    yq -i '.log.group = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+                fi
+            ;;
+            console )
+                DBB_V="console"
+                yq -i '.log.type = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+            ;;
+        esac
+    fi
+    if [ -n "${LOG_FORMAT}" ]; then
+        DBB_V="${LOG_FORMAT,,}"
+        yq -i '.log.format = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+    fi
+    if [ -n "${LOG_COLOUR}" ]; then
+        DBB_V="$(_dbbackup_tyone "${LOG_COLOUR}")"
+        yq -i '.log.colour = (strenv(DBB_V) == "true")' "${CONFIG_FILE_PATH}"
+    fi
+    if [ -n "${LOG_PREFIX}" ]; then
+        DBB_V="$(_dbbackup_tyone "${LOG_PREFIX}")"
+        yq -i '.log.prefix = (strenv(DBB_V) == "true")' "${CONFIG_FILE_PATH}"
+    fi
+    if [ -n "${LOG_PREFIX_FORMAT}" ]; then
+        DBB_V="${LOG_PREFIX_FORMAT}"
+        yq -i '.log.prefix_format = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+    fi
+    if [ -n "${LOG_SESSION_ID}" ]; then
+        DBB_V="$(_dbbackup_tyone "${LOG_SESSION_ID}")"
+        yq -i '.log.session_id = (strenv(DBB_V) == "true")' "${CONFIG_FILE_PATH}"
+    fi
+    if [ -n "${LOG_RUN_ID}" ]; then
+        DBB_V="$(_dbbackup_tyone "${LOG_RUN_ID}")"
+        yq -i '.log.run_id = (strenv(DBB_V) == "true")' "${CONFIG_FILE_PATH}"
+    fi
+    if [ -n "${LOG_TIMINGS}" ]; then
+        DBB_V="$(_dbbackup_tyone "${LOG_TIMINGS}")"
+        yq -i '.log.timings = (strenv(DBB_V) == "true")' "${CONFIG_FILE_PATH}"
+    fi
+    if [ -n "${LOG_SIZE_FORMAT}" ]; then
+        DBB_V="${LOG_SIZE_FORMAT,,}"
+        yq -i '.log.size_format = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+    fi
+    if [ -n "${LOG_TIMEZONE}" ]; then
+        DBB_V="${LOG_TIMEZONE}"
+        yq -i '.log.timezone = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+    fi
+    if [ -n "${LOG_UTC}" ]; then
+        DBB_V="$(_dbbackup_tyone "${LOG_UTC}")"
+        yq -i '.log.utc = (strenv(DBB_V) == "true")' "${CONFIG_FILE_PATH}"
+    fi
+    if [ -n "${LOG_LEVEL_STYLE}" ]; then
+        DBB_V="${LOG_LEVEL_STYLE,,}"
+        yq -i '.log.level_style = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+    fi
+    if [ -n "${LOG_TIME_QUOTED}" ]; then
+        DBB_V="$(_dbbackup_tyone "${LOG_TIME_QUOTED}")"
+        yq -i '.log.time_quoted = (strenv(DBB_V) == "true")' "${CONFIG_FILE_PATH}"
+    fi
+    if [ -n "${LOG_FILE_PERMISSION}" ]; then
+        DBB_V="${LOG_FILE_PERMISSION}"
+        yq -i '.log.file_mode = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+    fi
+    if [ -n "${LOG_PATH_PERMISSION}" ]; then
+        DBB_V="${LOG_PATH_PERMISSION}"
+        yq -i '.log.dir_mode = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+    fi
+
+    # usage stats - only write when explicitly set - unset falls back to binary defaults (disabled)
+    if [ -n "${STATS_ENABLED}" ]; then
+        DBB_STATS_ENABLED="$(_dbbackup_tyone "${STATS_ENABLED}")"
+        yq -i '.stats.enabled = (strenv(DBB_STATS_ENABLED) == "true")' "${CONFIG_FILE_PATH}"
+    fi
+    DBB_STATE_PATH="${STATE_PATH}"
+    yq -i '.state.dir = strenv(DBB_STATE_PATH)' "${CONFIG_FILE_PATH}"
+    DBB_TEMP_PATH="${TEMP_PATH}"
+    yq -i '.temp_dir = strenv(DBB_TEMP_PATH)' "${CONFIG_FILE_PATH}"
+    if [ -n "${STATS_DUMP_PATH}" ]; then
+        DBB_STATS_DUMP_PATH="${STATS_DUMP_PATH}"
+        yq -i '.stats.dump_path = strenv(DBB_STATS_DUMP_PATH)' "${CONFIG_FILE_PATH}"
+    fi
+    if [ -n "${STATS_DUMP_RETENTION}" ]; then
+        DBB_STATS_DUMP_RETENTION="${STATS_DUMP_RETENTION}"
+        yq -i '.stats.dump_retention = strenv(DBB_STATS_DUMP_RETENTION)' "${CONFIG_FILE_PATH}"
+    fi
+
+    # version check - only write when explicitly set - unset falls back to binary defaults (enabled)
+    if [ -n "${CHECK_NEW_VERSION}" ]; then
+        DBB_CHECK_NEW_VERSION="$(_dbbackup_tyone "${CHECK_NEW_VERSION}")"
+        yq -i '.check_new_version.enabled = (strenv(DBB_CHECK_NEW_VERSION) == "true")' "${CONFIG_FILE_PATH}"
+    fi
+    if [ -n "${CHECK_NEW_VERSION_FREQUENCY}" ]; then
+        DBB_CHECK_FREQ="${CHECK_NEW_VERSION_FREQUENCY,,}"
+        yq -i '.check_new_version.frequency = strenv(DBB_CHECK_FREQ)' "${CONFIG_FILE_PATH}"
+    fi
+
+    # hooks
+    # Legacy DEFAULT_PRE_SCRIPT/POST_SCRIPT/SCRIPT_LOCATION_* still work but going away 5.1.x
+    local dpre dpost
+    dpre="${DEFAULT_PRE_COMMAND}"
+    dpost="${DEFAULT_POST_COMMAND}"
+    if [ -n "${DEFAULT_PRE_SCRIPT}" ]; then
+        print_warn "[DEPRECATED] DEFAULT_PRE_SCRIPT - use DEFAULT_PRE_COMMAND instead"
+        if [ -z "${dpre}" ]; then dpre="${DEFAULT_PRE_SCRIPT}"; fi
+    fi
+    if [ -n "${DEFAULT_SCRIPT_LOCATION_PRE}" ]; then
+        print_warn "[DEPRECATED] DEFAULT_SCRIPT_LOCATION_PRE - use DEFAULT_PRE_COMMAND instead"
+        if [ -z "${dpre}" ]; then dpre="for f in ${DEFAULT_SCRIPT_LOCATION_PRE}*.sh; do if [ -x \"\$f\" ]; then \"\$f\"; fi; done"; fi
+    fi
+    if [ -n "${DEFAULT_POST_SCRIPT}" ]; then
+        print_warn "[DEPRECATED] DEFAULT_POST_SCRIPT - use DEFAULT_POST_COMMAND instead"
+        if [ -z "${dpost}" ]; then dpost="${DEFAULT_POST_SCRIPT}"; fi
+    fi
+    if [ -n "${DEFAULT_SCRIPT_LOCATION_POST}" ]; then
+        print_warn "[DEPRECATED] DEFAULT_SCRIPT_LOCATION_POST - use DEFAULT_POST_COMMAND instead"
+        if [ -z "${dpost}" ]; then dpost="for f in ${DEFAULT_SCRIPT_LOCATION_POST}*.sh; do if [ -x \"\$f\" ]; then \"\$f\"; fi; done"; fi
+    fi
+    if [ -n "$dpre" ] || [ -n "$dpost" ]; then
+        yq -i '.defaults.hooks = {}' "${CONFIG_FILE_PATH}"
+        if [ -n "${dpre}" ]; then
+            DBB_ITEM="${dpre}"
+            yq -i '.defaults.hooks.pre = [strenv(DBB_ITEM)]' "${CONFIG_FILE_PATH}"
+        fi
+        if [ -n "$dpost" ]; then
+            DBB_ITEM="${dpost}"
+            yq -i '.defaults.hooks.post = [strenv(DBB_ITEM)]' "${CONFIG_FILE_PATH}"
+        fi
+    fi
+
+    # merge instances
+    local insts=() inst t instance=1
+    while [ "${instance}" -le 99 ]; do
+        inst=$(printf "%02d" ${instance})
+        t="$(_dbbackup_getv "${inst}" TYPE "")"
+        if [ -z "$t" ]; then
+            break
+        fi
+        insts+=("${inst}")
+        instance=$((instance + 1))
+    done
+
+    if [ "${#insts[@]}" -eq 0 ]; then
+        print_error "SETUP_TYPE=AUTO but no DB##_TYPE jobs are defined"
+        print_error "  Set DB01_TYPE=<engine> and other variables, or mount a db-backup.yml with SETUP_TYPE=MANUAL"
+        print_error "  or run with MODE=MANUAL to use the container as a shell for the CLI"
+        exit 1
+    fi
+
+    # connections
+    local type type_tmp host user pass port
+    local influx_version
+    local tls_enable tls_ca tls_cert tls_key tls_verify tls_version
+    local mysql_tls mysql_tls_ca mysql_tls_cert mysql_tls_key mysql_tls_verify
+    for inst in "${insts[@]}"; do
+        type_tmp="$(_dbbackup_getv "${inst}" TYPE "")"
+        type="${type_tmp,,}"
+        host="$(_dbbackup_getv "${inst}" HOST "")"
+        user="$(_dbbackup_getv "${inst}" USER "")"
+        pass="$(_dbbackup_getv "${inst}" PASS "")"
+        port="$(_dbbackup_getv "${inst}" PORT "")"
+        influx_version="$(_dbbackup_getv "${inst}" INFLUX_VERSION "")"
+        auth_source="$(_dbbackup_getv "${inst}" AUTH_SOURCE "")"
+        legacy_auth="$(_dbbackup_getv "${inst}" AUTH "")"
+        if [ -z "${auth_source}" ] && [ -n "${legacy_auth}" ]; then
+            print_warn "[DEPRECATED] DB${inst}_AUTH - use DB${inst}_AUTH_SOURCE instead"
+            auth_source="${legacy_auth}"
+        fi
+
+        ## TLS
+        tls_enable="$(_dbbackup_getv "${inst}" TLS_ENABLE "${DEFAULT_TLS_ENABLE}")"; tls_enable="${tls_enable,,}"
+        tls_ca="$(_dbbackup_getv "${inst}" TLS_CA_FILE "${DEFAULT_TLS_CA_FILE}")"
+        tls_cert="$(_dbbackup_getv "${inst}" TLS_CERT_FILE "${DEFAULT_TLS_CERT_FILE}")"
+        tls_key="$(_dbbackup_getv "${inst}" TLS_KEY_FILE "${DEFAULT_TLS_KEY_FILE}")"
+        tls_verify="$(_dbbackup_getv "${inst}" TLS_VERIFY "${DEFAULT_TLS_VERIFY}")"; tls_verify="${tls_verify,,}"
+        tls_version="$(_dbbackup_getv "${inst}" TLS_VERSION "${DEFAULT_TLS_VERSION}")"
+        # MYSQL_TLS_* remove in  in 5.1.0.
+        mysql_tls="$(_dbbackup_getv "${inst}" MYSQL_ENABLE_TLS "")"; mysql_tls="${mysql_tls,,}"
+        mysql_tls_ca="$(_dbbackup_getv "${inst}" MYSQL_TLS_CA_FILE "")"
+        mysql_tls_cert="$(_dbbackup_getv "${inst}" MYSQL_TLS_CERT_FILE "")"
+        mysql_tls_key="$(_dbbackup_getv "${inst}" MYSQL_TLS_KEY_FILE "")"
+        mysql_tls_verify="$(_dbbackup_getv "${inst}" MYSQL_TLS_VERIFY "")"; mysql_tls_verify="${mysql_tls_verify,,}"
+
+        DBB_REF="db${inst}"
+        DBB_TYPE="$type"
+        DBB_HOST="$host"
+        DBB_USER="$user"
+        DBB_PASS="$pass"
+        yq -i '.profiles.connections[strenv(DBB_REF)] = {"type": strenv(DBB_TYPE), "host": strenv(DBB_HOST), "user": strenv(DBB_USER), "pass": strenv(DBB_PASS)}' "${CONFIG_FILE_PATH}"
+        if [ -n "${port}" ]; then
+            DBB_PORT="${port}"
+            yq -i '.profiles.connections[strenv(DBB_REF)].port = (strenv(DBB_PORT) | tonumber)' "${CONFIG_FILE_PATH}"
+        fi
+        if [ -n "${influx_version}" ]; then
+            DBB_VER="${influx_version}"
+            yq -i '.profiles.connections[strenv(DBB_REF)].version = (strenv(DBB_VER) | tonumber)' "${CONFIG_FILE_PATH}"
+        fi
+        if [ -n "${auth_source}" ]; then
+            DBB_AUTH_SOURCE="$auth_source"
+            yq -i '.profiles.connections[strenv(DBB_REF)].auth_source = strenv(DBB_AUTH_SOURCE)' "${CONFIG_FILE_PATH}"
+        fi
+
+        local tls_effective_enable="$tls_enable" tls_effective_ca="$tls_ca" tls_effective_cert="$tls_cert" tls_effective_key="$tls_key" tls_effective_verify="$tls_verify"
+        local tls_alias_used=""
+        if [ -n "${mysql_tls}" ] && [ -z "${tls_effective_enable}" ]; then
+            tls_effective_enable="$mysql_tls"; tls_alias_used="1"
+        fi
+        if [ -n "${mysql_tls_ca}" ] && [ -z "${tls_effective_ca}" ]; then
+            tls_effective_ca="$mysql_tls_ca"; tls_alias_used="1"
+        fi
+        if [ -n "${mysql_tls_cert}" ] && [ -z "${tls_effective_cert}" ]; then
+            tls_effective_cert="$mysql_tls_cert"; tls_alias_used="1"
+        fi
+        if [ -n "${mysql_tls_key}" ] && [ -z "${tls_effective_key}" ]; then
+            tls_effective_key="$mysql_tls_key"; tls_alias_used="1"
+        fi
+        if [ -n "${mysql_tls_verify}" ] && [ -z "${tls_effective_verify}" ]; then
+            tls_effective_verify="$mysql_tls_verify"; tls_alias_used="1"
+        fi
+        if [ -n "${tls_alias_used}" ]; then
+            print_warn "[DEPRECATED] DB${inst}_MYSQL_TLS_* - use DB${inst}_TLS_* instead"
+        fi
+        case "${tls_effective_enable,,}" in
+            true | 1 | yes )
+                yq -i '.profiles.connections[strenv(DBB_REF)].tls.enable = true' "${CONFIG_FILE_PATH}"
+                if [ -n "${tls_effective_ca}" ]; then
+                    DBB_TLS_CA="$tls_effective_ca"
+                    yq -i '.profiles.connections[strenv(DBB_REF)].tls.ca_file = strenv(DBB_TLS_CA)' "${CONFIG_FILE_PATH}"
+                fi
+                if [ -n "${tls_effective_cert}" ]; then
+                    DBB_TLS_CERT="$tls_effective_cert"
+                    yq -i '.profiles.connections[strenv(DBB_REF)].tls.cert_file = strenv(DBB_TLS_CERT)' "${CONFIG_FILE_PATH}"
+                fi
+                if [ -n "${tls_effective_key}" ]; then
+                    DBB_TLS_KEY="$tls_effective_key"
+                    yq -i '.profiles.connections[strenv(DBB_REF)].tls.key_file = strenv(DBB_TLS_KEY)' "${CONFIG_FILE_PATH}"
+                fi
+                case "${tls_effective_verify,,}" in
+                    true | 1 | yes )
+                        yq -i '.profiles.connections[strenv(DBB_REF)].tls.verify = true' "${CONFIG_FILE_PATH}"
+                    ;;
+                    false | 0 | no )
+                        yq -i '.profiles.connections[strenv(DBB_REF)].tls.verify = false' "${CONFIG_FILE_PATH}"
+                    ;;
+                esac
+                if [ -n "${tls_version}" ]; then
+                    DBB_TLS_VERSION="$tls_version"
+                    yq -i '.profiles.connections[strenv(DBB_REF)].tls.version = strenv(DBB_TLS_VERSION)' "${CONFIG_FILE_PATH}"
+                fi
+            ;;
+        esac
+    done
+
+    # databases
+    local name name_exclude type_tmp globals globals_active
+    for inst in "${insts[@]}"; do
+        name="$(_dbbackup_getv "${inst}" NAME "")"
+        name_exclude="$(_dbbackup_getv "${inst}" NAME_EXCLUDE "")"
+        type_tmp="$(_dbbackup_getv "${inst}" TYPE "")"
+        globals="$(_dbbackup_getv "${inst}" GLOBALS FALSE)"
+        globals="${globals,,}"
+        if [ "${inst}" = "01" ] && printenv "BACKUP_GLOBALS" >/dev/null 2>&1 && [ -n "${BACKUP_GLOBALS}" ]; then
+            print_warn "[DEPRECATED] BACKUP_GLOBALS - use DB${inst}_GLOBALS instead"
+            if [ "${globals}" != "true" ] && [ "${globals}" != "1" ] && [ "${globals}" != "yes" ]; then
+                globals="${BACKUP_GLOBALS,,}"
+            fi
+        fi
+        globals_active=0
+        case "${globals}" in
+            true | 1 | yes ) globals_active=1 ;;
+        esac
+        if [ "${globals_active}" = "1" ]; then
+            case "${type_tmp,,}" in
+                pgsql | postgres | postgresql ) ;;
+                * )
+                    print_warn "DB${inst}_GLOBALS only applies to PostgreSQL - ignored for ${type_tmp}"
+                    globals_active=0
+                ;;
+            esac
+        fi
+        DBB_REF="db${inst}"
+        DBB_CONN="db${inst}"
+        yq -i '.profiles.databases[strenv(DBB_REF)].connection = strenv(DBB_CONN)' "${CONFIG_FILE_PATH}"
+        if [ -n "${name}" ]; then
+            case "${name,,}" in
+                all )
+                    yq -i '.profiles.databases[strenv(DBB_REF)].include = ["ALL"]' "${CONFIG_FILE_PATH}"
+                    if [ "${globals_active}" = "1" ]; then
+                        DBB_ITEM="__globals__"
+                        yq -i '.profiles.databases[strenv(DBB_REF)].include += [strenv(DBB_ITEM)]' "${CONFIG_FILE_PATH}"
+                    fi
+                ;;
+                *,* )
+                    local parts=() p
+                    IFS=',' read -r -a parts <<< "$name"
+                    yq -i '.profiles.databases[strenv(DBB_REF)].include = []' "${CONFIG_FILE_PATH}"
+                    for p in "${parts[@]}"; do
+                        DBB_ITEM="${p// /}"
+                        yq -i '.profiles.databases[strenv(DBB_REF)].include += [strenv(DBB_ITEM)]' "${CONFIG_FILE_PATH}"
+                    done
+                    if [ "${globals_active}" = "1" ]; then
+                        DBB_ITEM="__globals__"
+                        yq -i '.profiles.databases[strenv(DBB_REF)].include += [strenv(DBB_ITEM)]' "${CONFIG_FILE_PATH}"
+                    fi
+                ;;
+                * )
+                    if [ "${globals_active}" = "1" ]; then
+                        DBB_ITEM="${name}"
+                        yq -i '.profiles.databases[strenv(DBB_REF)].include = [strenv(DBB_ITEM)]' "${CONFIG_FILE_PATH}"
+                        DBB_ITEM="__globals__"
+                        yq -i '.profiles.databases[strenv(DBB_REF)].include += [strenv(DBB_ITEM)]' "${CONFIG_FILE_PATH}"
+                    else
+                        DBB_ITEM="${name}"
+                        yq -i '.profiles.databases[strenv(DBB_REF)].name = strenv(DBB_ITEM)' "${CONFIG_FILE_PATH}"
+                    fi
+                ;;
+            esac
+            if [ -n "${name_exclude}" ]; then
+                local eparts=() p
+                IFS=',' read -r -a eparts <<< "${name_exclude}"
+                yq -i '.profiles.databases[strenv(DBB_REF)].exclude = []' "${CONFIG_FILE_PATH}"
+                for p in "${eparts[@]}"; do
+                    DBB_ITEM="${p// /}"
+                    yq -i '.profiles.databases[strenv(DBB_REF)].exclude += [strenv(DBB_ITEM)]' "${CONFIG_FILE_PATH}"
+                done
+            fi
+        fi
+    done
+
+    # encryption
+    local enc_count=0 encrypt
+    declare -A enc_profile
+    for inst in "${insts[@]}"; do
+        encrypt="$(_dbbackup_getv "${inst}" ENCRYPT FALSE)"; encrypt="${encrypt,,}"
+        case "${encrypt,,}" in
+            true | 1 | yes )
+                print_warn "DB${inst}_ENCRYPT is set - encryption now uses AGE"
+                print_warn "  This is a BREAKING CHANGE from the <4.x series which used GPG"
+                print_warn "  See the container README 'Upgrading from 4.x to v5'."
+                enc_profile["age-${inst}"]="$(_dbbackup_getv "${inst}" ENCRYPT_PASSPHRASE "")"
+                enc_count=$((enc_count + 1))
+            ;;
+        esac
+    done
+    if [ "${enc_count}" -gt 0 ]; then
+        local name2
+        for name2 in "${!enc_profile[@]}"; do
+            DBB_REF="$name2"
+            yq -i '.profiles.encryption[strenv(DBB_REF)].type = "age"' "${CONFIG_FILE_PATH}"
+            if [ -n "${enc_profile[$name2]}" ]; then
+                DBB_ITEM="${enc_profile[$name2]}"
+                yq -i '.profiles.encryption[strenv(DBB_REF)].passphrase = strenv(DBB_ITEM)' "${CONFIG_FILE_PATH}"
+            fi
+        done
+    fi
+
+    # jobs
+    local jnum=0
+    for inst in "${insts[@]}"; do
+        type_tmp="$(_dbbackup_getv "${inst}" TYPE "")"
+        type="${type_tmp,,}"
+        name="$(_dbbackup_getv "${inst}" NAME "")"
+
+        ## compression
+        local compress="$(_dbbackup_getv "${inst}" COMPRESSION "${d_compress}")"
+        compress="${compress,,}"
+        local compress_level="$(_dbbackup_getv "${inst}" COMPRESSION_LEVEL "${DEFAULT_COMPRESSION_LEVEL}")"
+        local compress_threads="$(_dbbackup_getv "${inst}" COMPRESSION_THREADS "${DEFAULT_COMPRESSION_THREADS}")"
+        local legacy_threads="$(_dbbackup_getv "${inst}" PARALLEL_COMPRESSION_THREADS "")"
+        if [ -n "${legacy_threads}" ]; then
+            print_warn "[DEPRECATED] DB${inst}_PARALLEL_COMPRESSION_THREADS - use DB${inst}_COMPRESSION_THREADS instead"
+            compress_threads="${legacy_threads}"
+        fi
+        local compress_rsyncable="$(_dbbackup_getv "${inst}" COMPRESSION_RSYNCABLE "${DEFAULT_COMPRESSION_RSYNCABLE}")"
+        local legacy_rsyncable="$(_dbbackup_getv "${inst}" GZ_RSYNCABLE "")"
+        if [ -n "${legacy_rsyncable}" ]; then
+            compress_rsyncable="${legacy_rsyncable}"
+        fi
+
+        ## job core
+        local checksum="$(_dbbackup_getv "${inst}" CHECKSUM "${d_checksum}")"
+        checksum="${checksum,,}"
+        local interval="$(_dbbackup_getv "${inst}" BACKUP_INTERVAL "${DEFAULT_BACKUP_INTERVAL}")"
+        local begin="$(_dbbackup_getv "${inst}" BACKUP_BEGIN "+0")"
+        local blackout_begin="$(_dbbackup_getv "${inst}" BLACKOUT_BEGIN "${DEFAULT_BLACKOUT_BEGIN}")"
+        local blackout_end="$(_dbbackup_getv "${inst}" BLACKOUT_END "${DEFAULT_BLACKOUT_END}")"
+        local blackout_days="$(_dbbackup_getv "${inst}" BLACKOUT_DAYS "${DEFAULT_BLACKOUT_DAYS}")"
+        local blackout_alias=""
+        if [ "${inst}" = "01" ]; then
+            if printenv "BACKUP_BLACKOUT_BEGIN" >/dev/null 2>&1 && [ -n "${BACKUP_BLACKOUT_BEGIN}" ]; then
+                blackout_alias="1"
+                if [ -z "${blackout_begin}" ]; then
+                    blackout_begin="${BACKUP_BLACKOUT_BEGIN}"
+                fi
+            fi
+            if printenv "BACKUP_BLACKOUT_END" >/dev/null 2>&1 && [ -n "${BACKUP_BLACKOUT_END}" ]; then
+                blackout_alias="1"
+                if [ -z "${blackout_end}" ]; then
+                    blackout_end="${BACKUP_BLACKOUT_END}"
+                fi
+            fi
+            if printenv "BLACKOUT_BEGIN" >/dev/null 2>&1 && [ -n "${BLACKOUT_BEGIN}" ]; then blackout_alias="1"; fi
+            if printenv "BLACKOUT_END" >/dev/null 2>&1 && [ -n "${BLACKOUT_END}" ]; then blackout_alias="1"; fi
+        fi
+        if [ -n "${blackout_alias}" ]; then
+            print_warn "[DEPRECATED] BLACKOUT_BEGIN/BLACKOUT_END and BACKUP_BLACKOUT_* - use DB${inst}_BLACKOUT_* per job or DEFAULT_BLACKOUT_* instance wide instead"
+        fi
+        local backup_location="$(_dbbackup_getv "${inst}" BACKUP_LOCATION "${d_storage}")"
+        backup_location="${backup_location,,}"
+        local cleanup_time="$(_dbbackup_getv "${inst}" CLEANUP_TIME "")"
+        local split_db="$(_dbbackup_getv "${inst}" SPLIT_DB FALSE)"
+        split_db="${split_db,,}"
+        local create_latest="$(_dbbackup_getv "${inst}" CREATE_LATEST_SYMLINK FALSE)"
+        create_latest="${create_latest,,}"
+        local log_level="$(_dbbackup_getv "${inst}" LOG_LEVEL "${DEFAULT_LOG_LEVEL}")"
+        local size_format="$(_dbbackup_getv "${inst}" SIZE_FORMAT "")"
+        encrypt="$(_dbbackup_getv "${inst}" ENCRYPT FALSE)"
+        encrypt="${encrypt,,}"
+        local pre_command="$(_dbbackup_getv "${inst}" PRE_COMMAND "")"
+        local post_command="$(_dbbackup_getv "${inst}" POST_COMMAND "")"
+        local legacy_pre_script="$(_dbbackup_getv "${inst}" PRE_SCRIPT "")"
+        local legacy_post_script="$(_dbbackup_getv "${inst}" POST_SCRIPT "")"
+        local legacy_pre_dir="$(_dbbackup_getv "${inst}" SCRIPT_LOCATION_PRE "")"
+        local legacy_post_dir="$(_dbbackup_getv "${inst}" SCRIPT_LOCATION_POST "")"
+
+        # storage: azure
+        local azure_account="$(_dbbackup_getv "${inst}" AZURE_ACCOUNT "${DEFAULT_AZURE_ACCOUNT}")"
+        local azure_key="$(_dbbackup_getv "${inst}" AZURE_KEY "${DEFAULT_AZURE_KEY}")"
+        local azure_container="$(_dbbackup_getv "${inst}" AZURE_CONTAINER "${DEFAULT_AZURE_CONTAINER}")"
+        local azure_path="$(_dbbackup_getv "${inst}" AZURE_PATH "${DEFAULT_AZURE_PATH}")"
+
+        # storage: filesystem
+        local fspath="$(_dbbackup_getv "${inst}" FILESYSTEM_PATH "")"
+        local fsfilemode="$(_dbbackup_getv "${inst}" FILESYSTEM_PERMISSION "")"
+        local fsdirmode="$(_dbbackup_getv "${inst}" FILESYSTEM_PATH_PERMISSION "")"
+
+        # storage: gcs
+        local gcs_bucket="$(_dbbackup_getv "${inst}" GCS_BUCKET "${DEFAULT_GCS_BUCKET}")"
+        local gcs_key="$(_dbbackup_getv "${inst}" GCS_KEY "${DEFAULT_GCS_KEY}")"
+        local gcs_path="$(_dbbackup_getv "${inst}" GCS_PATH "${DEFAULT_GCS_PATH}")"
+
+        # storage: s3
+        local s3_bucket="$(_dbbackup_getv "${inst}" S3_BUCKET "${DEFAULT_S3_BUCKET}")"
+        local s3_path="$(_dbbackup_getv "${inst}" S3_PATH "${DEFAULT_S3_PATH}")"
+        local s3_region="$(_dbbackup_getv "${inst}" S3_REGION "${DEFAULT_S3_REGION}")"
+        local s3_host="$(_dbbackup_getv "${inst}" S3_HOST "${DEFAULT_S3_HOST}")"
+        local s3_protocol="$(_dbbackup_getv "${inst}" S3_PROTOCOL "${DEFAULT_S3_PROTOCOL}")"
+        local s3_key_id="$(_dbbackup_getv "${inst}" S3_KEY_ID "${DEFAULT_S3_KEY_ID}")"
+        local s3_key_secret="$(_dbbackup_getv "${inst}" S3_KEY_SECRET "${DEFAULT_S3_KEY_SECRET}")"
+
+        # storage: webdav
+        local webdav_url="$(_dbbackup_getv "${inst}" WEBDAV_URL "${DEFAULT_WEBDAV_URL}")"
+        local webdav_user="$(_dbbackup_getv "${inst}" WEBDAV_USER "${DEFAULT_WEBDAV_USER}")"
+        local webdav_pass="$(_dbbackup_getv "${inst}" WEBDAV_PASS "${DEFAULT_WEBDAV_PASS}")"
+        local webdav_path="$(_dbbackup_getv "${inst}" WEBDAV_PATH "${DEFAULT_WEBDAV_PATH}")"
+
+        # backup
+        local schema_only="$(_dbbackup_getv "${inst}" SCHEMA_ONLY FALSE)"
+        schema_only="${schema_only,,}"
+        local full_every="$(_dbbackup_getv "${inst}" FULL_EVERY "")"
+        local full_after="$(_dbbackup_getv "${inst}" FULL_AFTER "")"
+        local tables_include="$(_dbbackup_getv "${inst}" TABLES_INCLUDE "")"
+        local tables_exclude="$(_dbbackup_getv "${inst}" TABLES_EXCLUDE "")"
+
+        # retention
+        local ret_last="$(_dbbackup_getv "${inst}" RETENTION_LAST "")"
+        local ret_hourly="$(_dbbackup_getv "${inst}" RETENTION_HOURLY "")"
+        local ret_daily="$(_dbbackup_getv "${inst}" RETENTION_DAILY "")"
+        local ret_weekly="$(_dbbackup_getv "${inst}" RETENTION_WEEKLY "")"
+        local ret_monthly="$(_dbbackup_getv "${inst}" RETENTION_MONTHLY "")"
+        local ret_yearly="$(_dbbackup_getv "${inst}" RETENTION_YEARLY "")"
+
+        ## archive
+        local archive_last="$(_dbbackup_getv "${inst}" ARCHIVE_LAST "")"
+        local archive_within="$(_dbbackup_getv "${inst}" ARCHIVE_WITHIN "")"
+        local archive_path="$(_dbbackup_getv "${inst}" ARCHIVE_PATH "")"
+        # legacy ARCHIVE_TIME (minutes) is a deprecated alias for ARCHIVE_WITHIN.
+        local legacy_archive_time="$(_dbbackup_getv "${inst}" ARCHIVE_TIME "")"
+        if [ -n "${legacy_archive_time}" ]; then
+            print_warn "[DEPRECATED] DB${inst}_ARCHIVE_TIME - use DB${inst}_ARCHIVE_WITHIN (eg 360m) or DB${inst}_ARCHIVE_LAST instead"
+            if [ -z "${archive_within}" ]; then
+                case "${legacy_archive_time}" in
+                    *s|*m|*h|*d)
+                        archive_within="${legacy_archive_time}"
+                        ;;
+                    *[!0-9]*)
+                        archive_within="${legacy_archive_time}"
+                        ;;
+                    *)
+                        archive_within="${legacy_archive_time}m"
+                        ;;
+                esac
+            fi
+        fi
+        # legacy BACKUP_FILESYSTEM_ARCHIVE_PATH / FILESYSTEM_ARCHIVE_PATH alias ARCHIVE_PATH.
+        local legacy_fs_archive="$(_dbbackup_getv "${inst}" BACKUP_FILESYSTEM_ARCHIVE_PATH "")"
+        if [ -z "${legacy_fs_archive}" ]; then
+            legacy_fs_archive="$(_dbbackup_getv "${inst}" FILESYSTEM_ARCHIVE_PATH "")"
+        fi
+        if [ -n "${legacy_fs_archive}" ]; then
+            print_warn "[DEPRECATED] DB${inst}_BACKUP_FILESYSTEM_ARCHIVE_PATH/FILESYSTEM_ARCHIVE_PATH - use DB${inst}_ARCHIVE_PATH instead"
+            if [ -z "${archive_path}" ]; then
+                archive_path="${legacy_fs_archive}"
+            fi
+        fi
+
+        ## maintenance
+        local maintain_op="$(_dbbackup_getv "${inst}" MAINTENANCE "${DEFAULT_MAINTENANCE}")"
+        local maintain_schedule="$(_dbbackup_getv "${inst}" MAINTENANCE_SCHEDULE "${DEFAULT_MAINTENANCE_SCHEDULE}")"
+        local maint_opt check_opt vacuum_opt reindex_opt analyze_opt compact_opt mempurge_opt
+        maint_opt="$(_dbbackup_getv "${inst}" MAINTENANCE_OPTIMIZE "${DEFAULT_MAINTENANCE_OPTIMIZE}")"
+        analyze_opt="$(_dbbackup_getv "${inst}" MAINTENANCE_ANALYZE "${DEFAULT_MAINTENANCE_ANALYZE}")"
+        check_opt="$(_dbbackup_getv "${inst}" MAINTENANCE_CHECK_TABLES "${DEFAULT_MAINTENANCE_CHECK_TABLES}")"
+        compact_opt="$(_dbbackup_getv "${inst}" MAINTENANCE_COMPACT "${DEFAULT_MAINTENANCE_COMPACT}")"
+        mempurge_opt="$(_dbbackup_getv "${inst}" MAINTENANCE_MEMORY_PURGE "${DEFAULT_MAINTENANCE_MEMORY_PURGE}")"
+        reindex_opt="$(_dbbackup_getv "${inst}" MAINTENANCE_REINDEX "${DEFAULT_MAINTENANCE_REINDEX}")"
+        vacuum_opt="$(_dbbackup_getv "${inst}" MAINTENANCE_VACUUM "${DEFAULT_MAINTENANCE_VACUUM}")"
+
+        ## connectivity
+        local connectivity_method="$(_dbbackup_getv "${inst}" CONNECTIVITY_METHOD "${DEFAULT_CONNECTIVITY_METHOD}")"
+        connectivity_method="${connectivity_method,,}"
+        local connectivity_retry="$(_dbbackup_getv "${inst}" CONNECTIVITY_RETRY_INTERVAL "${DEFAULT_CONNECTIVITY_RETRY_INTERVAL}")"
+        local connectivity_timeout="$(_dbbackup_getv "${inst}" CONNECTIVITY_TIMEOUT "${DEFAULT_CONNECTIVITY_TIMEOUT}")"
+
+        _dbbackup_warn_deprecated "${inst}"
+        _dbbackup_warn_unsupported "${inst}"
+
+        case "${type,,}" in
+            couch | influx | mariadb | mongo | mssql | mysql | pgsql | postgres | postgresql | redis )
+                if [ -z "$name" ]; then
+                    print_error "DB${inst}_TYPE=${type} requires DB${inst}_NAME (database name, comma separated list, or ALL)"
+                    print_error "  eg DB${inst}_NAME=appname"
+                    exit 1
+                fi
+            ;;
+        esac
+
+        ## job specific
+        local jref="db${inst}"
+        DBB_REF="$jref"
+        yq -i '.jobs += [{"name": strenv(DBB_REF), "database": strenv(DBB_REF)}]' "${CONFIG_FILE_PATH}"
+        DBB_JNUM="$jnum"
+        jnum=$((jnum + 1))
+
+        if \
+            printenv "DB${inst}_COMPRESSION" >/dev/null 2>&1 || printenv "DB_COMPRESSION" >/dev/null 2>&1 || \
+            printenv "DB${inst}_COMPRESSION_LEVEL" >/dev/null 2>&1 || printenv "DB_COMPRESSION_LEVEL" >/dev/null 2>&1 || \
+            printenv "DB${inst}_COMPRESSION_THREADS" >/dev/null 2>&1 || printenv "DB_COMPRESSION_THREADS" >/dev/null 2>&1 || \
+            printenv "DB${inst}_PARALLEL_COMPRESSION_THREADS" >/dev/null 2>&1 || printenv "DB_PARALLEL_COMPRESSION_THREADS" >/dev/null 2>&1 || \
+            printenv "DB${inst}_COMPRESSION_RSYNCABLE" >/dev/null 2>&1 || printenv "DB_COMPRESSION_RSYNCABLE" >/dev/null 2>&1 || \
+            printenv "DB${inst}_GZ_RSYNCABLE" >/dev/null 2>&1 || printenv "DB_GZ_RSYNCABLE" >/dev/null 2>&1; \
+            then
+                if [ -n "${compress}" ]; then
+                    DBB_C="${compress}"
+                else
+                    DBB_C="zstd"
+                fi
+                yq -i '.jobs[strenv(DBB_JNUM) | tonumber].compression = {"type": strenv(DBB_C)}' "${CONFIG_FILE_PATH}"
+                if [ -n "${compress_level}" ]; then
+                    DBB_L="${compress_level}"
+                    yq -i '.jobs[strenv(DBB_JNUM) | tonumber].compression.level = (strenv(DBB_L) | tonumber)' "${CONFIG_FILE_PATH}"
+                fi
+                if [ -n "$compress_threads" ] && [ "$compress_threads" != "1" ]; then
+                    DBB_T="$compress_threads"
+                    yq -i '.jobs[strenv(DBB_JNUM) | tonumber].compression.threads = (strenv(DBB_T) | tonumber)' "${CONFIG_FILE_PATH}"
+                fi
+                if [ "$(_dbbackup_tyone "$compress_rsyncable")" = "true" ]; then
+                    yq -i '.jobs[strenv(DBB_JNUM) | tonumber].compression.rsyncable = true' "${CONFIG_FILE_PATH}"
+                fi
+        fi
+        if printenv "DB${inst}_CHECKSUM" >/dev/null 2>&1 || printenv "DB_CHECKSUM" >/dev/null 2>&1; then
+            if [ -n "${checksum}" ]; then
+                DBB_K="${checksum}"
+            else
+                DBB_K="md5"
+            fi
+            yq -i '.jobs[strenv(DBB_JNUM) | tonumber].checksum = strenv(DBB_K)' "${CONFIG_FILE_PATH}"
+        fi
+
+        case "${create_latest,,}" in
+            true | 1 | yes)
+                yq -i '.jobs[strenv(DBB_JNUM) | tonumber].backup.create_latest = true' "${CONFIG_FILE_PATH}"
+            ;;
+        esac
+        case "${schema_only,,}" in
+            true | 1 | yes )
+                yq -i '.jobs[strenv(DBB_JNUM) | tonumber].backup.schema_only = true' "${CONFIG_FILE_PATH}"
+            ;;
+        esac
+        if [ -n "${full_every}" ]; then
+            DBB_V="${full_every}"
+            yq -i '.jobs[strenv(DBB_JNUM) | tonumber].backup.full_every = (strenv(DBB_V) | tonumber)' "${CONFIG_FILE_PATH}"
+        fi
+        if [ -n "${full_after}" ]; then
+            DBB_V="${full_after}"
+            yq -i '.jobs[strenv(DBB_JNUM) | tonumber].backup.full_after = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+        fi
+
+        if [ -n "${tables_include}" ] || [ -n "${tables_exclude}" ]; then
+            yq -i '.jobs[strenv(DBB_JNUM) | tonumber].tables = {}' "${CONFIG_FILE_PATH}"
+            if [ -n "${tables_include}" ]; then
+                local tparts=() p
+                IFS=',' read -r -a tparts <<< "${tables_include}"
+                yq -i '.jobs[strenv(DBB_JNUM) | tonumber].tables.include = []' "${CONFIG_FILE_PATH}"
+                for p in "${tparts[@]}"; do
+                    DBB_ITEM="${p// /}"
+                    yq -i '.jobs[strenv(DBB_JNUM) | tonumber].tables.include += [strenv(DBB_ITEM)]' "${CONFIG_FILE_PATH}"
+                done
+            fi
+            if [ -n "${tables_exclude}" ]; then
+                local tparts2=() p
+                IFS=',' read -r -a tparts2 <<< "${tables_exclude}"
+                yq -i '.jobs[strenv(DBB_JNUM) | tonumber].tables.exclude = []' "${CONFIG_FILE_PATH}"
+                for p in "${tparts2[@]}"; do
+                    DBB_ITEM="${p// /}"
+                    yq -i '.jobs[strenv(DBB_JNUM) | tonumber].tables.exclude += [strenv(DBB_ITEM)]' "${CONFIG_FILE_PATH}"
+                done
+            fi
+        fi
+
+        ## schedule
+        case "${begin,,}" in
+            +* )
+                if [ "${interval}" != "0" ] && [ -n "${interval}" ]; then
+                    DBB_B="${begin}"
+                    DBB_I="${interval}"
+                    yq -i '.jobs[strenv(DBB_JNUM) | tonumber].schedule = {"start": strenv(DBB_B), "interval": (strenv(DBB_I) | tonumber)}' "${CONFIG_FILE_PATH}"
+                else
+                    DBB_B="${begin}"
+                    yq -i '.jobs[strenv(DBB_JNUM) | tonumber].schedule = {"begin": strenv(DBB_B)}' "${CONFIG_FILE_PATH}"
+                fi
+            ;;
+            [0-9][0-9][0-9][0-9] )
+                if [ "${interval}" != "0" ] && [ -n "${interval}" ]; then
+                    DBB_B="${begin}"
+                    DBB_I="${interval}"
+                    yq -i '.jobs[strenv(DBB_JNUM) | tonumber].schedule = {"time": strenv(DBB_B), "interval": (strenv(DBB_I) | tonumber)}' "${CONFIG_FILE_PATH}"
+                else
+                    DBB_B="${begin}"
+                    yq -i '.jobs[strenv(DBB_JNUM) | tonumber].schedule = {"time": strenv(DBB_B)}' "${CONFIG_FILE_PATH}"
+                fi
+            ;;
+            * )
+                if [ -n "${begin}" ]; then
+                    DBB_B="${begin}"
+                    yq -i '.jobs[strenv(DBB_JNUM) | tonumber].schedule = {"cron": strenv(DBB_B)}' "${CONFIG_FILE_PATH}"
+                elif [ "${interval}" != "0" ] && [ -n "${interval}" ]; then
+                    DBB_I="${interval}"
+                    yq -i '.jobs[strenv(DBB_JNUM) | tonumber].schedule = {"interval": (strenv(DBB_I) | tonumber)}' "${CONFIG_FILE_PATH}"
+                fi
+            ;;
+        esac
+
+        ## blackout (job)
+        if [ -n "${blackout_begin}" ] || [ -n "${blackout_end}" ]; then
+            DBB_BO_BEGIN="$blackout_begin"
+            DBB_BO_END="$blackout_end"
+            yq -i '.jobs[strenv(DBB_JNUM) | tonumber].schedule.blackout = [{"begin": strenv(DBB_BO_BEGIN), "end": strenv(DBB_BO_END)}]' "${CONFIG_FILE_PATH}"
+            if [ -n "${blackout_days}" ]; then
+                DBB_BO_DAYS="$blackout_days"
+                yq -i '.jobs[strenv(DBB_JNUM) | tonumber].schedule.blackout[0].days = strenv(DBB_BO_DAYS)' "${CONFIG_FILE_PATH}"
+            fi
+        fi
+
+        ### connectivity
+        if [ -n "${connectivity_method}" ] || [ -n "${connectivity_retry}" ] || [ -n "${connectivity_timeout}" ]; then
+            yq -i '.jobs[strenv(DBB_JNUM) | tonumber].connectivity = {"enabled": true}' "${CONFIG_FILE_PATH}"
+            if [ -n "${connectivity_method}" ]; then
+                DBB_CM="${connectivity_method}"
+                yq -i '.jobs[strenv(DBB_JNUM) | tonumber].connectivity.method = strenv(DBB_CM)' "${CONFIG_FILE_PATH}"
+            fi
+            if [ -n "${connectivity_retry}" ]; then
+                DBB_CR="${connectivity_retry}"
+                yq -i '.jobs[strenv(DBB_JNUM) | tonumber].connectivity.retry_interval = (strenv(DBB_CR) | tonumber)' "${CONFIG_FILE_PATH}"
+            fi
+            if [ -n "${connectivity_timeout}" ]; then
+                DBB_CT="${connectivity_timeout}"
+                yq -i '.jobs[strenv(DBB_JNUM) | tonumber].connectivity.timeout = (strenv(DBB_CT) | tonumber)' "${CONFIG_FILE_PATH}"
+            fi
+        fi
+
+        ### storage
+        explicit_loc="$(printenv "DB${inst}_BACKUP_LOCATION" 2>/dev/null || true)"
+        if [ -z "${explicit_loc}" ]; then
+            explicit_loc="$(printenv "DB_BACKUP_LOCATION" 2>/dev/null || true)"
+        fi
+        explicit_fs="$(printenv "DB${inst}_FILESYSTEM_PATH" 2>/dev/null || true)"
+        if [ -z "${explicit_fs}" ]; then
+            explicit_fs="$(printenv "DB_FILESYSTEM_PATH" 2>/dev/null || true)"
+        fi
+        explicit_fsf="$(printenv "DB${inst}_FILESYSTEM_PERMISSION" 2>/dev/null || true)"
+        if [ -z "${explicit_fsf}" ]; then
+            explicit_fsf="$(printenv "DB_FILESYSTEM_PERMISSION" 2>/dev/null || true)"
+        fi
+        explicit_fsd="$(printenv "DB${inst}_FILESYSTEM_PATH_PERMISSION" 2>/dev/null || true)"
+        if [ -z "${explicit_fsd}" ]; then
+            explicit_fsd="$(printenv "DB_FILESYSTEM_PATH_PERMISSION" 2>/dev/null || true)"
+        fi
+        if [ -n "${explicit_fs}" ] || [ -n "${explicit_fsf}" ] || [ -n "${explicit_fsd}" ]; then
+            backup_location="filesystem"
+        fi
+        if [ -n "${explicit_loc}" ] || [ -n "${explicit_fs}" ] || [ -n "${explicit_fsf}" ] || [ -n "${explicit_fsd}" ]; then
+            case "${backup_location,,}" in
+                azure )
+                    DBB_B="azure"
+                    yq -i '.jobs[strenv(DBB_JNUM) | tonumber].storage = {"backend": strenv(DBB_B)}' "${CONFIG_FILE_PATH}"
+                    if [ -n "${azure_account}" ]; then
+                        DBB_V="${azure_account}"
+                        yq -i '.jobs[strenv(DBB_JNUM) | tonumber].storage.account = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+                    fi
+                    if [ -n "${azure_key}" ]; then
+                        DBB_V="${azure_key}"
+                        yq -i '.jobs[strenv(DBB_JNUM) | tonumber].storage.key = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+                    fi
+                    if [ -n "${azure_container}" ]; then
+                        DBB_V="${azure_container}"
+                        yq -i '.jobs[strenv(DBB_JNUM) | tonumber].storage.bucket = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+                    fi
+                    if [ -n "${azure_path}" ]; then
+                        DBB_V="${azure_path}"
+                        yq -i '.jobs[strenv(DBB_JNUM) | tonumber].storage.path = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+                    fi
+                ;;
+                filesystem )
+                    DBB_B="filesystem"
+                    if [ -n "${fspath}" ]; then
+                        DBB_P="${fspath}"
+                    else
+                        DBB_P="${d_storage_path}"
+                    fi
+                    if [ -n "${fsfilemode}" ]; then
+                        DBB_FM="${fsfilemode}"
+                    else
+                        DBB_FM="${d_file_mode}"
+                    fi
+                    if [ -n "${fsdirmode}" ]; then
+                        DBB_DM="${fsdirmode}"
+                    else
+                        DBB_DM="${d_dir_mode}"
+                    fi
+                    DBB_U="${d_user}"
+                    DBB_G="${d_group}"
+                    yq -i '.jobs[strenv(DBB_JNUM) | tonumber].storage = {"backend": strenv(DBB_B), "path": strenv(DBB_P), "file_mode": strenv(DBB_FM), "dir_mode": strenv(DBB_DM), "user": strenv(DBB_U), "group": strenv(DBB_G)}' "${CONFIG_FILE_PATH}"
+                ;;
+                gcs )
+                    DBB_B="gcs"
+                    yq -i '.jobs[strenv(DBB_JNUM) | tonumber].storage = {"backend": strenv(DBB_B)}' "${CONFIG_FILE_PATH}"
+                    if [ -n "${gcs_bucket}" ]; then
+                        DBB_V="${gcs_bucket}"
+                        yq -i '.jobs[strenv(DBB_JNUM) | tonumber].storage.bucket = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+                    fi
+                    if [ -n "${gcs_key}" ]; then
+                        DBB_V="${gcs_key}"
+                        yq -i '.jobs[strenv(DBB_JNUM) | tonumber].storage.key = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+                    fi
+                    if [ -n "${gcs_path}" ]; then
+                        DBB_V="${gcs_path}"
+                        yq -i '.jobs[strenv(DBB_JNUM) | tonumber].storage.path = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+                    fi
+                ;;
+                s3 )
+                    DBB_B="s3"
+                    yq -i '.jobs[strenv(DBB_JNUM) | tonumber].storage = {"backend": strenv(DBB_B)}' "${CONFIG_FILE_PATH}"
+                    if [ -n "${s3_bucket}" ]; then
+                        DBB_V="${s3_bucket}"
+                        yq -i '.jobs[strenv(DBB_JNUM) | tonumber].storage.bucket = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+                    fi
+                    if [ -n "${s3_path}" ]; then
+                        DBB_V="${s3_path}"
+                        yq -i '.jobs[strenv(DBB_JNUM) | tonumber].storage.path = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+                    fi
+                    if [ -n "${s3_region}" ]; then
+                        DBB_V="${s3_region}"
+                        yq -i '.jobs[strenv(DBB_JNUM) | tonumber].storage.region = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+                    fi
+                    if [ -n "${s3_host}" ]; then
+                        DBB_V="${s3_host}"
+                        if [ -n "${s3_protocol}" ]; then
+                            DBB_V="${s3_protocol}://${s3_host}"
+                        fi
+                        yq -i '.jobs[strenv(DBB_JNUM) | tonumber].storage.endpoint = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+                    fi
+                    if [ -n "${s3_key_id}" ]; then
+                        DBB_V="${s3_key_id}"
+                        yq -i '.jobs[strenv(DBB_JNUM) | tonumber].storage.key_id = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+                    fi
+                    if [ -n "${s3_key_secret}" ]; then
+                        DBB_V="${s3_key_secret}"
+                        yq -i '.jobs[strenv(DBB_JNUM) | tonumber].storage.key_secret = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+                    fi
+                    local s3_tls_ca s3_tls_skip
+                    s3_tls_ca="$(_dbbackup_explicit_env "${inst}" S3_CERT_CA_FILE)"
+                    s3_tls_skip="$(_dbbackup_explicit_env "${inst}" S3_CERT_SKIP_VERIFY)"; s3_tls_skip="${s3_tls_skip,,}"
+                    if [ -n "$s3_tls_ca" ] || [ -n "$s3_tls_skip" ]; then
+                        yq -i '.jobs[strenv(DBB_JNUM) | tonumber].tls = {"enable": true}' "${CONFIG_FILE_PATH}"
+                        if [ -n "$s3_tls_ca" ]; then
+                            DBB_V="$s3_tls_ca"
+                            yq -i '.jobs[strenv(DBB_JNUM) | tonumber].tls.ca_file = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+                        fi
+                        case "${s3_tls_skip,,}" in
+                            false | 0 |no )
+                                yq -i '.jobs[strenv(DBB_JNUM) | tonumber].tls.verify = true' "${CONFIG_FILE_PATH}"
+                            ;;
+                            * )
+                                yq -i '.jobs[strenv(DBB_JNUM) | tonumber].tls.verify = false' "${CONFIG_FILE_PATH}"
+                            ;;
+                        esac
+                    fi
+                ;;
+                webdav )
+                    DBB_B="webdav"
+                    yq -i '.jobs[strenv(DBB_JNUM) | tonumber].storage = {"backend": strenv(DBB_B)}' "${CONFIG_FILE_PATH}"
+                    if [ -n "${webdav_url}" ]; then
+                        DBB_V="${webdav_url}"
+                        yq -i '.jobs[strenv(DBB_JNUM) | tonumber].storage.url = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+                    fi
+                    if [ -n "${webdav_user}" ]; then
+                        DBB_V="${webdav_user}"
+                        yq -i '.jobs[strenv(DBB_JNUM) | tonumber].storage.user = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+                    fi
+                    if [ -n "${webdav_pass}" ]; then
+                        DBB_V="${webdav_pass}"
+                        yq -i '.jobs[strenv(DBB_JNUM) | tonumber].storage.pass = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+                    fi
+                    if [ -n "${webdav_path}" ]; then
+                        DBB_V="${webdav_path}"
+                        yq -i '.jobs[strenv(DBB_JNUM) | tonumber].storage.path = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+                    fi
+                ;;
+            esac
+        fi
+
+        ### retention
+        if [ -n "${cleanup_time}" ] && [ "${cleanup_time}" != "0" ] && [ "${cleanup_time}" != "FALSE" ]; then
+            case "${cleanup_time}" in
+                *s|*m|*h|*d)
+                    DBB_V="${cleanup_time}"
+                    yq -i '.jobs[strenv(DBB_JNUM) | tonumber].retention.within = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+                    ;;
+                *[!0-9]*)
+                    DBB_V="${cleanup_time}"
+                    yq -i '.jobs[strenv(DBB_JNUM) | tonumber].retention.within = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+                    ;;
+                *)
+                    DBB_V="${cleanup_time}m"
+                    yq -i '.jobs[strenv(DBB_JNUM) | tonumber].retention.within = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+                    ;;
+            esac
+        fi
+        if [ -n "${ret_last}" ]; then
+            DBB_V="${ret_last}"
+            yq -i '.jobs[strenv(DBB_JNUM) | tonumber].retention.last = (strenv(DBB_V) | tonumber)' "${CONFIG_FILE_PATH}"
+        fi
+        if [ -n "${ret_hourly}" ]; then
+            DBB_V="${ret_hourly}"
+            yq -i '.jobs[strenv(DBB_JNUM) | tonumber].retention.hourly = (strenv(DBB_V) | tonumber)' "${CONFIG_FILE_PATH}"
+        fi
+        if [ -n "${ret_daily}" ]; then
+            DBB_V="${ret_daily}"
+            yq -i '.jobs[strenv(DBB_JNUM) | tonumber].retention.daily = (strenv(DBB_V) | tonumber)' "${CONFIG_FILE_PATH}"
+        fi
+        if [ -n "${ret_weekly}" ]; then
+            DBB_V="${ret_weekly}"
+            yq -i '.jobs[strenv(DBB_JNUM) | tonumber].retention.weekly = (strenv(DBB_V) | tonumber)' "${CONFIG_FILE_PATH}"
+        fi
+        if [ -n "${ret_monthly}" ]; then
+            DBB_V="${ret_monthly}"
+            yq -i '.jobs[strenv(DBB_JNUM) | tonumber].retention.monthly = (strenv(DBB_V) | tonumber)' "${CONFIG_FILE_PATH}"
+        fi
+        if [ -n "${ret_yearly}" ]; then
+            DBB_V="${ret_yearly}"
+            yq -i '.jobs[strenv(DBB_JNUM) | tonumber].retention.yearly = (strenv(DBB_V) | tonumber)' "${CONFIG_FILE_PATH}"
+        fi
+
+        ### archive
+        if [ -n "${archive_last}" ]; then
+            DBB_V="${archive_last}"
+            yq -i '.jobs[strenv(DBB_JNUM) | tonumber].archive.last = (strenv(DBB_V) | tonumber)' "${CONFIG_FILE_PATH}"
+        fi
+        if [ -n "${archive_within}" ]; then
+            DBB_V="${archive_within}"
+            yq -i '.jobs[strenv(DBB_JNUM) | tonumber].archive.within = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+        fi
+        if [ -n "${archive_path}" ]; then
+            DBB_V="${archive_path}"
+            yq -i '.jobs[strenv(DBB_JNUM) | tonumber].archive.path = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+        fi
+
+        # maintenance
+        local maintain_enabled=""
+        if [ "$(_dbbackup_tyone "${maintain_op}")" = "true" ]; then
+            maintain_enabled="true"
+        fi
+        if [ -n "${maintain_op}" ] || [ -n "${maint_opt}" ] || [ -n "${check_opt}" ] || [ -n "${vacuum_opt}" ] || [ -n "${reindex_opt}" ] || [ -n "${analyze_opt}" ] || [ -n "${compact_opt}" ] || [ -n "${mempurge_opt}" ] || [ -n "${maintain_schedule}" ]; then
+            DBB_M="db${inst}-maintenance"
+            yq -i '.profiles.maintenance[strenv(DBB_M)] = {}' "${CONFIG_FILE_PATH}"
+            for maint_pair in \
+                "analyze:${analyze_opt}" \
+                "check_tables:${check_opt}" \
+                "compact:${compact_opt}" \
+                "memory_purge:${mempurge_opt}" \
+                "optimize:${maint_opt}" \
+                "reindex:${reindex_opt}" \
+                "vacuum:${vacuum_opt}"; do
+                local maint_key="${maint_pair%%:*}"
+                local maint_override="${maint_pair#*:}"
+                local maint_value="${maint_override}"
+                if [ -z "${maint_value}" ]; then
+                    maint_value="${maintain_enabled}"
+                fi
+                DBB_K="${maint_key}"
+                DBB_V="$(_dbbackup_tyone "${maint_value}")"
+                yq -i '.profiles.maintenance[strenv(DBB_M)][strenv(DBB_K)] = (strenv(DBB_V) == "true")' "${CONFIG_FILE_PATH}"
+            done
+            if [ -n "${maintain_schedule}" ]; then
+                DBB_V="${maintain_schedule}"
+                yq -i '.profiles.maintenance[strenv(DBB_M)].schedule = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+            fi
+            yq -i '.jobs[strenv(DBB_JNUM) | tonumber].maintenance = strenv(DBB_M)' "${CONFIG_FILE_PATH}"
+        fi
+
+        case "${split_db,,}" in
+            true | 1 | yes )
+                yq -i '.jobs[strenv(DBB_JNUM) | tonumber].split_db = true' "${CONFIG_FILE_PATH}"
+            ;;
+        esac
+
+        # per job log level
+        if [ -n "${log_level}" ] && (printenv "DB${inst}_LOG_LEVEL" >/dev/null 2>&1 || printenv "DB_LOG_LEVEL" >/dev/null 2>&1); then
+            DBB_V="$(_dbbackup_log_level "$log_level")"
+            yq -i '.jobs[strenv(DBB_JNUM) | tonumber].log_level = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+        fi
+
+        # job log file only when DB##_LOG_PATH/LOG_FILE are explicitly set not inherited from the container default
+        local log_path="$(printenv "DB${inst}_LOG_PATH" 2>/dev/null || true)"
+        if [ -z "$log_path" ]; then
+            log_path="$(printenv "DB_LOG_PATH" 2>/dev/null || true)"
+        fi
+        local log_file="$(printenv "DB${inst}_LOG_FILE" 2>/dev/null || true)"
+        if [ -z "$log_file" ]; then
+            log_file="$(printenv "DB_LOG_FILE" 2>/dev/null || true)"
+        fi
+        if [ -n "${log_path}" ] || [ -n "${log_file}" ]; then
+            DBB_V="${log_path%/}/${log_file}"
+            yq -i '.jobs[strenv(DBB_JNUM) | tonumber].log_path = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+        fi
+
+        if [ -n "${size_format}" ]; then
+            DBB_V="${size_format}"
+            yq -i '.jobs[strenv(DBB_JNUM) | tonumber].size_format = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+        fi
+
+        case "${encrypt,,}" in
+            true | 1 | yes )
+                DBB_V="age-${inst}"
+                yq -i '.jobs[strenv(DBB_JNUM) | tonumber].encryption = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+            ;;
+        esac
+
+        # hooks
+        local pre_hooks=() post_hooks=()
+        local pre_optout="" post_optout=""
+        if printenv "DB${inst}_PRE_COMMAND" >/dev/null 2>&1 || printenv "DB_PRE_COMMAND" >/dev/null 2>&1; then
+            if [ -z "$pre_command" ] || [ "${pre_command,,}" = "unset" ]; then
+                pre_optout="1"
+            fi
+        fi
+        if printenv "DB${inst}_POST_COMMAND" >/dev/null 2>&1 || printenv "DB_POST_COMMAND" >/dev/null 2>&1; then
+            if [ -z "$post_command" ] || [ "${post_command,,}" = "unset" ]; then
+                post_optout="1"
+            fi
+        fi
+        if [ -n "$pre_optout" ]; then
+            :
+        elif [ -n "$pre_command" ]; then
+            pre_hooks+=("$pre_command")
+        elif [ -n "$legacy_pre_script" ]; then
+            print_warn "[DEPRECATED] DB${inst}_PRE_SCRIPT - use DB${inst}_PRE_COMMAND instead"
+            pre_hooks+=("$legacy_pre_script")
+        elif [ -n "$legacy_pre_dir" ]; then
+            print_warn "[DEPRECATED] DB${inst}_SCRIPT_LOCATION_PRE - use DB${inst}_PRE_COMMAND instead"
+            pre_hooks+=("for f in ${legacy_pre_dir}*.sh; do if [ -x \"\$f\" ]; then \"\$f\"; fi; done")
+        fi
+        if [ -n "$post_optout" ]; then
+            :
+        elif [ -n "$post_command" ]; then
+            post_hooks+=("$post_command")
+        elif [ -n "$legacy_post_script" ]; then
+            print_warn "[DEPRECATED] DB${inst}_POST_SCRIPT - use DB${inst}_POST_COMMAND instead"
+            post_hooks+=("$legacy_post_script")
+        elif [ -n "$legacy_post_dir" ]; then
+            print_warn "[DEPRECATED] DB${inst}_SCRIPT_LOCATION_POST - use DB${inst}_POST_COMMAND instead"
+            post_hooks+=("for f in ${legacy_post_dir}*.sh; do if [ -x \"\$f\" ]; then \"\$f\"; fi; done")
+        fi
+        if [ "${#pre_hooks[@]}" -gt 0 ] || [ "${#post_hooks[@]}" -gt 0 ] || [ -n "$pre_optout" ] || [ -n "$post_optout" ]; then
+            yq -i '.jobs[strenv(DBB_JNUM) | tonumber].hooks = {}' "${CONFIG_FILE_PATH}"
+            if [ "${#pre_hooks[@]}" -gt 0 ]; then
+                yq -i '.jobs[strenv(DBB_JNUM) | tonumber].hooks.pre = []' "${CONFIG_FILE_PATH}"
+                local h
+                for h in "${pre_hooks[@]}"; do
+                    DBB_ITEM="$h"
+                    yq -i '.jobs[strenv(DBB_JNUM) | tonumber].hooks.pre += [strenv(DBB_ITEM)]' "${CONFIG_FILE_PATH}"
+                done
+            fi
+            if [ "${#post_hooks[@]}" -gt 0 ]; then
+                yq -i '.jobs[strenv(DBB_JNUM) | tonumber].hooks.post = []' "${CONFIG_FILE_PATH}"
+                for h in "${post_hooks[@]}"; do
+                    DBB_ITEM="$h"
+                    yq -i '.jobs[strenv(DBB_JNUM) | tonumber].hooks.post += [strenv(DBB_ITEM)]' "${CONFIG_FILE_PATH}"
+                done
+            fi
+        fi
+    done
+
+    # unattended restore
+    if [ -n "${RESTORE_CONNECTION}" ] || [ -n "${RESTORE_FILE}" ]; then
+        yq -i '.restore = {}' "${CONFIG_FILE_PATH}"
+        if [ -n "${RESTORE_FILE}" ]; then
+            DBB_RESTORE_FILE="${RESTORE_FILE}"
+            yq -i '.restore.file = strenv(DBB_RESTORE_FILE)' "${CONFIG_FILE_PATH}"
+        fi
+        if [ -n "${RESTORE_BASE}" ]; then
+            DBB_RESTORE_BASE="${RESTORE_BASE}"
+            yq -i '.restore.base = strenv(DBB_RESTORE_BASE)' "${CONFIG_FILE_PATH}"
+        fi
+        if [ -n "${RESTORE_CONNECTION}" ]; then
+            DBB_RESTORE_CONNECTION="${RESTORE_CONNECTION}"
+            yq -i '.restore.connection = strenv(DBB_RESTORE_CONNECTION)' "${CONFIG_FILE_PATH}"
+        fi
+        if [ -n "${RESTORE_STORAGE}" ]; then
+            DBB_RESTORE_STORAGE="${RESTORE_STORAGE}"
+            yq -i '.restore.storage = strenv(DBB_RESTORE_STORAGE)' "${CONFIG_FILE_PATH}"
+        fi
+        if [ -n "${RESTORE_IDENTITY}" ]; then
+            yq -i '.restore.identity = "env://RESTORE_IDENTITY"' "${CONFIG_FILE_PATH}"
+        fi
+        if [ -n "${RESTORE_PASSPHRASE}" ]; then
+            yq -i '.restore.passphrase = "env://RESTORE_PASSPHRASE"' "${CONFIG_FILE_PATH}"
+        fi
+    fi
+
+    set +a
+
+    # pretty config
+    awk 'NR>1 && /^[A-Za-z][A-Za-z0-9_-]*:/ { print "" } { print }' \
+        "${CONFIG_FILE_PATH}" > "${CONFIG_FILE_PATH}.fmt"
+    mv "${CONFIG_FILE_PATH}.fmt" "${CONFIG_FILE_PATH}"
+    local dbb_stamp dbb_cfgdir
+    dbb_cfgdir="${CONFIG_PATH%/}"
+    {
+        printf '%s\n' '## Custom Generated nfrastack/db-backup container Configuration! Do not edit, instead set ENV Vars'
+        printf '%s\n' '## If you want to use your own configuration files set SETUP_TYPE=MANUAL when starting container'
+        printf '%s\n' "## Last Generated on $(TZ="${TIMEZONE}" date +'%Y-%m-%d %H:%M:%S %Z')"
+        printf '%s\n' "## To keep this file: set SETUP_TYPE=MANUAL and mount ${dbb_cfgdir} as a persistent volume"
+        cat "${CONFIG_FILE_PATH}"
+    } > "${CONFIG_FILE_PATH}.nfragen"
+    mv "${CONFIG_FILE_PATH}.nfragen" "${CONFIG_FILE_PATH}"
+
+    echo "alias dbb=\"/app/dbb --config ${CONFIG_FILE_PATH}\"" | write_file -a root:root@/root/.bashrc
+}
+
+dbbackup_generate_helpers() {
+    local cfg jobs i name helper helpers_dir
+    helpers_dir="/usr/local/bin"
+    cfg="${CONFIG_PATH%/}/${CONFIG_FILE}"
+    [ -f "${cfg}" ] || return 0
+
+    for helper in "${helpers_dir}"/backup??-now; do
+        if [ -e "${helper}" ] ; then rm -f "${helper}"; fi
+    done
+
+    jobs="$(yq -r '.jobs[].name' "${cfg}" 2>/dev/null || true)"
+    if [ -z "${jobs}" ]; then
+        return 0
+    fi
+    i=1
+    while read -r name; do
+        case "${name}" in
+            ""|*[!a-zA-Z0-9_.-]*)
+                print_error "dbbackup_generate_helpers: skipping job with invalid name '${name}' (allowed: [a-zA-Z0-9_.-])"
+                continue
+                ;;
+        esac
+        printf -v idx '%02d' "${i}"
+        {
+            printf '#!/command/with-contenv bash\nexec /usr/local/bin/backup-now %s\n' \
+                "$(printf '%s' "${name}" | sed -e "s/'/'\\\\''/g" -e "s/^/'/" -e "s/$/'/")"
+        } > "${helpers_dir}/backup${idx}-now"
+        chmod +x "${helpers_dir}/backup${idx}-now"
+        i=$((i + 1))
+    done <<< "${jobs}"
+}
+
+_dbbackup_optout() {
+    local v="${1,,}"
+    [ "${v}" = "unset" ]
+}
+
+_dbbackup_dnorm() {
+    local v="${!1-}"
+    if _dbbackup_optout "${v}"; then
+        printf -v "$1" ""
+    fi
+}
+
+_dbbackup_unset_value() {
+    local v="$1"
+    if [ -z "${v}" ] || [ "${v}" = "unset" ]; then
+        return 0
+    fi
+    return 1
+}
+
+_dbbackup_getv() {
+    local inst="$1" name="$2" fallback="$3" v var
+    var="DB${inst}_${name}"
+    v="${!var-}"
+    if _dbbackup_optout "$v"; then
+        return 0
+    fi
+    if _dbbackup_unset_value "$v"; then
+        if [ "${inst}" = "01" ]; then
+            var="DB_${name}"
+            v="${!var-}"
+            if _dbbackup_optout "$v"; then
+                return 0
+            fi
+            if _dbbackup_unset_value "$v"; then
+                var="${name}"
+                v="${!var-}"
+                if _dbbackup_optout "$v"; then
+                    return 0
+                fi
+            fi
+        fi
+    fi
+    if _dbbackup_unset_value "$v"; then
+        v="${fallback}"
+    fi
+    printf '%s' "$v"
+}
+
+_dbbackup_explicit_env() {
+    local inst="$1" name="$2" v var
+    var="DB${inst}_${name}"
+    v="${!var-}"
+    if _dbbackup_optout "$v"; then
+        return 0
+    fi
+    if _dbbackup_unset_value "$v" && [ "${inst}" = "01" ]; then
+        var="DB_${name}"
+        v="${!var-}"
+        if _dbbackup_optout "$v"; then
+            return 0
+        fi
+        if _dbbackup_unset_value "$v"; then
+            var="${name}"
+            v="${!var-}"
+            if _dbbackup_optout "$v"; then
+                return 0
+            fi
+        fi
+    fi
+    printf '%s' "$v"
+}
+
+_dbbackup_log_level() {
+    case "${1,,}" in
+        info | notice ) echo "info" ;;
+        error ) echo "error" ;;
+        warn* ) echo "warn" ;;
+        debug ) echo "debug" ;;
+        * ) echo "info" ;;
+    esac
+}
+
+_dbbackup_tyone() {
+    case "${1,,}" in
+        true | 1 | yes )
+            echo "true"
+        ;;
+        * )
+            echo "false"
+        ;;
+    esac
+}
+
+_dbbackup_warn_deprecated() {
+    # legacy variables removed in v5
+    local inst="$1" v var
+    local deprecated=(  \
+                        ENCRYPT_PUBLIC_KEY \
+                        ENCRYPT_PRIVATE_KEY \
+                        MONGO_CUSTOM_URI \
+                        MYSQL_EVENTS \
+                        MYSQL_SINGLE_TRANSACTION \
+                        MYSQL_STORED_PROCEDURES \
+                        MYSQL_MAX_ALLOWED_PACKET \
+                        S3_EXTRA_OPTS BLOBXFER_MODE \
+                        BLOBXFER_STORAGE_ACCOUNT \
+                        BLOBXFER_STORAGE_ACCOUNT_KEY \
+                        BLOBXFER_REMOTE_PATH \
+                        RESOURCE_OPTIMIZED \
+                      )
+    for var in "${deprecated[@]}"; do
+        v="$(_dbbackup_getv "${inst}" "$var" "")"
+        if [ -n "$v" ]; then
+            print_warn "[DEPRECATED] DB${inst}_${var} is set but is no longer supported in v5.x."
+            print_warn "[DEPRECATED]   Configure it manually in the config file instead."
+        fi
+    done
+    v="$(_dbbackup_getv "${inst}" INFLUX_VERSION "")"
+    if [ -n "$v" ]; then
+        print_warn "[DEPRECATED] DB${inst}_INFLUX_VERSION is set - the InfluxDB version is now auto detected from the server."
+        print_warn "[DEPRECATED]   The value is still honored as an explicit override if you encounter problems "
+    fi
+    v="$(_dbbackup_getv "${inst}" GZ_RSYNCABLE "")"
+    if [ -n "$v" ]; then
+        print_warn "[DEPRECATED] DB${inst}_GZ_RSYNCABLE - use DB${inst}_COMPRESSION_RSYNCABLE instead."
+    fi
+}
+
+_dbbackup_warn_unsupported() {
+    # legacy variables with no v5 equivalent
+    local inst="$1" v var
+    local unsupported=( \
+                        EXTRA_BACKUP_OPTS \
+                        EXTRA_ENUMERATION_OPTS \
+                        EXTRA_OPTS \
+                        MYSQL_CLIENT \
+                        PRE_SCRIPT_X_VERIFY \
+                        POST_SCRIPT_X_VERIFY \
+                      )
+    for var in "${unsupported[@]}"; do
+        v="$(_dbbackup_getv "${inst}" "$var" "")"
+        if [ -n "${v}" ]; then
+            print_warn "DB${inst}_${var} is set but is not supported using legacy environment variables."
+            print_warn "   Configure it manually in the config file instead."
+        fi
+    done
+}
+
+_dbbackup_warn_notifications() {
+    # 4.x notification variables removed in v5 - warn if still set
+    local var
+    local notifs=( \
+                    ENABLE_NOTIFICATIONS \
+                    NOTIFICATION_TYPE \
+                    NOTIFICATION_CUSTOM_SCRIPT \
+                    MAIL_FROM \
+                    MAIL_TO \
+                    SMTP_HOST \
+                    SMTP_PORT \
+                    MATRIX_HOST \
+                    MATRIX_ROOM \
+                    MATRIX_ACCESS_TOKEN \
+                    MATTERMOST_WEBHOOK_URL \
+                    MATTERMOST_RECIPIENT \
+                    MATTERMOST_USERNAME \
+                    ROCKETCHAT_WEBHOOK_URL \
+                    ROCKETCHAT_RECIPIENT \
+                    ROCKETCHAT_USERNAME \
+                 )
+    for var in "${notifs[@]}"; do
+        if printenv "${var}" >/dev/null 2>&1 && [ -n "${!var}" ]; then
+            print_warn "NOTICE ${var} is set but notifications are not available in v5."
+            print_warn "   The 4.x notification features (email, matrix, mattermost, rocketchat, custom) were horribly broken and not carried over."
+        fi
+    done
+}
+
+_dbbackup_warn_bare_aliases() {
+    local var v
+    local bare=( \
+                    BACKUP_LOCATION \
+                    BACKUP_INTERVAL \
+                    CHECKSUM \
+                    COMPRESSION \
+                    COMPRESSION_LEVEL \
+                    FILESYSTEM_PATH \
+                    FILESYSTEM_PERMISSION \
+                    FILESYSTEM_PATH_PERMISSION \
+                    S3_BUCKET \
+                    S3_PATH \
+                    S3_REGION \
+                    S3_HOST \
+                    S3_PROTOCOL \
+                    S3_KEY_ID \
+                    S3_KEY_SECRET \
+                )
+    for var in "${bare[@]}"; do
+        if printenv "${var}" >/dev/null 2>&1 && [ -n "${!var}" ]; then
+            print_warn "[DEPRECATED] ${var} is set - use DEFAULT_${var} for a global default or DB##_${var} per job"
+        fi
+    done
+}

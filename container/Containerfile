@@ -1,0 +1,82 @@
+# SPDX-FileCopyrightText: © 2026 Nfrastack <code@nfrastack.com>
+#
+# SPDX-License-Identifier: MIT
+
+ARG \
+    BASE_IMAGE
+
+FROM ${BASE_IMAGE}
+
+LABEL \
+        org.opencontainers.image.title="DB Backup" \
+        org.opencontainers.image.description="Backup multiple databases on a scheduled basis with many customizable options" \
+        org.opencontainers.image.url="https://hub.docker.com/r/nfrastack/db-backup" \
+        org.opencontainers.image.documentation="https://www.nfrastack.com/db-backup" \
+        org.opencontainers.image.source="https://github.com/nfrastack/db-backup.git" \
+        org.opencontainers.image.authors="Nfrastack <code@nfrastack.com>" \
+        org.opencontainers.image.vendor="Nfrastack <https://www.nfrastack.com>" \
+        org.opencontainers.image.licenses="MIT"
+
+ENV \
+    CONTAINER_ENABLE_SCHEDULING=TRUE \
+    PATH="/app:${PATH}" \
+    IMAGE_NAME="nfrastack/db-backup" \
+    IMAGE_REPO_URL="https://github.com/nfrastack/db-backup/"
+
+ARG \
+    DBBACKUP_VERSION="dev" \
+    GOLANG_VERSION="1.26.7"
+
+HEALTHCHECK \
+                --interval=30s \
+                --timeout=5s \
+                --start-period=60s \
+                --retries=3 \
+            CMD /app/dbb version || exit 1
+
+VOLUME /var/lib/dbb
+WORKDIR /app
+COPY / /usr/src/db-backup/
+
+RUN echo "" && \
+    DBBACKUP_BUILD_DEPS_ALPINE=" \
+                                    make \
+                                " \
+                                && \
+    mkdir -p /usr/src/container && \
+    cp -aR \
+           /usr/src/db-backup/container/CHANGELOG.md \
+           /usr/src/db-backup/container/README.md \
+           /usr/src/db-backup/container/LICENSE \
+           /usr/src/container && \
+    \
+    source /container/base/functions/container/build && \
+    container_build_log image && \
+    package update && \
+    package upgrade && \
+    package install \
+                    DBBACKUP_BUILD_DEPS \
+                    && \
+    \
+    package build go buildtime && \
+    package build yq && \
+    \
+    create_user dbbackup 10000 dbbackup 10000 /var/lib/dbb && \
+    cd /usr/src/db-backup && \
+    make build-release DBBACKUP_VERSION="${DBBACKUP_VERSION}" && \
+    cp -aR \
+                dbb \
+                LICENSE\
+                LICENSES \
+                README.md \
+                SECURITY.md \
+           /app \
+           && \
+    mkdir -p /container/data/db-backup && \
+    cp -R contrib/config/dbbackup.yaml.example /container/data/db-backup/dbbackup.yaml.example && \
+    \
+    cp -aR /usr/src/db-backup/container/rootfs/* / && \
+    \
+    container_build_log add "DB Backup" "${DBBACKUP_VERSION}" "${IMAGE_REPO_URL}" && \
+    package remove DBBACKUP_BUILD_DEPS && \
+    package cleanup

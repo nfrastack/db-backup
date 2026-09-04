@@ -1,0 +1,310 @@
+# db-backup example configuration
+
+# include:               # Pull in additional Configuration
+#   - /etc/dbb-extra.yml # Absoute paths fail if they do not exist
+#   - ./jobs/*.yml       # Globs and wilcards work and bypass hard fail
+
+# Logging
+log:
+  level: info            # debug | info | warn | error | none
+  format: text           # text | json
+  type: console          # console | file | both
+  # path: /var/log/dbbackup.log    # log file path (for type file|both)
+  # user: dbbackup                 # change ownership of the log file to this user (best-effort)
+  # group: dbbackup                # change group ownership of the log file to this group (best-effort)
+  colour: false          # disable colours when shipping logs
+  prefix: true           # Datestamped Prefix before any output
+  prefix_format: "2006-01-02 15:04:05"
+  session_id: true       # output session= on every line (default true)
+  run_id: true           # output run_id= on job lines (default true)
+  timings: true          # output timing="dump=... total=..." field (default true)
+  size: bytes            # size= format: bytes|bytes_human|kb|kb_human|mb|mb_human|gb|gb_human|tb|tb_human
+
+# License (optional to activate supported feature set - omit for the Community edition)
+# license:
+#   file: /etc/db-backup.lic   # path or env://
+
+# Global defaults
+defaults:
+  backup:
+    strategy: full
+    filename: "%type%-%db%-%host%-%strategy%-%timestamp%"
+  compression:
+    type: zstd
+    level: 3
+  checksum: md5
+  storage:
+    backend: filesystem
+    path: /backup
+  retention:
+    daily: 7
+    weekly: 4
+    monthly: 6
+    yearly: 2
+  tls:
+    enable: false
+
+# Profiles
+profiles:
+  ## Connections - host/port/credentials only
+  connections:
+    production-mysql:
+      type: mysql
+      host: db.internal
+      port: 3306
+      user: backup
+      pass: "file:///run/secrets/db_pass"
+    analytics-postgres:
+      type: postgres
+      host: pg.internal
+      port: 5432
+      user: backup
+      pass: "env://PG_BACKUP_PASS"
+    logs-mongo:
+      type: mongo
+      host: mongo.internal
+      user: backup
+      pass: "file:///run/secrets/mongo_pass"
+    erp-mssql:
+      type: mssql
+      host: sql.internal
+      user: sa
+      pass: "file:///run/secrets/mssql_pass"
+    cache-redis:
+      type: redis
+      host: redis.internal
+      pass: "file:///run/secrets/redis_pass"
+    local-sqlite:
+      type: sqlite
+      host: /data/app.db
+    metrics-influx:
+      type: influx
+      host: influx.internal
+      user: admin
+      pass: "file:///run/secrets/influx_pass"
+    docs-couch:
+      type: couch
+      host: couch.internal
+      user: admin
+      pass: "env://COUCH_PASS"
+
+  ## Databases - connection + include/exclude/table filters
+  databases:
+    production-apps:
+      connection: production-mysql
+      include:
+        - app1
+        - app2
+      exclude:
+        - temp
+    analytics-all:
+      connection: analytics-postgres
+      include:
+        - analytics
+        - reports
+    logs-all:
+      connection: logs-mongo
+      include:
+        - ALL
+    erp-all:
+      connection: erp-mssql
+      include:
+        - erp
+    cache-default:
+      connection: cache-redis
+      include:
+        - "0"
+    sqlite-main:
+      connection: local-sqlite
+      include:
+        - main
+    metrics-all:
+      connection: metrics-influx
+      include:
+        - telegraf
+    docs-all:
+      connection: docs-couch
+      include:
+        - ALL
+
+  ## Backup profiles - strategy + compression + checksum
+  backup:
+    nightly-full:
+      strategy: full
+      compression:
+        type: zstd
+        level: 5
+      checksum: sha1
+    incr:
+      strategy: incremental
+      compression:
+        type: zstd
+        level: 3
+
+  ## Encryption profiles - age, gpg, openssl
+  encryption:
+    age-ops:
+      type: age
+      recipients:
+        - age1qyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqszqgpqyqs777g
+    age-psk:
+      type: age
+      passphrase: "file:///run/secrets/backup_psk"
+
+  ## Maintenance profiles - referenced via maintenance: <name>
+  ## Gotcha: A `schedule` on the profile gates CHAINED maintenance: it runs after a successful backup only when the run's date matches the cron's day-of-week / day-of-month. Leave empty to run after every backup.
+  maintenance:
+    weekly:
+      schedule: "0 4 * * 6"     # only Saturday backups trigger maintenance
+      optimize: true
+      analyze: true
+
+  ## Storage profiles
+  storage:
+    s3-main:
+      backend: s3
+      bucket: nfrastack-backups
+      path: /mysql/production/
+    fs-analytics:
+      backend: filesystem
+      path: /backup/analytics
+      file_mode: "600"
+      dir_mode: "700"
+      user: dbbackup
+      group: dbbackup
+
+# Jobs
+jobs:
+  # Profile reference style: database + backup profile + retention
+  - name: production-mysql
+    database: production-apps
+    backup: nightly-full
+    schedule:
+      cron: "0 2 * * *"
+    retention:
+      last: 5
+      within: 24h
+      hourly: 24
+      daily: 7
+
+  # Hot storage keeps the newest 2 backups, older ones move to the archive path, where they are kept for 7 days and then pruned.
+  - name: hot-plus-archive
+    database: analytics-all
+    backup: nightly-full
+    schedule:
+      cron: "0 2 * * *"
+    storage: fs-analytics
+    archive:
+      last: 2
+      path: /backup/analytics/archive
+      retention:
+        within: 7d
+
+  # Table filtering and schema only via an inline databases block
+  - name: app2-schema
+    database: production-apps
+    backup: nightly-full
+    databases:
+      tables:
+        include:
+          - app2
+          - "app_%"
+        exclude:
+          - temp
+          - cache
+        schema_only:
+          - app2_meta
+    schedule:
+      cron: "15 2 * * *"
+
+  # Storage profile + encryption profile
+  - name: erp-mssql
+    database: erp-all
+    backup: nightly-full
+    storage: s3-main
+    encryption: age-ops
+    schedule:
+      cron: "0 1 * * *"
+
+  # Incremental strategy via backup profile
+  - name: analytics-incr
+    database: analytics-all
+    backup: incr
+    schedule:
+      interval: 30
+
+  # Natural-language schedule every 10 minutes (Supporter - Community uses cron/interval/single time)
+  - name: cache-redis
+    database: cache-default
+    schedule: "every 10 minutes"
+
+  # Start 10 minutes after scheduler start, then recur every day at 3pm (Supporter)
+  - name: delayed-daily
+    database: analytics-all
+    backup: nightly-full
+    schedule:
+      start: "+10"
+      recurring: "0 15 * * *"
+
+  # Same as above but expressed in natural language (Supporter)
+  - name: delayed-daily-nl
+    database: analytics-all
+    backup: nightly-full
+    schedule: "in 10 minutes then daily at 3pm"
+
+  # Run once 5 minutes after scheduler start
+  - name: local-sqlite
+    database: sqlite-main
+    schedule: "+5"
+
+  # Maintenance job - runs OPTIMIZE/ANALYZE instead of taking a backup
+  - name: weekly-maint
+    database: production-apps
+    maintenance: weekly
+    schedule: "0 4 * * 0"
+
+  # Backup job that includes maintenance whic runs runs only after the backup completes successfully (skips on fail)
+  - name: nightly-plus-maint
+    database: production-apps
+    backup: nightly-full
+    maintenance: weekly
+    schedule: "0 2 * * *"
+
+  # Hourly InfluxDB metrics - full backup, compression disabled
+  - name: metrics-influx
+    database: metrics-all
+    schedule:
+      cron: "0 * * * *"
+    compression:
+      type: none
+
+  # Debug job outputs step-by-step DEBUG lines overriding global log level INFO
+  - name: postgres-debug
+    database: analytics-all
+    backup: nightly-full
+    log_level: debug
+    schedule:
+      cron: "0 3 * * *"
+
+  # Silent job produces info log lines just warnings and error messages
+  - name: redis-quiet
+    database: cache-default
+    log_level: error
+    schedule:
+      cron: "*/10 * * * *"
+
+  # No timings drops duration fields (total=, dump=, prune=, etc.) even though the global log.timings/binary default true
+  - name: docs-couch-no-timings
+    database: docs-all
+    timings: false
+    schedule:
+      cron: "0 5 * * *"
+
+  # Colour + size logging overrides lines render in colour even though global log.colour is false, and its size= uses MiB human sizing units
+  - name: analytics-coloured
+    database: analytics-all
+    backup: nightly-full
+    colour: true
+    size: mb_human
+    schedule:
+      cron: "0 6 * * *"

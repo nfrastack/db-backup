@@ -1,21 +1,36 @@
-The MIT License (MIT)
+# db-backup Licensing
 
-Copyright (c) 2026 Dave Conroy
+db-backup is distributed under a layered licensing model. Different parts of the tree (and the container image) carry different licenses, so which license
+applies depends on which part you use:
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+| Layer               | What it covers                                                                     | License             |
+| ------------------- | ---------------------------------------------------------------------------------- | ------------------- |
+| Core software       | `internal/`, `cmd/` — the Community edition of the `dbb` binary                    | AGPL-3.0-or-later   |
+| Supported features  | `supported/` — compiled into the full `dbb` binary                                 | NSLv1 (proprietary) |
+| Container packaging | `container/` — the `Containerfile`, `container/rootfs/*` scripts and configuration | MIT                 |
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+## Community edition (AGPL-3.0-or-later)
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+The entire codebase outside the `supported/` directory is licensed under the GNU Affero General Public License v3.0 or later.
+
+- Full license text: [`LICENSES/AGPL-3.0-or-later.txt`](LICENSES/AGPL-3.0-or-later.txt)
+- You can build the pure Community binary with: `make build-community`
+
+## Supported edition (NSLv1 — proprietary)
+
+The code under the `supported/` directory is licensed under the Nfrastack Supporter License v1 (NSLv1), a proprietary commercial license.
+You may view and compile this code, but running the Supported features in production requires a valid, active license key issued by Nfrastack.
+
+- Full license text: [`LICENSES/LicenseRef-NSLv1.txt`](LICENSES/LicenseRef-NSLv1.txt) and [`supported/LICENSE.md`](supported/LICENSE.md)
+- The default build (`make build`) produces the full binary with the Supported features compiled in. A key unlocks it at runtime.
+
+## Container image (MIT packaging)
+
+The container image itself is licensed under the MIT License. See [`container/LICENSE`](container/LICENSE).
+
+The `dbb` binary bundled in the image is *not* MIT licensed - it is built from the AGPL core plus the NSLv1 `supported/` tree (full build), or from the
+AGPL core alone (community build). See the sections above for those licenses.
+
+---
+
+Copyright © 2026 Nfrastack <hello@nfrastack.com>. All rights reserved.

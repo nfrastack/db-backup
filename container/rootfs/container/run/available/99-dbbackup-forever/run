@@ -1,0 +1,27 @@
+#!/command/with-contenv bash
+# SPDX-FileCopyrightText: © 2026 Nfrastack <code@nfrastack.com>
+#
+# SPDX-License-Identifier: MIT
+
+source /container/base/functions/container/init
+SERVICE_NAME="db-backup-forever"
+prepare_service 10-dbbackup
+
+check_container_initialized
+check_service_initialized init 10-dbbackup
+
+liftoff
+
+if [ "${MODE,,}" != "manual" ] || var_nottrue "${MANUAL_RUN_FOREVER}"; then
+    s6-svc -d /var/run/s6/legacy-services/99-dbbackup-forever
+    exit 0
+fi
+
+# Stay alive in 60-second chunks so a SIGHUP from s6 (for service stop
+# or container shutdown) is processed within a minute rather than
+# after a 24-hour `sleep` window. The bash builtin `sleep` blocks
+# signal delivery until it returns, so a single `sleep 86400` is
+# uncatchable for up to a day.
+while true; do
+    sleep 60
+done

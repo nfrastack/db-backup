@@ -1,0 +1,108 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - "*"
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+          - { goos: darwin, goarch: amd64 }
+          - { goos: darwin, goarch: arm64 }
+          - { goos: freebsd, goarch: amd64 }
+          - { goos: freebsd, goarch: arm64 }
+          - { goos: openbsd, goarch: amd64 }
+          - { goos: openbsd, goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+          - { goos: windows, goarch: arm64 }
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.7'
+          cache-dependency-path: src/go.sum
+
+      - name: Build Binary
+        working-directory: src
+        run: |
+          CHANNEL=stable
+          SUFFIX=""
+          if [ "${{ matrix.goos }}" = "windows" ]; then SUFFIX=".exe"; fi
+          if echo "${{ github.ref_name }}" | grep -qE '(b|rc)[0-9]+$'; then
+            CHANNEL=beta
+          fi
+          COMMIT=$(git rev-parse --short=7 HEAD)
+          BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
+            go build -trimpath -ldflags "-s -w -X main.Version=${{ github.ref_name }} -X main.buildChannel=${CHANNEL} -X main.buildCommit=${COMMIT} -X main.buildDate=${BUILD_DATE}" \
+            -o ../dbb_${{ github.ref_name }}_${{ matrix.goos }}_${{ matrix.goarch }}${SUFFIX} ./cmd/dbb
+
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: dbb_${{ github.ref_name }}_${{ matrix.goos }}_${{ matrix.goarch }}
+          path: dbb_${{ github.ref_name }}_${{ matrix.goos }}_${{ matrix.goarch }}*
+
+      - name: Run unit tests
+        working-directory: src
+        run: go test -count=1 -short ./...
+
+  release:
+    name: Create Release
+    needs: [build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download Build Artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: dbb_${{ github.ref_name }}_*
+          path: dist
+          merge-multiple: true
+
+      - name: Create Release
+        id: create_release
+        uses: softprops/action-gh-release@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          draft: true
+          prerelease: false
+          files: |
+            dist/dbb_${{ github.ref_name }}_*
+
+  container:
+    name: Build and Push Container Image
+    needs: [build]
+    uses: ./.github/workflows/container-build.yml
+    with:
+      base_image: docker.io/nfrastack/base:alpine_3.24
+      platforms: linux/amd64,linux/arm64
+    secrets: inherit

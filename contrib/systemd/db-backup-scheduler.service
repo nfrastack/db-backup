@@ -1,0 +1,15 @@
+[Unit]
+Description=DB-Backup Scheduler
+Documentation=https://github.com/nfrastack/db-backup
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/dbb scheduler -config /etc/db-backup.yaml -systemd
+Restart=always
+RestartSec=10
+User=dbbackup
+Group=dbbackup
+
+[Install]
+WantedBy=multi-user.target
