@@ -1,0 +1,393 @@
+name: Container Build
+
+on:
+  workflow_call:
+    inputs:
+      base_image:
+        required: true
+        type: string
+      build_args:
+        required: false
+        type: string
+      platforms:
+        required: true
+        type: string
+      build_file:
+        required: false
+        type: string
+        default: container/Containerfile
+
+jobs:
+  license-lint:
+    name: SPDX header lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: SPDX
+        shell: bash
+        run: |
+          fail=0
+          while IFS= read -r f; do
+            if ! grep -q "SPDX-License-Identifier" "$f"; then
+              echo "::error::missing SPDX-License-Identifier in $f"
+              fail=1
+            fi
+          done < <(git ls-files -- 'src/**/*.go' '*.sh' 'Containerfile' 'container/**/Containerfile' | sort)
+          if git ls-files 'src/supported/**/*.go' | grep -q .; then
+            for f in $(git ls-files 'src/supported/**/*.go'); do
+              if ! grep -q "SPDX-License-Identifier: LicenseRef-NSLv1" "$f"; then
+                echo "ERROR src/supported/ file $f must use LicenseRef-NSLv1"
+                fail=1
+              fi
+            done
+          fi
+          exit $fail
+
+  prepare:
+    name: Prepare
+    runs-on: ubuntu-latest
+    outputs:
+      container_tags: ${{ steps.prep.outputs.container_tags }}
+      build_args: ${{ steps.prep.outputs.build_args }}
+      staging_prefix: ${{ steps.prep.outputs.staging_prefix }}
+      build_amd64: ${{ steps.arch.outputs.build_amd64 }}
+      build_arm64: ${{ steps.arch.outputs.build_arm64 }}
+    steps:
+      - name: Determine architectures
+        id: arch
+        shell: bash
+        run: |
+          if echo "${{ inputs.platforms }}" | grep -q "arm64"; then
+            echo "build_arm64=true" >> $GITHUB_OUTPUT
+          else
+            echo "build_arm64=false" >> $GITHUB_OUTPUT
+          fi
+          if echo "${{ inputs.platforms }}" | grep -q "amd64"; then
+            echo "build_amd64=true" >> $GITHUB_OUTPUT
+          else
+            echo "build_amd64=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Prepare tags and build-args
+        id: prep
+        env:
+          INPUT_BASE_IMAGE: ${{ inputs.base_image }}
+          INPUT_BUILD_ARGS: ${{ inputs.build_args }}
+        run: |
+          # Detect branch and tag
+          branch_name=""
+          if [[ "${GITHUB_REF}" == refs/heads/* ]]; then
+            branch_name="${GITHUB_REF#refs/heads/}"
+          fi
+
+          base_tag=""
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            base_tag="$(echo ${GITHUB_REF} | sed 's|refs/tags/||g')"
+          fi
+
+          # Build tag list
+          tag_list=()
+
+          if [[ -n "$branch_name" ]]; then
+            case "$branch_name" in
+              main | master )
+                tag_list+=("latest")
+              ;;
+              develop )
+                tag_list+=("develop")
+              ;;
+              * )
+                tag_list+=("$(echo "$branch_name" | sed 's|/|-|g')")
+              ;;
+            esac
+          fi
+
+          if [[ -n "$base_tag" ]]; then
+            tag_list+=("$base_tag")
+          fi
+
+          declare -A seen
+          unique_tags=()
+          for t in "${tag_list[@]}"; do
+            if [[ ! "$t" =~ ^[-_] && -z "${seen[$t]:-}" ]]; then
+              seen[$t]=1
+              unique_tags+=("$t")
+            fi
+          done
+
+          all_tags=""
+          for t in "${unique_tags[@]}"; do
+            all_tags+="${GITHUB_REPOSITORY}:$t,"
+          done
+          all_tags="${all_tags%,}"
+
+          dockerhub_tags=$(echo "$all_tags" | sed "s|${GITHUB_REPOSITORY}|docker.io/${GITHUB_REPOSITORY/container-/}|g")
+          ghcr_tags=$(echo "$all_tags" | sed "s|${GITHUB_REPOSITORY}|ghcr.io/${GITHUB_REPOSITORY}|g")
+
+          final_tags="$dockerhub_tags,$ghcr_tags"
+          final_tags=$(echo "$final_tags" | sed 's/^,*//;s/,,*/,/g;s/,$//')
+
+          echo "container_tags=$final_tags" >> $GITHUB_OUTPUT
+
+          short_sha=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
+          build_version=$(git describe --tags --abbrev=0 HEAD 2>/dev/null \
+            | awk -v sha="${short_sha}" \
+                '{ if (system("git diff --quiet HEAD") == 0 && \
+                       system("git status --porcelain") == 0) print $0; \
+                  else print $0 "-dev-" sha }')
+          if [ -z "$build_version" ]; then
+            build_version="dev-${short_sha}"
+          fi
+
+          build_args="BASE_IMAGE=${INPUT_BASE_IMAGE}"
+          build_args="${build_args}${build_args:+$'\n'}DBBACKUP_VERSION=${build_version}"
+          build_args="${build_args}${build_args:+$'\n'}DBBACKUP_COMMIT=${short_sha}"
+          if [ -n "${INPUT_BUILD_ARGS}" ]; then
+            build_args="${build_args}${build_args:+$'\n'}${INPUT_BUILD_ARGS}"
+          fi
+          echo "build_args<<BUILDARGS_EOF" >> $GITHUB_OUTPUT
+          echo "$build_args" >> $GITHUB_OUTPUT
+          echo "BUILDARGS_EOF" >> $GITHUB_OUTPUT
+
+          echo "staging_prefix=${GITHUB_SHA:0:12}" >> $GITHUB_OUTPUT
+
+  build-amd64:
+    name: Build amd64
+    runs-on: ubuntu-latest
+    needs: prepare
+    if: needs.prepare.outputs.build_amd64 == 'true' && github.event_name != 'pull_request'
+    env:
+      build_file: ${{ inputs.build_file }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Label Containerfile
+        run: |
+          image_name=${GITHUB_REPOSITORY/${GITHUB_REPOSITORY_OWNER}\/container-/image.}
+          if [ -f "${{ env.build_file }}" ] ; then
+              sed -i "/FROM .*/a LABEL nfrastack.${image_name}.git_repository=\"https://github.com/${GITHUB_REPOSITORY}\"" ${{ env.build_file }}
+              sed -i "/FROM .*/a LABEL nfrastack.${image_name}.git_commit=\"${GITHUB_SHA}\"" ${{ env.build_file }}
+              sed -i "/FROM .*/a LABEL nfrastack.${image_name}.git_committed_by=\"${GITHUB_ACTOR}\"" ${{ env.build_file }}
+              sed -i "/FROM .*/a LABEL nfrastack.${image_name}.image_build_date=\"$(date +'%Y-%m-%d %H:%M:%S')\"" ${{ env.build_file }}
+              sed -i "/FROM .*/a LABEL org.opencontainers.image.source=\"https://github.com/${GITHUB_REPOSITORY}\""  ${{ env.build_file }}
+
+              if [[ $GITHUB_REF == refs/tags/* ]]; then
+                sed -i "/FROM .*/a LABEL nfrastack.${image_name}.git_tag=\"${GITHUB_REF#refs/tags/v}\"" ${{ env.build_file }}
+              fi
+
+              if [[ $GITHUB_REF == refs/heads/* ]]; then
+                sed -i "/FROM .*/a LABEL nfrastack.${image_name}.git_branch=\"${GITHUB_REF#refs/heads/}\"" ${{ env.build_file }}
+              fi
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to DockerHub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push (amd64)
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./${{ env.build_file }}
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          tags: ghcr.io/${{ github.repository }}:${{ needs.prepare.outputs.staging_prefix }}-amd64
+          build-args: ${{ needs.prepare.outputs.build_args }}
+
+  build-arm64:
+    name: Build arm64
+    runs-on: ubuntu-24.04-arm
+    needs: prepare
+    if: needs.prepare.outputs.build_arm64 == 'true' && github.event_name != 'pull_request'
+    env:
+      build_file: ${{ inputs.build_file }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Label Containerfile
+        run: |
+          image_name=${GITHUB_REPOSITORY/${GITHUB_REPOSITORY_OWNER}\/container-/image.}
+          if [ -f "${{ env.build_file }}" ] ; then
+              sed -i "/FROM .*/a LABEL nfrastack.${image_name}.git_repository=\"https://github.com/${GITHUB_REPOSITORY}\"" ${{ env.build_file }}
+              sed -i "/FROM .*/a LABEL nfrastack.${image_name}.git_commit=\"${GITHUB_SHA}\"" ${{ env.build_file }}
+              sed -i "/FROM .*/a LABEL nfrastack.${image_name}.git_committed_by=\"${GITHUB_ACTOR}\"" ${{ env.build_file }}
+              sed -i "/FROM .*/a LABEL nfrastack.${image_name}.image_build_date=\"$(date +'%Y-%m-%d %H:%M:%S')\"" ${{ env.build_file }}
+              sed -i "/FROM .*/a LABEL org.opencontainers.image.source=\"https://github.com/${GITHUB_REPOSITORY}\""  ${{ env.build_file }}
+
+              if [[ $GITHUB_REF == refs/tags/* ]]; then
+                sed -i "/FROM .*/a LABEL nfrastack.${image_name}.git_tag=\"${GITHUB_REF#refs/tags/v}\"" ${{ env.build_file }}
+              fi
+
+              if [[ $GITHUB_REF == refs/heads/* ]]; then
+                sed -i "/FROM .*/a LABEL nfrastack.${image_name}.git_branch=\"${GITHUB_REF#refs/heads/}\"" ${{ env.build_file }}
+              fi
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to DockerHub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push (arm64)
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./${{ env.build_file }}
+          platforms: linux/arm64
+          push: true
+          provenance: false
+          tags: ghcr.io/${{ github.repository }}:${{ needs.prepare.outputs.staging_prefix }}-arm64
+          build-args: ${{ needs.prepare.outputs.build_args }}
+
+  manifest:
+    name: Create manifests
+    runs-on: ubuntu-latest
+    needs: [prepare, build-amd64, build-arm64]
+    if: always() && github.event_name != 'pull_request' && (needs.build-amd64.result == 'success' || needs.build-arm64.result == 'success')
+    steps:
+      - name: Login to DockerHub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Create and push manifests
+        env:
+          CONTAINER_TAGS: ${{ needs.prepare.outputs.container_tags }}
+          STAGING_PREFIX: ${{ needs.prepare.outputs.staging_prefix }}
+          BUILD_AMD64: ${{ needs.prepare.outputs.build_amd64 }}
+          BUILD_ARM64: ${{ needs.prepare.outputs.build_arm64 }}
+          AMD64_RESULT: ${{ needs.build-amd64.result }}
+          ARM64_RESULT: ${{ needs.build-arm64.result }}
+        run: |
+          sources=""
+          staging_repo="ghcr.io/${GITHUB_REPOSITORY}"
+          if [[ "$BUILD_AMD64" == "true" && "$AMD64_RESULT" == "success" ]]; then
+            sources="${staging_repo}:${STAGING_PREFIX}-amd64"
+          fi
+          if [[ "$BUILD_ARM64" == "true" && "$ARM64_RESULT" == "success" ]]; then
+            sources="${sources} ${staging_repo}:${STAGING_PREFIX}-arm64"
+          fi
+          sources=$(echo "$sources" | xargs)
+
+          if [ -z "$sources" ]; then
+            echo "::error::No successful arch builds to create manifest from"
+            exit 1
+          fi
+
+          IFS=',' read -ra TAGS <<< "$CONTAINER_TAGS"
+          for tag in "${TAGS[@]}"; do
+            tag=$(echo "$tag" | xargs)
+            if [ -z "$tag" ]; then continue; fi
+            echo "Creating manifest for: $tag"
+            docker buildx imagetools create -t "$tag" $sources
+          done
+
+  summary:
+    name: Summary
+    runs-on: ubuntu-latest
+    needs: [prepare, build-amd64, build-arm64, manifest]
+    if: always() && github.event_name != 'pull_request'
+    steps:
+      - name: Build Summary
+        env:
+          AMD64_RESULT: ${{ needs.build-amd64.result }}
+          ARM64_RESULT: ${{ needs.build-arm64.result }}
+          MANIFEST_RESULT: ${{ needs.manifest.result }}
+          CONTAINER_TAGS: ${{ needs.prepare.outputs.container_tags }}
+          BUILD_AMD64: ${{ needs.prepare.outputs.build_amd64 }}
+          BUILD_ARM64: ${{ needs.prepare.outputs.build_arm64 }}
+        run: |
+          status_icon() {
+            case "$1" in
+              success) echo "pass" ;;
+              skipped) echo "skip" ;;
+              *) echo "FAIL" ;;
+            esac
+          }
+
+          amd64_status=$(status_icon "$AMD64_RESULT")
+          arm64_status=$(status_icon "$ARM64_RESULT")
+          manifest_status=$(status_icon "$MANIFEST_RESULT")
+
+          {
+            echo "## Container Build Summary"
+            echo ""
+            echo "| Architecture | Status |"
+            echo "| ------------ | ------ |"
+            if [[ "$BUILD_AMD64" == "true" ]]; then
+              echo "| amd64 | ${amd64_status} |"
+            fi
+            if [[ "$BUILD_ARM64" == "true" ]]; then
+              echo "| arm64 | ${arm64_status} |"
+            fi
+            echo "| Manifest | ${manifest_status} |"
+            echo ""
+
+            if [[ "$MANIFEST_RESULT" == "success" ]]; then
+              echo "### Tags Pushed"
+              echo ""
+              IFS=',' read -ra TAGS <<< "$CONTAINER_TAGS"
+              for tag in "${TAGS[@]}"; do
+                tag=$(echo "$tag" | xargs)
+                if [ -n "$tag" ]; then
+                  echo "- \`${tag}\`"
+                fi
+              done
+            fi
+          } >> $GITHUB_STEP_SUMMARY
+
+          if [[ "$AMD64_RESULT" != "success" && "$build_AMD64" == "true" ]]; then
+            echo "::error::amd64 build failed (status: ${AMD64_RESULT})"
+          fi
+          if [[ "$ARM64_RESULT" != "success" && "$build_ARM64" == "true" ]]; then
+            echo "::error::arm64 build failed (status: ${ARM64_RESULT})"
+          fi
+          if [[ "$MANIFEST_RESULT" != "success" ]]; then
+            echo "::error::Manifest creation failed (status: ${MANIFEST_RESULT})"
+          fi
+
+          if [[ "$AMD64_RESULT" == "failure" || "$ARM64_RESULT" == "failure" || "$MANIFEST_RESULT" == "failure" ]]; then
+            exit 1
+          fi
+

@@ -1,0 +1,95 @@
+name: Branch Build
+
+on:
+  push:
+    branches-ignore:
+      - main
+    paths-ignore:
+      - 'CHANGELOG.md'
+      - 'contrib/**'
+      - 'docs/**'
+      - 'LICENSE'
+      - 'README.md'
+      - '**.md'
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  binary:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+          - { goos: darwin, goarch: amd64 }
+          - { goos: darwin, goarch: arm64 }
+          - { goos: freebsd, goarch: amd64 }
+          - { goos: freebsd, goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+          - { goos: windows, goarch: arm64 }
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.7'
+          cache-dependency-path: src/go.sum
+
+      - name: Build Binary
+        working-directory: src
+        run: |
+          SUFFIX=""
+          if [ "${{ matrix.goos }}" = "windows" ]; then SUFFIX=".exe"; fi
+          COMMIT=$(git rev-parse --short=7 HEAD)
+          BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
+            go build -trimpath -ldflags "-s -w -X main.Version=${{ github.ref_name }} -X main.buildChannel=edge -X main.buildCommit=${COMMIT} -X main.buildDate=${BUILD_DATE}" \
+            -o ../dbb_${{ github.ref_name }}_${{ matrix.goos }}_${{ matrix.goarch }}${SUFFIX} ./cmd/dbb
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: dbb_${{ github.ref_name }}_${{ matrix.goos }}_${{ matrix.goarch }}
+          path: dbb_${{ github.ref_name }}_${{ matrix.goos }}_${{ matrix.goarch }}*
+
+      - name: Run unit tests
+        working-directory: src
+        run: go test -count=1 -short ./...
+
+  scan:
+    name: Vulnerability scan (govulncheck)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.26.7'
+          cache-dependency-path: src/go.sum
+
+      - name: Run govulncheck
+        working-directory: src
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+  container:
+    name: Build Container Image
+    needs: [binary, scan]
+    uses: ./.github/workflows/container-build.yml
+    with:
+      base_image: docker.io/nfrastack/base:alpine_3.24
+      platforms: linux/amd64,linux/arm64
+    secrets: inherit
