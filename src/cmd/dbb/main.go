@@ -14,6 +14,7 @@ import (
 	"github.com/nfrastack/db-backup/internal/stats"
 
 	"github.com/nfrastack/db-backup/internal/config"
+	"github.com/nfrastack/db-backup/internal/container"
 	"github.com/nfrastack/db-backup/internal/license"
 	"github.com/nfrastack/db-backup/internal/log"
 	"github.com/nfrastack/db-backup/internal/scheduler/runner"
@@ -377,6 +378,12 @@ Commands:
 		globalConfigPaths = append(globalConfigPaths, *cp)
 	}
 	globalContainer = globalContainer || *containerFlag
+	if !globalContainer {
+		if ok, reason := container.Detect(); ok {
+			globalContainer = true
+			log.Debug("startup", "container auto-detected", "reason", reason)
+		}
+	}
 	globalSystemd = globalSystemd || *systemdFlag
 	log.SetJournald(globalSystemd)
 	if globalProgress == nil && *progress {

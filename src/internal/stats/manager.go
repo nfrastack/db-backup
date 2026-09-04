@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/nfrastack/db-backup/internal/config"
+	"github.com/nfrastack/db-backup/internal/container"
 	"github.com/nfrastack/db-backup/internal/log"
 )
 
@@ -371,14 +372,7 @@ func frequencyDuration(freq string) time.Duration {
 	}
 }
 func imageLogCandidates() []string {
-	var paths []string
-	if img := os.Getenv("IMAGE"); img != "" {
-		paths = append(paths, "/container/build/"+strings.ReplaceAll(img, "/", "_")+"/build.log")
-	}
-	if img := os.Getenv("IMAGE_NAME"); img != "" {
-		paths = append(paths, "/container/build/"+strings.ReplaceAll(img, "/", "_")+"/build.log")
-	}
-	return paths
+	return container.BuildLogCandidates(os.Getenv)
 }
 
 // nfrastack container detection via build log
@@ -396,14 +390,6 @@ func imageVersion() string {
 	for _, env := range []string{"IMAGE_VERSION", "IMAGE_TAG"} {
 		if v := os.Getenv(env); v != "" {
 			return v
-		}
-	}
-	if img := os.Getenv("IMAGE"); img != "" {
-		if idx := strings.LastIndexByte(img, ':'); idx >= 0 {
-			tag := img[idx+1:]
-			if tag != "" && tag != "latest" {
-				return tag
-			}
 		}
 	}
 	return ""
