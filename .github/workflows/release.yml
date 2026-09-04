@@ -100,7 +100,7 @@ jobs:
 
   container:
     name: Build and Push Container Image
-    needs: [build, scan]
+    needs: [build]
     uses: ./.github/workflows/container-build.yml
     with:
       base_image: docker.io/nfrastack/base:alpine_3.24
