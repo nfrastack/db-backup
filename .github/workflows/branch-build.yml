@@ -11,6 +11,7 @@ on:
       - 'LICENSE'
       - 'README.md'
       - '**.md'
+      - 'flake.*
 
 permissions:
   contents: read
