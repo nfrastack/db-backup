@@ -102,9 +102,9 @@ func (m *Manager) LogStartup() {
 	const docsURL = "https://nfrastack.com/db-backup/recipes/usage-stats"
 	if !m.Enabled() {
 		if m.container {
-			log.Info("usage-stats", "Usage stats collection is disabled. Enable via STATS_ENABLED=TRUE. Details: "+docsURL)
+			log.Info("usage-stats", "usage stats collection is disabled. Enable via STATS_ENABLED=TRUE. Details: "+docsURL)
 		} else {
-			log.Info("usage-stats", "Usage stats collection is disabled. Enable it via stats.enabled in the config. Details: "+docsURL)
+			log.Info("usage-stats", "usage stats collection is disabled. Enable it via stats.enabled in the config. Details: "+docsURL)
 		}
 	} else {
 		state := "ephemeral"
@@ -115,7 +115,7 @@ func (m *Manager) LogStartup() {
 		if loc := log.Location(); loc != nil {
 			now = now.In(loc)
 		}
-		log.Info("usage-stats", "Usage stats collection is enabled - thank you for helping improve db-backup by sharing anonymous usage data. No credentials, database names, or hostnames are collected, and payloads are written locally for inspection before being sent. Details: "+docsURL,
+		log.Info("usage-stats", "usage stats collection is enabled - thank you for helping improve db-backup by sharing anonymous usage data. Details: "+docsURL,
 			"frequency", statsFrequency(m.cfg),
 			"last_report", lastActivityInLoc(m.state.LastReportAt),
 			"next_report", m.nextDue(m.state.LastReportAt, statsFrequency(m.cfg), now),
@@ -124,9 +124,9 @@ func (m *Manager) LogStartup() {
 
 	if !m.VersionCheckEnabled() {
 		if m.container {
-			log.Info("version-check", "Version check is disabled - you will not be notified when a new version is available. Re enable it via CHECK_NEW_VERSION=TRUE in the config.")
+			log.Info("version-check", "version check is disabled - you will not be notified when a new version is available. re-enable it via CHECK_NEW_VERSION=TRUE in the config.")
 		} else {
-			log.Info("version-check", "Version check is disabled - you will not be notified when a new version is available. Re enable it via check_new_version.enabled in the config.")
+			log.Info("version-check", "version check is disabled - you will not be notified when a new version is available. re-enable it via check_new_version.enabled in the config.")
 		}
 		return
 	}
@@ -134,7 +134,7 @@ func (m *Manager) LogStartup() {
 	if loc := log.Location(); loc != nil {
 		now = now.In(loc)
 	}
-	log.Info("version-check", "Version check enabled - you will be notified when a new version is available.",
+	log.Info("version-check", "version check enabled - you will be notified when a new version is available.",
 		"frequency", versionCheckFrequency(m.vc),
 		"last_check", lastActivityInLoc(m.vstate.LastCheckAt),
 		"next_check", m.nextDue(m.vstate.LastCheckAt, versionCheckFrequency(m.vc), now))
