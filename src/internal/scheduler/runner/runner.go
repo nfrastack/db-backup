@@ -128,7 +128,7 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 		RunHooks(job, "pre", "backup", dbName, nil)
 	}
 
-	if job.SplitDB && job.Databases != nil && len(job.Databases.Include) == 1 && strings.EqualFold(job.Databases.Include[0], "ALL") {
+	if job.SplitDB && job.Databases != nil && hasAllToken(job.Databases.Include) {
 		JLog(log.LevelDebug, job, "listing databases",
 			"status", "debug", "step", "list", "target", fmt.Sprintf("%s://%s:%d", job.Type, job.Host, port))
 		dbs, err := database.ListDatabases(job.Type, job.Host, port, job.User, pass, job.AuthSource, job.TLS)
@@ -137,11 +137,26 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 		}
 		JLog(log.LevelDebug, job, "listed databases",
 			"status", "debug", "step", "list", "count", len(dbs))
+		dbs = expandAllInclude(dbs, job.Databases)
+		if len(job.Databases.Exclude) > 0 {
+			JLog(log.LevelInfo, job, "applied database exclusions",
+				"status", "skipped", "step", "list", "excluded", strings.Join(job.Databases.Exclude, ","))
+		}
+		if len(dbs) == 0 {
+			JLog(log.LevelWarn, job, "no databases left to back up after exclusions",
+				"status", "warn", "step", "list")
+		}
 		JLog(log.LevelInfo, job, "splitting into per-database backups",
 			"status", "starting", "split", "true", "dbs", len(dbs))
 		for _, name := range dbs {
 			sub := job
-			sub.Databases = &config.DatabaseList{Include: []string{name}}
+			sub.Databases = &config.DatabaseList{
+				Include:  []string{name},
+				Routines: job.Databases.Routines,
+				Events:   job.Databases.Events,
+				Triggers: job.Databases.Triggers,
+				Views:    job.Databases.Views,
+			}
 			sub.SplitDB = false
 			if err := Run(ctx, sub, trigger); err != nil {
 				return err
@@ -183,18 +198,29 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 		strat = "full"
 	}
 
-	if strat != "full" && job.Databases != nil && len(job.Databases.Include) == 1 && strings.EqualFold(job.Databases.Include[0], "ALL") && !job.SplitDB {
+	if strat != "full" && job.Databases != nil && hasAllToken(job.Databases.Include) && !job.SplitDB {
 		return LogFail(job, "backup failed", "strategy",
-			fmt.Errorf("strategy %q is not supported with databases.include: [ALL] without split_db: true - set split_db: true to run per-database %s backups", strat, strat))
+			fmt.Errorf("strategy %q is not supported with databases.include containing ALL without split_db: true - set split_db: true to run per-database %s backups", strat, strat))
 	}
 
-	if strat != "full" && job.Databases != nil && len(job.Databases.Include) > 1 && containsGlobals(job.Databases.Include) && !job.SplitDB {
-		for _, inc := range job.Databases.Include {
-			if strings.EqualFold(inc, "ALL") {
-				return LogFail(job, "backup failed", "strategy",
-					fmt.Errorf("strategy %q is not supported with databases.include: [ALL] without split_db: true - set split_db: true to run per-database %s backups", strat, strat))
-			}
+	if !job.SplitDB && job.Databases != nil && hasAllToken(job.Databases.Include) && (len(job.Databases.Exclude) > 0 || len(job.Databases.Include) > 1) {
+		JLog(log.LevelDebug, job, "listing databases",
+			"status", "debug", "step", "list", "target", fmt.Sprintf("%s://%s:%d", job.Type, job.Host, port))
+		allDBs, err := database.ListDatabases(job.Type, job.Host, port, job.User, pass, job.AuthSource, job.TLS)
+		if err != nil {
+			return LogFail(job, "backup failed", "list", err)
 		}
+		kept := expandAllInclude(allDBs, job.Databases)
+		if len(job.Databases.Exclude) > 0 {
+			JLog(log.LevelInfo, job, "applied database exclusions",
+				"status", "skipped", "step", "list", "excluded", strings.Join(job.Databases.Exclude, ","))
+		}
+		if len(kept) == 0 {
+			JLog(log.LevelWarn, job, "no databases left to back up after exclusions",
+				"status", "warn", "step", "list")
+			return nil
+		}
+		job.Databases.Include = kept
 	}
 
 	configuredStrat := strat
@@ -440,6 +466,8 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 				TLS:        job.TLS,
 				Strategy:   database.Strategy(strat),
 				Since:      since,
+				Objects:    job.Databases.ResolveMysqlObjects(),
+				HasObjects: job.Databases != nil,
 			}); err != nil {
 				pw.CloseWithError(fmt.Errorf("incremental %s: %w", strat, err))
 				return

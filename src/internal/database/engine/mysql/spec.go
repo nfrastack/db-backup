@@ -19,7 +19,11 @@ func Spec() registry.EngineSpec {
 		Label:       "MySQL / MariaDB",
 		DefaultPort: 3306,
 		New: func(o registry.Options) (registry.Engine, error) {
-			return NewDumper(o.Host, o.Port, o.User, o.Pass, o.TLS), nil
+			d := NewDumper(o.Host, o.Port, o.User, o.Pass, o.TLS)
+			if o.HasObjects {
+				d.SetMysqlObjects(o.Objects)
+			}
+			return d, nil
 		},
 		ListDatabases: func(host string, port int, user, pass, authSource string, tlsCfg *config.TLSConfig) ([]string, error) {
 			return ListDatabases(host, port, user, pass, tlsCfg)

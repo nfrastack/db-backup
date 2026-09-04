@@ -657,6 +657,18 @@ func (c *Config) resolveJob(job *JobConfig) {
 				if len(job.Databases.Exclude) == 0 && len(prof.Exclude) > 0 && !job.unsetKey("databases") {
 					job.Databases.Exclude = prof.Exclude
 				}
+				if job.Databases.Routines == nil && prof.Routines != nil && !job.unsetKey("databases") {
+					job.Databases.Routines = prof.Routines
+				}
+				if job.Databases.Events == nil && prof.Events != nil && !job.unsetKey("databases") {
+					job.Databases.Events = prof.Events
+				}
+				if job.Databases.Triggers == nil && prof.Triggers != nil && !job.unsetKey("databases") {
+					job.Databases.Triggers = prof.Triggers
+				}
+				if job.Databases.Views == nil && prof.Views != nil && !job.unsetKey("databases") {
+					job.Databases.Views = prof.Views
+				}
 				if job.Databases.Tables == nil && prof.Tables != nil && !job.unsetKey("tables") {
 					t := *prof.Tables
 					job.Databases.Tables = &t

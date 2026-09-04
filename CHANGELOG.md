@@ -1,3 +1,13 @@
+## 5.0.1-dev 2026-09-04 <code at nfrastack dot com>
+
+   ### Added
+      - Allow explicit names alongside ALL db_name.include declarations
+      - Allow excluding names when db_name.include=ALL
+
+   ### Changed
+      - Mysql - accomodate differences between mysql 8.x and mariadb sub operations
+      - Mysql - introduce toggles for events, stored procedures, triggers and views
+
 ## 5.0.0 2026-09-03 <code at nfrastack dot com>
 
    ### Added

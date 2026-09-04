@@ -33,6 +33,8 @@ type Options struct {
 	Version    int
 	TLS        *config.TLSConfig
 	AuthSource string
+	Objects    config.MysqlObjects
+	HasObjects bool
 }
 
 type EngineSpec struct {

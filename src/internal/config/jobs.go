@@ -49,9 +49,13 @@ type CompressionConfig struct {
 }
 
 type DatabaseList struct {
-	Include []string     `yaml:"include"`
-	Exclude []string     `yaml:"exclude"`
-	Tables  *TableFilter `yaml:"tables,omitempty"`
+	Include  []string     `yaml:"include"`
+	Exclude  []string     `yaml:"exclude"`
+	Tables   *TableFilter `yaml:"tables,omitempty"`
+	Routines *bool        `yaml:"routines,omitempty"`
+	Events   *bool        `yaml:"events,omitempty"`
+	Triggers *bool        `yaml:"triggers,omitempty"`
+	Views    *bool        `yaml:"views,omitempty"`
 }
 
 type DbProfile struct {
@@ -60,6 +64,10 @@ type DbProfile struct {
 	Include    []string     `yaml:"include"`
 	Exclude    []string     `yaml:"exclude"`
 	Tables     *TableFilter `yaml:"tables,omitempty"`
+	Routines   *bool        `yaml:"routines,omitempty"`
+	Events     *bool        `yaml:"events,omitempty"`
+	Triggers   *bool        `yaml:"triggers,omitempty"`
+	Views      *bool        `yaml:"views,omitempty"`
 }
 
 type EncryptionConfig struct {
@@ -111,8 +119,6 @@ type JobConfig struct {
 	unsetKeys            map[string]bool
 }
 
-// ok
-
 type MaintenanceConfig struct {
 	Schedule    string `yaml:"schedule"`
 	Optimize    *bool  `yaml:"optimize,omitempty"`
@@ -122,6 +128,13 @@ type MaintenanceConfig struct {
 	CheckTables *bool  `yaml:"check_tables,omitempty"`
 	Compact     *bool  `yaml:"compact,omitempty"`
 	MemoryPurge *bool  `yaml:"memory_purge,omitempty"`
+}
+
+type MysqlObjects struct {
+	Routines bool
+	Events   bool
+	Triggers bool
+	Views    bool
 }
 
 type RetentionConfig struct {
@@ -181,6 +194,7 @@ func (m *MaintenanceConfig) DueOn(t time.Time) bool {
 	}
 	return dom && wd
 }
+
 func (b *BackupConfig) EffectiveStrategy() string {
 	if b.Strategy != "" {
 		return b.Strategy
@@ -189,6 +203,33 @@ func (b *BackupConfig) EffectiveStrategy() string {
 		return b.Type
 	}
 	return "full"
+}
+
+func (d *DatabaseList) Excluded(name string) bool {
+	if d == nil {
+		return false
+	}
+	return globMatchAny(d.Exclude, name)
+}
+
+func (d *DatabaseList) ResolveMysqlObjects() MysqlObjects {
+	o := MysqlObjects{Routines: true, Events: true, Triggers: true, Views: true}
+	if d == nil {
+		return o
+	}
+	if d.Routines != nil {
+		o.Routines = *d.Routines
+	}
+	if d.Events != nil {
+		o.Events = *d.Events
+	}
+	if d.Triggers != nil {
+		o.Triggers = *d.Triggers
+	}
+	if d.Views != nil {
+		o.Views = *d.Views
+	}
+	return o
 }
 
 func (s *SchemaOnly) Matches(table string) bool {
@@ -350,6 +391,7 @@ func (s *SchemaOnly) UnmarshalYAML(node *yaml.Node) error {
 	}
 	return fmt.Errorf("schema_only must be a boolean or a list of table names")
 }
+
 func (j *JobConfig) Validate() error {
 	if j.Name == "" {
 		return fmt.Errorf("job has no name (every job needs a unique 'name' field)")
@@ -395,6 +437,7 @@ func resolveSecrets(job *JobConfig) {
 		job.EncryptionIdentities[i] = ResolveSecret(job.EncryptionIdentities[i])
 	}
 }
+
 func (a *ArchiveConfig) resolveStorage(c *Config) {
 	if a == nil || a.StorageRef == "" {
 		return

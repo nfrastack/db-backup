@@ -35,6 +35,10 @@ func dumpTo(ctx context.Context, w io.Writer, job config.JobConfig, port int, pa
 	}
 
 	opts := database.Options{Type: dbType, Host: host, Port: port, User: user, Pass: pass, DB: dbName, Version: job.Version, TLS: tlsCfg, AuthSource: job.AuthSource}
+	if job.Databases != nil {
+		opts.Objects = job.Databases.ResolveMysqlObjects()
+		opts.HasObjects = true
+	}
 	dumper, err := database.New(opts)
 	if err != nil {
 		return err
@@ -44,6 +48,13 @@ func dumpTo(ctx context.Context, w io.Writer, job config.JobConfig, port int, pa
 		SetTableFilter(*config.TableFilter, bool)
 	}); ok {
 		tf.SetTableFilter(tableFilter, globalSchemaOnly)
+	}
+	if job.Databases != nil {
+		if mo, ok := dumper.(interface {
+			SetMysqlObjects(config.MysqlObjects)
+		}); ok {
+			mo.SetMysqlObjects(job.Databases.ResolveMysqlObjects())
+		}
 	}
 
 	if strings.Contains(dbName, "__globals__") {
@@ -63,7 +74,11 @@ func dumpTo(ctx context.Context, w io.Writer, job config.JobConfig, port int, pa
 		return fmt.Errorf("connect: %w", err)
 	}
 	defer dumper.Close()
-	if err := dumper.Dump(w, strings.Split(dbName, ",")); err != nil {
+	names := strings.Split(dbName, ",")
+	if job.Databases != nil && len(job.Databases.Include) > 0 {
+		names = append([]string{}, job.Databases.Include...)
+	}
+	if err := dumper.Dump(w, names); err != nil {
 		return fmt.Errorf("dump: %w", err)
 	}
 	return nil

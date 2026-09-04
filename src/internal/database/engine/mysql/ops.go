@@ -42,6 +42,21 @@ func ListDatabases(host string, port int, user, pass string, tlsCfg *config.TLSC
 	return dbs, rows.Err()
 }
 
+func listMySQLTables(db *sql.DB, dbName string) ([]string, error) {
+	rows, err := db.Query("SHOW TABLES FROM `" + dbName + "`")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var tables []string
+	for rows.Next() {
+		var t string
+		rows.Scan(&t)
+		tables = append(tables, t)
+	}
+	return tables, rows.Err()
+}
+
 func Maintain(host string, port int, user, pass, dbName string, cfg *common.MaintenanceCfg, tlsCfg *config.TLSConfig) ([]common.OpResult, error) {
 	db, err := sql.Open("mysql", ConnectDSN(user, pass, host, port, "charset=utf8mb4&multiStatements=true", TLSNameFor(tlsCfg)))
 	if err != nil {
@@ -104,34 +119,28 @@ func Restore(r io.Reader, host string, port int, user, pass, dbName string, tlsC
 			rePlain := regexp.MustCompile("(?i)(INSERT\\s+INTO|UPDATE|DELETE\\s+FROM|TRUNCATE\\s+TABLE|RENAME\\s+TABLE|DROP\\s+TABLE|ALTER\\s+TABLE|CREATE\\s+TABLE)\\s+([A-Za-z0-9_]+)\\.")
 			data = rePlain.ReplaceAll(data, []byte("${1} "+firstDB+"."))
 		}
+		sources := map[string]bool{}
+		reMarker := regexp.MustCompile(`(?m)^-- Database: (\S+)\s*$`)
+		for _, m := range reMarker.FindAllSubmatch(data, -1) {
+			sources[string(m[1])] = true
+		}
+		reUseSrc := regexp.MustCompile("(?i)USE\\s+`([^`]+)`")
+		for _, m := range reUseSrc.FindAllSubmatch(data, -1) {
+			sources[string(m[1])] = true
+		}
+		for src := range sources {
+			if src != "" && src != targets[0] {
+				data = []byte(strings.ReplaceAll(string(data), "`"+src+"`.", "`"+targets[0]+"`."))
+			}
+		}
 	}
 
-	stmts := strings.Split(string(data), ";\n")
-	for _, raw := range stmts {
-		s := strings.TrimSpace(raw)
-		if s == "" {
-			continue
-		}
+	for _, s := range splitSQLStatements(string(data)) {
 		if _, err := db.Exec(s); err != nil {
 			return fmt.Errorf("exec: %w", err)
 		}
 	}
 	return nil
-}
-
-func listMySQLTables(db *sql.DB, dbName string) ([]string, error) {
-	rows, err := db.Query("SHOW TABLES FROM `" + dbName + "`")
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var tables []string
-	for rows.Next() {
-		var t string
-		rows.Scan(&t)
-		tables = append(tables, t)
-	}
-	return tables, rows.Err()
 }
 
 func runMySQLOp(db *sql.DB, op, dbName string) *common.OpResult {
@@ -159,4 +168,42 @@ func runMySQLOp(db *sql.DB, op, dbName string) *common.OpResult {
 	res.Status = status
 	res.Detail = detail
 	return &res
+}
+
+func splitSQLStatements(data string) []string {
+	var out []string
+	var buf strings.Builder
+	delimiter := ";"
+	flush := func() {
+		s := strings.TrimSpace(buf.String())
+		buf.Reset()
+		if s == "" {
+			return
+		}
+		if delimiter != "" && strings.HasSuffix(s, delimiter) {
+			s = strings.TrimSpace(strings.TrimSuffix(s, delimiter))
+		}
+		if s != "" {
+			out = append(out, s)
+		}
+	}
+	for _, line := range strings.Split(data, "\n") {
+		trimmed := strings.TrimSpace(line)
+		upper := strings.ToUpper(trimmed)
+		if strings.HasPrefix(upper, "DELIMITER ") {
+			flush()
+			delimiter = strings.TrimSpace(trimmed[len("DELIMITER "):])
+			continue
+		}
+		if trimmed == "" && buf.Len() == 0 {
+			continue
+		}
+		buf.WriteString(line)
+		buf.WriteString("\n")
+		if delimiter != "" && strings.HasSuffix(trimmed, delimiter) {
+			flush()
+		}
+	}
+	flush()
+	return out
 }

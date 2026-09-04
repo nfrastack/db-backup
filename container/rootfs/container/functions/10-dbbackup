@@ -507,6 +507,33 @@ dbbackup_generate_configuration() {
                     yq -i '.profiles.databases[strenv(DBB_REF)].exclude += [strenv(DBB_ITEM)]' "${CONFIG_FILE_PATH}"
                 done
             fi
+
+            # MYSQL_STORED_PROCEDURES is the 4.x alias for routines
+            local mysql_events mysql_routines mysql_triggers mysql_views mysql_sp_alias
+            mysql_events="$(_dbbackup_getv "${inst}" MYSQL_EVENTS TRUE)"
+            mysql_routines="$(_dbbackup_getv "${inst}" MYSQL_ROUTINES "")"
+            if [ -z "${mysql_routines}" ]; then
+                mysql_sp_alias="$(_dbbackup_getv "${inst}" MYSQL_STORED_PROCEDURES "")"
+                if [ -n "${mysql_sp_alias}" ]; then
+                    mysql_routines="${mysql_sp_alias}"
+                else
+                    mysql_routines="TRUE"
+                fi
+            fi
+            mysql_triggers="$(_dbbackup_getv "${inst}" MYSQL_TRIGGERS TRUE)"
+            mysql_views="$(_dbbackup_getv "${inst}" MYSQL_VIEWS TRUE)"
+            if [ "$(_dbbackup_tyone "${mysql_events}")" = "false" ]; then
+                yq -i '.profiles.databases[strenv(DBB_REF)].events = false' "${CONFIG_FILE_PATH}"
+            fi
+            if [ "$(_dbbackup_tyone "${mysql_routines}")" = "false" ]; then
+                yq -i '.profiles.databases[strenv(DBB_REF)].routines = false' "${CONFIG_FILE_PATH}"
+            fi
+            if [ "$(_dbbackup_tyone "${mysql_triggers}")" = "false" ]; then
+                yq -i '.profiles.databases[strenv(DBB_REF)].triggers = false' "${CONFIG_FILE_PATH}"
+            fi
+            if [ "$(_dbbackup_tyone "${mysql_views}")" = "false" ]; then
+                yq -i '.profiles.databases[strenv(DBB_REF)].views = false' "${CONFIG_FILE_PATH}"
+            fi
         fi
     done
 
@@ -1375,9 +1402,7 @@ _dbbackup_warn_deprecated() {
                         ENCRYPT_PUBLIC_KEY \
                         ENCRYPT_PRIVATE_KEY \
                         MONGO_CUSTOM_URI \
-                        MYSQL_EVENTS \
                         MYSQL_SINGLE_TRANSACTION \
-                        MYSQL_STORED_PROCEDURES \
                         MYSQL_MAX_ALLOWED_PACKET \
                         S3_EXTRA_OPTS BLOBXFER_MODE \
                         BLOBXFER_STORAGE_ACCOUNT \

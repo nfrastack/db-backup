@@ -29,6 +29,7 @@ func cmdDump(args []string) int {
 	dbUser := fs.String("user", "", "Database user")
 	dbPass := fs.String("pass", "", "Database password (or file:///path or env://VAR)")
 	dbName := fs.String("name", "", "Database name(s), comma separated, or ALL")
+	dbExclude := fs.String("exclude", "", "Databases to skip when --name ALL (comma-separated, glob supported)")
 	dbVersion := fs.Int("version", 0, "Engine version (influx: 1|2; 0 = auto detect)")
 	authSource := fs.String("auth-source", "", "Authentication/connect database (mongo authSource, postgres connect DB for ALL/globals)")
 	compressType := fs.String("compress", "zstd", "Compression (none|gz|bz|xz|zstd)")
@@ -39,8 +40,12 @@ func cmdDump(args []string) int {
 	strategy := fs.String("strategy", "full", "Backup strategy (full|incremental|differential)")
 	splitDB := fs.Bool("split-db", false, "Backup each database into its own file")
 	globalsOnly := fs.Bool("globals", false, "Backup only global objects (PostgreSQL roles, grants)")
-	tablesInclude := fs.String("tables-include", "", "Only these tables/collections (comma-separated, glob supported)")
-	tablesExclude := fs.String("tables-exclude", "", "Skip these tables/collections (comma-separated, glob supported)")
+	withRoutines := fs.Bool("routines", true, "Include stored procedures and functions (MySQL/MariaDB)")
+	withEvents := fs.Bool("events", true, "Include scheduled events (MySQL/MariaDB)")
+	withTriggers := fs.Bool("triggers", true, "Include triggers (MySQL/MariaDB)")
+	withViews := fs.Bool("views", true, "Include views (MySQL/MariaDB)")
+	tablesInclude := fs.String("tables-include", "", "Only these tables/collections (comma separated, glob supported)")
+	tablesExclude := fs.String("tables-exclude", "", "Skip these tables/collections (comma separated, glob supported)")
 	tablesSchemaOnly := fs.String("tables-schema-only", "", "Dump structure only for these tables (comma separated, * = all)")
 	schemaOnly := fs.Bool("schema-only", false, "Dump structure only, no data")
 	encryptionType := fs.String("encryption", "", "Encryption type (age|pgp|openpgp|gpg|openssl)")
@@ -104,10 +109,7 @@ func cmdDump(args []string) int {
 		return 1
 	}
 
-	dbNames := []string{*dbName}
-	if *dbName == "ALL" {
-		dbNames = []string{"ALL"}
-	}
+	dbNames := runner.SplitCsv(*dbName)
 
 	storageCfg, err := config.ResolveStorageArg(globalConfigPaths, *storageProfile, *storagePath)
 	if err != nil {
@@ -161,7 +163,21 @@ func cmdDump(args []string) int {
 			// docs: include may mix __globals__ with real databases
 			include = append(append([]string{}, dbNames...), "__globals__")
 		}
-		job.Databases = &config.DatabaseList{Include: include}
+		job.Databases = &config.DatabaseList{
+			Include:  include,
+			Routines: withRoutines,
+			Events:   withEvents,
+			Triggers: withTriggers,
+			Views:    withViews,
+		}
+		if *dbExclude != "" {
+			job.Databases.Exclude = runner.SplitCsv(*dbExclude)
+		}
+	} else if job.Databases != nil {
+		job.Databases.Routines = withRoutines
+		job.Databases.Events = withEvents
+		job.Databases.Triggers = withTriggers
+		job.Databases.Views = withViews
 	}
 	if *tablesInclude != "" || *tablesExclude != "" || *tablesSchemaOnly != "" {
 		if job.Databases == nil {

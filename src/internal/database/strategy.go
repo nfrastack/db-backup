@@ -34,6 +34,8 @@ type BackupOptions struct {
 	Version    int
 	Strategy   Strategy
 	Since      string
+	Objects    config.MysqlObjects
+	HasObjects bool
 }
 
 func IncrementalsSupported() bool {
@@ -81,6 +83,8 @@ func runFullBackup(ctx context.Context, w io.Writer, opts BackupOptions) error {
 		Version:    opts.Version,
 		TLS:        opts.TLS,
 		AuthSource: opts.AuthSource,
+		Objects:    opts.Objects,
+		HasObjects: opts.HasObjects,
 	})
 	if err != nil {
 		return fmt.Errorf("full backup: %w", err)
