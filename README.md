@@ -6,5 +6,3 @@ Version 5.0.0 is due for release by the start of September 2026. More info: [htt
 ## Maintainer
 
 - [Nfrastack](https://www.nfrastack.com)
-
-

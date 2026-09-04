@@ -6,13 +6,37 @@
   outputs = { self, nixpkgs }:
     let
       version = "5.0.0";
+      expectedGoVersion = "1.26.7";
+
+      buildDate =
+        let
+          dateFile = nixpkgsFor.x86_64-linux.runCommand "build-date" {
+            nativeBuildInputs = [ nixpkgsFor.x86_64-linux.coreutils ];
+          } ''
+            date -u +%Y-%m-%dT%H:%M:%SZ > $out
+          '';
+        in builtins.readFile dateFile;
+      buildChannel = "edge";
+      buildCommit =
+        if self ? dirtyShortRev && self.dirtyShortRev != null then self.dirtyShortRev
+        else if self ? shortRev && self.shortRev != null then self.shortRev
+        else "unknown";
+
       supportedSystems = [
         "x86_64-linux"
         "aarch64-linux"
+        "aarch64-darwin"
       ];
 
       forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
-      nixpkgsFor = forAllSystems (system: import nixpkgs { inherit system; });
+      nixpkgsFor = forAllSystems (system: import nixpkgs {
+        inherit system;
+        overlays = [
+          (final: prev: {
+            go = final.go_1_26;
+          })
+        ];
+      });
       src = self;
 
       removeNulls = value:
@@ -32,6 +56,8 @@
             inherit src;
             modRoot = "src";
 
+            go = pkgs.go;
+
             meta = {
               description = "Database backup tool supporting MySQL, PostgreSQL, MongoDB, MSSQL, InfluxDB, CouchDB, Redis, SQLite";
               homepage = "https://github.com/nfrastack/db-backup";
@@ -48,9 +74,12 @@
               "-s"
               "-w"
               "-X main.Version=${version}"
+              "-X main.buildDate=${buildDate}"
+              "-X main.buildChannel=${buildChannel}"
+              "-X main.buildCommit=${buildCommit}"
             ];
 
-            vendorHash = "sha256-7mJJvI0AqBtpR3jxjVtxwYxe3d/lo82XmpPy/hXEP6A=";
+            vendorHash = "sha256-p4x8WPjRS7Q/46HR1Xj83Zk+DE46UIVOLsUIUeVBvcM=";
           };
         });
 
@@ -165,13 +194,14 @@
             manageConfig = lib.mkOption {
               type = lib.types.bool;
               default = true;
-              description = "Generate {option}`configFile` from the module options. Disable to manage the config yourself";
+              description = "Generate configFile from the module options and keep the result in the Nix store. When false, configFile is treated as a regular filesystem path that you are responsible for writing.";
             };
 
             configFile = lib.mkOption {
               type = lib.types.str;
-              default = "/etc/db-backup.yml";
-              description = "Path to the YAML configuration file read by the scheduler";
+              default = toString configFile;
+              defaultText = lib.literalExpression "the generated YAML in the Nix store";
+              description = "Path to the YAML configuration file read by the scheduler. Set manageConfig=false and provide your own path to source hand written config instead.";
             };
 
             stateDir = lib.mkOption {
@@ -292,29 +322,32 @@
                 };
               };
               default = { };
-              description = "Default settings applied to every job (the {file}`defaults:` section of db-backup.yml).";
+              description = "Default settings applied to every job (the 'defaults:' section of db-backup.yml).";
             };
 
             profiles = lib.mkOption {
               type = lib.types.attrsOf lib.types.anything;
               default = { };
-              description = "Freeform profile definitions (connections, databases, backup, storage, encryption, maintenance, archive) under {file}`profiles:`";
+              description = "Freeform profile definitions (connections, databases, backup, storage, encryption, maintenance, archive) under 'profiles:'";
             };
 
             jobs = lib.mkOption {
               type = lib.types.listOf lib.types.anything;
               default = [ ];
-              description = "Freeform job list under {file}`jobs:`";
+              description = "Freeform job list under 'jobs:'";
             };
           };
 
           config = lib.mkIf cfg.enable {
             environment.systemPackages = [ cfg.package ];
 
-            system.activationScripts.db-backup-config = lib.mkIf (cfg.manageConfig && configData != { }) {
+            system.activationScripts.db-backup-config = lib.mkIf (
+              cfg.manageConfig
+              && configData != { }
+              && lib.hasPrefix "/etc/" cfg.configFile
+            ) {
               deps = [ ];
               text = ''
-                mkdir -p "$(dirname ${cfg.configFile})"
                 install -m 0600 -o ${cfg.user} -g ${cfg.group} ${configFile} ${cfg.configFile}
               '';
             };
@@ -327,7 +360,7 @@
               description = "DB Backup scheduler";
               wantedBy = [ "multi-user.target" ];
               after = [ "network.target" ];
-              restartTriggers = [ cfg.package ] ++ lib.optionals cfg.manageConfig [ configFile ];
+              restartTriggers = [ cfg.package configFile ];
               serviceConfig = {
                 Type = "simple";
                 ExecStart = "${cfg.package}/bin/dbb -c ${cfg.configFile} scheduler";
