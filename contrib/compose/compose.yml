@@ -1,0 +1,122 @@
+services:
+
+  example-db-backup:
+    container_name: example-db-backup
+    image: docker.io/nfrastack/db-backup
+    volumes:
+      - ./backups:/backup
+      # Optional: mount a Supported Edition license so dbb auto-discovers it. Must be readable by the container user (see CONTAINER_USER_DBBACKUP):
+      # - ./db-backup.lic:/etc/db-backup.lic:ro
+    environment:
+      - TIMEZONE=America/Vancouver
+
+      #- CONTAINER_USER_DBBACKUP=1000  # Default is 10000
+      #- CONTAINER_GROUP_DBBACKUP=1001 # Default is 10000
+
+      - CHECK_NEW_VERSION=TRUE         # Check for new version of db-backup
+      - STATS_ENABLED=TRUE             # Allow usage statistics collection
+
+      - BACKUP_JOB_CONCURRENCY=1       # Only run one job at a time
+      - DEFAULT_CHECKSUM=NONE          # Don't create checksums
+      - DEFAULT_COMPRESSION=ZSTD       # Compress all with ZSTD
+      - DEFAULT_BACKUP_INTERVAL=1440   # Backup every 1440 minutes
+
+      # MariaDB
+      - DB01_TYPE=mariadb
+      - DB01_HOST=example-db-host
+      - DB01_NAME=example
+      - DB01_USER=example
+      - DB01_PASS=examplepassword
+      - DB01_BACKUP_INTERVAL=30        # (override) Backup every 30 minutes
+      - DB01_BACKUP_BEGIN=+1           # (override) Backup starts in 1 minute after container starts
+      - DB01_CLEANUP_TIME=180          # (override) Cleanup backups older than 180 minutes
+      - DB01_CHECKSUM=SHA1             # (override) Create a SHA1 checksum
+      - DB01_COMPRESSION=GZ            # (override) Compress with GZIP
+
+      # PostgreSQL (superuser with globals backup)
+      - DB02_TYPE=postgres
+      - DB02_HOST=example-postgres-host
+      - DB02_NAME=example
+      - DB02_USER=postgres
+      - DB02_PASS=examplesuperduperpassword
+      - DB02_GLOBALS=TRUE              # Also back up roles/grants as postgres___globals___*
+      - DB02_BLACKOUT_BEGIN=2200       # Skip runs 22:00 - 02:00
+      - DB02_BLACKOUT_END=0200
+      #- DB02_BLACKOUT_DAYS=sat        # Supporter filter only
+      - DB02_BACKUP_INTERVAL=60
+      - DB02_BACKUP_BEGIN=+10
+      - DB02_CLEANUP_TIME=240
+      - DB02_CHECKSUM=MD5
+      - DB02_COMPRESSION=BZ
+
+      # Redis job
+      - DB03_TYPE=redis
+      - DB03_HOST=example-redis-host
+      - DB03_NAME=0                   # Redis database index 0
+      - DB03_PASS=exampleredispassword
+      - DB03_BACKUP_INTERVAL=120
+      - DB03_BACKUP_BEGIN=+20
+
+    restart: always
+    networks:
+      - example-db-network
+
+  example-mariadb:
+    hostname: example-db-host
+    container_name: example-mariadb
+    image: docker.io/nfrastack/mariadb:11.8
+    ports:
+      - 3306:3306
+    volumes:
+      - ./db/mariadb:/data
+    environment:
+      - TIMEZONE=America/Vancouver
+
+      - ROOT_PASS=examplerootpassword
+      - DB_NAME=example
+      - DB_USER=example
+      - DB_PASS=examplepassword
+    restart: always
+    networks:
+      - example-db-network
+
+  example-postgres:
+    hostname: example-postgres-host
+    container_name: example-postgres
+    image: docker.io/nfrastack/postgres:18
+    ports:
+      - 5432:5432
+    volumes:
+      - ./db/postgres:/data
+    environment:
+      - TIMEZONE=America/Vancouver
+
+      - SUPERUSER_PASS=examplesuperduperpassword
+
+      - CREATE_DB=TRUE
+      - DB_NAME=example
+      - DB_USER=example
+      - DB_PASS=examplepassword
+    restart: always
+    networks:
+      - example-db-network
+
+  example-redis:
+    hostname: example-redis-host
+    container_name: example-redis
+    image: docker.io/nfrastack/redis:8
+    ports:
+      - 6379:6379
+    volumes:
+      - ./db/redis:/data
+    environment:
+      - TIMEZONE=America/Vancouver
+
+      - REDIS_PASS=exampleredispassword
+    restart: always
+    networks:
+      - example-db-network
+
+networks:
+  example-db-network:
+    name: example-db-network
