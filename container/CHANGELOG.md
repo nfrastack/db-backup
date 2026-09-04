@@ -13,14 +13,28 @@
       - Deprecated variable migration code (`DB_DUMP_*`, `ENABLE_CHECKSUM`, `EXTRA_DUMP_OPTS`)
       - All 3rd party binaries related to db engines, compression, encryption, storage.
 
-
-## 4.9beta 2026-07-28 <code at nfrastack dot com>
+## 4.9.2 2026-08-24 <code at nfrastack dot com>
 
    ### Changed
-      - Port to nfrastack/base image
-      - Alpine 3.24
-      - Mysql 9.7.0
+      - Fix MSSQL libraries not getting installed
 
+
+## 4.9.1 2026-08-06 <code at nfrastack dot com>
+
+   ### Changed
+      - Fix issue with MySQL pre backup connectivity check when ssl disabled
+
+
+## 4.9.0 2026-07-29 <code at nfrastack dot com>
+
+The db-backup:4.9.x series will be the last before the 5.x.x release which is expected in August of 2026.
+The tool is being rewritten from ground up, this last branch solves present day pain points and is seen as maintenance releases.
+
+   ### Added
+      - Convert to nfrastack/base container base image
+      - Alpine 3.24
+      - Update MySQL to 9.7.2
+      - Minor bug fixes with service start and shutdowns
 
 ## 4.1.100 2026-03-13 <dave at tiredofit dot ca>
 
