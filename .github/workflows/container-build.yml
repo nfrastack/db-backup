@@ -111,6 +111,17 @@ jobs:
 
           if [[ -n "$base_tag" ]]; then
             tag_list+=("$base_tag")
+            if ! echo "$base_tag" | grep -qE '(b|rc)[0-9]+$'; then
+              ver="${base_tag#v}"
+              major="${ver%%.*}"
+              rest="${ver#*.}"
+              if [[ "$rest" != "$ver" ]]; then
+                minor="${rest%%.*}"
+                tag_list+=("$major.$minor" "$major" "latest")
+              else
+                tag_list+=("$major" "latest")
+              fi
+            fi
           fi
 
           declare -A seen
@@ -382,10 +393,10 @@ jobs:
             fi
           } >> $GITHUB_STEP_SUMMARY
 
-          if [[ "$AMD64_RESULT" != "success" && "$build_AMD64" == "true" ]]; then
+          if [[ "$AMD64_RESULT" != "success" && "$BUILD_AMD64" == "true" ]]; then
             echo "::error::amd64 build failed (status: ${AMD64_RESULT})"
           fi
-          if [[ "$ARM64_RESULT" != "success" && "$build_ARM64" == "true" ]]; then
+          if [[ "$ARM64_RESULT" != "success" && "$BUILD_ARM64" == "true" ]]; then
             echo "::error::arm64 build failed (status: ${ARM64_RESULT})"
           fi
           if [[ "$MANIFEST_RESULT" != "success" ]]; then
