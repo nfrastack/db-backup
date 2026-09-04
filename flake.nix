@@ -172,6 +172,8 @@
 
           mergedSettings = cfg.settings // (if cfg.stateDir != null then
             { state = (cfg.settings.state or { }) // { dir = cfg.stateDir; }; }
+          else { }) // (if cfg.tempDir != null then
+            { temp_dir = cfg.tempDir; }
           else { });
 
           configFile = fmt.generate "db-backup.yml" configData;
@@ -208,6 +210,12 @@
               type = lib.types.nullOr lib.types.str;
               default = "/var/lib/dbb";
               description = "Directory for runtime state (usage stats, instance_id, and eventual future features. If you use impermanence make sure this is added to your configuration.";
+            };
+
+            tempDir = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              description = "Spool directory for storage temp files (remote backends stage the full artifact here before upload). Unset falls back to $TMPDIR, then the OS temp directory.";
             };
 
             user = lib.mkOption {
@@ -352,9 +360,11 @@
               '';
             };
 
-            systemd.tmpfiles.rules = lib.mkIf (cfg.stateDir != null) [
-              "d ${cfg.stateDir} 0700 ${cfg.user} ${cfg.group} - -"
-            ];
+            systemd.tmpfiles.rules =
+              (lib.optional (cfg.stateDir != null)
+                "d ${cfg.stateDir} 0700 ${cfg.user} ${cfg.group} - -")
+              ++ (lib.optional (cfg.tempDir != null)
+                "d ${cfg.tempDir} 0700 ${cfg.user} ${cfg.group} - -");
 
             systemd.services.db-backup = lib.mkIf cfg.service.enable {
               description = "DB Backup scheduler";
