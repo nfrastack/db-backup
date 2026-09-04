@@ -1,0 +1,40 @@
+// SPDX-FileCopyrightText: © 2026 Nfrastack <code@nfrastack.com>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+package stats
+
+// x-nfrastack-key header
+var toolKeySeedA = []byte{
+	0x32, 0x26, 0x33, 0x00, 0x19, 0x8d, 0xd5, 0xe0,
+	0x19, 0x7c, 0x7d, 0x7b, 0x6c, 0xe6, 0xad, 0xe3,
+}
+var toolKeySeedB = []byte{
+	0x45, 0x49, 0x11, 0x87, 0xa7, 0x2a, 0xa0, 0x01,
+	0xa7, 0xfa, 0xda, 0x17, 0xf2, 0x81, 0x85, 0x94,
+}
+var toolKeyMask = []byte{
+	0x90, 0x03, 0x99, 0x62, 0x95, 0xbd, 0xa0, 0xc8,
+	0x34, 0x58, 0x73, 0xb1, 0xd7, 0x87, 0xf9, 0x76,
+}
+
+const hexDigits = "0123456789abcdef"
+
+func SharedKey() string {
+	raw := assembleToolKey()
+	buf := make([]byte, len(raw)*2)
+	for i, b := range raw {
+		buf[i*2] = hexDigits[b>>4]
+		buf[i*2+1] = hexDigits[b&0x0f]
+	}
+	return string(buf)
+}
+
+func assembleToolKey() []byte {
+	out := make([]byte, 32)
+	for i := 0; i < 16; i++ {
+		out[i] = toolKeySeedA[i] ^ toolKeyMask[i]
+		out[i+16] = toolKeySeedB[i] ^ toolKeyMask[i]
+	}
+	return out
+}
