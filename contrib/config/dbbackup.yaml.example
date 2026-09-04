@@ -24,6 +24,10 @@ log:
 # license:
 #   file: /etc/db-backup.lic   # path or env://
 
+# Spool directory for storage temp files (remote backends stage the full compressed+encrypted artifact here before upload). 
+# Default $TMPDIR, else the OS temp directory. Warns when on tmpfs or low on space.
+# temp_dir: /var/lib/dbb/tmp
+
 # Global defaults
 defaults:
   backup:
