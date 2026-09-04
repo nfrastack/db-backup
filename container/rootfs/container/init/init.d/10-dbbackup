@@ -1,0 +1,23 @@
+#!/command/with-contenv bash
+# SPDX-FileCopyrightText: © 2026 Nfrastack <code@nfrastack.com>
+#
+# SPDX-License-Identifier: MIT
+
+source /container/base/functions/container/init
+set -a
+prepare_service 10-dbbackup
+set +a
+
+SERVICE_NAME="db-backup"
+
+transform_var file \
+                    'DB*' \
+                    'DEFAULT*' \
+                    'RESTORE*'
+
+
+dbbackup_bootstrap_filesystem
+dbbackup_generate_configuration
+dbbackup_generate_helpers
+
+liftoff

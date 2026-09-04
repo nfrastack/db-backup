@@ -1,0 +1,47 @@
+#!/command/with-contenv bash
+# SPDX-FileCopyrightText: © 2026 Nfrastack <code@nfrastack.com>
+#
+# SPDX-License-Identifier: MIT
+
+source /container/base/functions/container/init
+SERVICE_NAME="db-backup-scheduler"
+prepare_service 10-dbbackup
+
+check_container_initialized
+check_service_initialized init 10-dbbackup
+
+CONFIG_FILE_PATH="${CONFIG_PATH%/}/${CONFIG_FILE}"
+liftoff
+
+case "${MODE,,}" in
+    manual )
+        if var_nottrue "${MANUAL_RUN_FOREVER}"; then
+            print_start "Running all backup jobs once (MODE=MANUAL, MANUAL_RUN_FOREVER=FALSE)"
+            if [ ! -f "${CONFIG_FILE_PATH}" ]; then
+                print_error "No config at ${CONFIG_FILE_PATH} - set DB* environment variables or mount a db-backup.yml"
+                exit 1
+            fi
+            exec s6-setuidgid "${DBBACKUP_USER}" /app/dbb --container scheduler --config "${CONFIG_FILE_PATH}" --once
+        fi
+        s6-svc -d /var/run/s6/legacy-services/10-dbbackup-scheduler
+        exit 0
+    ;;
+    scheduler | auto | default | * )
+        print_start "Starting DB Backup Scheduler service"
+        if [ ! -f "${CONFIG_FILE_PATH}" ]; then
+            print_error "No config at ${CONFIG_FILE_PATH} - set DB* environment variables or mount a db-backup.yml"
+            print_error "  Use MODE=MANUAL to keep the container alive and run 'dbb' by hand"
+            print_error "  Halting operation"
+            s6-svc -d /var/run/s6/legacy-services/10-dbbackup-scheduler
+            exit 1
+        fi
+        if ! grep -q "^jobs:" "${CONFIG_FILE_PATH}"; then
+            print_error "Config at ${CONFIG_FILE_PATH} defines no jobs - nothing to schedule"
+            print_error "  Add jobs to the YAML, or set DB* environment variables (SETUP_TYPE=AUTO)."
+            print_error "  Halting operation"
+            s6-svc -d /var/run/s6/legacy-services/10-dbbackup-scheduler
+            exit 1
+        fi
+        exec s6-setuidgid "${DBBACKUP_USER}" /app/dbb --container scheduler --config "${CONFIG_FILE_PATH}"
+    ;;
+esac
