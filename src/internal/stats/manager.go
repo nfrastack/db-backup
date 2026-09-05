@@ -18,23 +18,29 @@ import (
 	"github.com/nfrastack/db-backup/internal/log"
 )
 
+// first run after fresh install delay
+const initialReportDelay = 5 * time.Minute
+
 type Manager struct {
-	cfg        *config.StatsConfig
-	vc         *config.CheckNewVersionConfig
-	state      *config.StatsState
-	vstate     *config.VersionState
-	client     *Client
-	key        string
-	start      time.Time
-	warnedOnce bool
-	container  bool
-	stateDir   string
+	cfg        			*config.StatsConfig
+	vc         			*config.CheckNewVersionConfig
+	state      			*config.StatsState
+	vstate     			*config.VersionState
+	client     			*Client
+	key        			string
+	start      			time.Time
+	warnedOnce 			bool
+	container  			bool
+	stateDir   			string
+	nextVersionRetry 	time.Time
+	nextStatsRetry   	time.Time
 }
 
 // snapshot of ok/failed counts for jobs for stats
 type OutcomesRecorder interface {
 	Snapshot() []JobOutcome
 }
+
 type reportData struct {
 	opts       Options
 	instanceID string
@@ -103,9 +109,9 @@ func (m *Manager) LogStartup() {
 	const docsURL = "https://nfrastack.com/db-backup/recipes/usage-stats"
 	if !m.Enabled() {
 		if m.container {
-			log.Info("usage-stats", "usage stats collection is disabled. Enable via STATS_ENABLED=TRUE. Details: "+docsURL)
+			log.Info("usage-stats", "usage stats collection is disabled. enable via STATS_ENABLED=TRUE. details: "+docsURL)
 		} else {
-			log.Info("usage-stats", "usage stats collection is disabled. Enable it via stats.enabled in the config. Details: "+docsURL)
+			log.Info("usage-stats", "usage stats collection is disabled. enable it via stats.enabled in the config. details: "+docsURL)
 		}
 	} else {
 		state := "ephemeral"
@@ -116,7 +122,7 @@ func (m *Manager) LogStartup() {
 		if loc := log.Location(); loc != nil {
 			now = now.In(loc)
 		}
-		log.Info("usage-stats", "usage stats collection is enabled - thank you for helping improve db-backup by sharing anonymous usage data. Details: "+docsURL,
+		log.Info("usage-stats", "usage stats collection is enabled - thank you for helping improve db-backup by sharing anonymous usage data. details: "+docsURL,
 			"frequency", statsFrequency(m.cfg),
 			"last_report", lastActivityInLoc(m.state.LastReportAt),
 			"next_report", m.nextDue(m.state.LastReportAt, statsFrequency(m.cfg), now),
@@ -226,7 +232,7 @@ func (m *Manager) RememberVersion(v string) {
 	}
 }
 
-// are we container or not? nfratack branded container only unless --container flag
+// are we container or not? nfrastack branded container only unless --container flag
 func (m *Manager) SetContainer(inContainer bool) {
 	if m != nil {
 		m.container = inContainer
@@ -244,16 +250,26 @@ func (m *Manager) TryReport(ctx context.Context, opts Options, cfg *config.Confi
 		if loc := log.Location(); loc != nil {
 			now = now.In(loc)
 		}
-		if m.due(m.vstate.LastCheckAt, versionCheckFrequency(m.vc), now) {
-			log.Debug("version-check", "checking for new version")
+		if m.versionDue(now) {
+			log.Debug("version-check", "starting version check")
 			if resp, err := m.checkVersion(ctx, opts.Version, opts); err != nil {
-				log.Debug("version-check", fmt.Sprintf("version check failed: %s", DescribeError(err)))
+				m.nextVersionRetry = time.Now().Add(frequencyDuration(versionCheckFrequency(m.vc)))
+				log.Debug("version-check", fmt.Sprintf("version check failed: %s", DescribeError(err)), "next_check", formatDue(m.nextVersionRetry))
 			} else if resp != nil {
 				m.notifyVersion(opts.Version, opts, resp)
 				m.vstate.LastCheckAt = time.Now().UTC().Format(time.RFC3339)
+				m.nextVersionRetry = time.Time{}
 				if err := m.persist(); err != nil {
 					m.warnNotPersisted(err)
 				}
+				doneAt := time.Now()
+				if loc := log.Location(); loc != nil {
+					doneAt = doneAt.In(loc)
+				}
+				log.Debug("version-check", "check complete", "next_check", m.nextDue(m.vstate.LastCheckAt, versionCheckFrequency(m.vc), doneAt))
+			} else {
+				m.nextVersionRetry = time.Now().Add(frequencyDuration(versionCheckFrequency(m.vc)))
+				log.Debug("version-check", "no release information returned", "next_check", formatDue(m.nextVersionRetry))
 			}
 		} else {
 			log.Trace("version-check", "not due - skipping", "next_due", m.nextDue(m.vstate.LastCheckAt, versionCheckFrequency(m.vc), now))
@@ -267,18 +283,22 @@ func (m *Manager) TryReport(ctx context.Context, opts Options, cfg *config.Confi
 	if loc := log.Location(); loc != nil {
 		now = now.In(loc)
 	}
-	if !m.due(m.state.LastReportAt, statsFrequency(m.cfg), now) {
+	if !m.statsDue(now) {
 		log.Trace("usage-stats", "report not due - skipping", "next_due", m.nextDue(m.state.LastReportAt, statsFrequency(m.cfg), now))
 		return
 	}
-	log.Debug("usage-stats", "report due - sending")
+	log.Debug("usage-stats", "starting usage-stats submission")
 
 	instanceID := m.EnsureInstanceID()
+	var outcomes []JobOutcome
+	if jobs != nil {
+		outcomes = jobs.Snapshot()
+	}
 	data := &reportData{
 		opts:       opts,
 		instanceID: instanceID,
 		prevVers:   m.PreviousVersion(),
-		outcomes:   jobs.Snapshot(),
+		outcomes:   outcomes,
 	}
 
 	t0 := time.Now()
@@ -289,7 +309,8 @@ func (m *Manager) TryReport(ctx context.Context, opts Options, cfg *config.Confi
 	}
 	payload, err := renderReport(m, cfg, data, opsToken)
 	if err != nil {
-		log.Debug("usage-stats", "skipping report", "error", err.Error())
+		m.nextStatsRetry = time.Now().Add(frequencyDuration(statsFrequency(m.cfg)))
+		log.Debug("usage-stats", "skipping report", "error", err.Error(), "next_report", formatDue(m.nextStatsRetry))
 		return
 	}
 
@@ -297,17 +318,24 @@ func (m *Manager) TryReport(ctx context.Context, opts Options, cfg *config.Confi
 	DumpPayload(payload, time.Now())
 
 	if err := m.client.Report(ctx, payload); err != nil {
-		log.Debug("usage-stats", fmt.Sprintf("report failed: %s", DescribeError(err)))
+		m.nextStatsRetry = time.Now().Add(frequencyDuration(statsFrequency(m.cfg)))
+		log.Debug("usage-stats", fmt.Sprintf("report failed: %s", DescribeError(err)), "next_report", formatDue(m.nextStatsRetry))
 		return
 	}
 	m.state.LastReportAt = time.Now().UTC().Format(time.RFC3339)
 	m.vstate.EventAckAt = t0.UTC().Format(time.RFC3339Nano)
+	m.nextStatsRetry = time.Time{}
 	if err := m.persist(); err != nil {
 		m.warnNotPersisted(err)
 	}
 	m.RememberVersion(opts.Version)
-	// purge consumed journal entries only now that the server accepted them
+	// purge consumed journal entries only after accepted
 	Ack(t0)
+	doneAt := time.Now()
+	if loc := log.Location(); loc != nil {
+		doneAt = doneAt.In(loc)
+	}
+	log.Debug("usage-stats", "report sent", "next_report", m.nextDue(m.state.LastReportAt, statsFrequency(m.cfg), doneAt))
 }
 
 // enable version checking on by default
@@ -327,6 +355,7 @@ func (m *Manager) checkVersion(ctx context.Context, version string, opts Options
 	}
 	return resp, nil
 }
+
 func currentVersion(v string) string {
 	if v == "" {
 		return ""
@@ -343,11 +372,109 @@ func (m *Manager) due(last, freq string, now time.Time) bool {
 	if interval <= 0 {
 		return true
 	}
-	t, err := time.Parse(time.RFC3339, last)
-	if err != nil {
+	t, ok := parseActivityTime(last)
+	if !ok {
 		return true
 	}
 	return now.Sub(t) >= interval
+}
+
+func parseActivityTime(s string) (time.Time, bool) {
+	if t, err := time.Parse(time.RFC3339Nano, s); err == nil {
+		return t, true
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, true
+	}
+	return time.Time{}, false
+}
+
+func (m *Manager) dueTime(last, freq string, now time.Time) (time.Time, bool) {
+	if m == nil || last == "" {
+		return now.Add(initialReportDelay), true
+	}
+	interval := frequencyDuration(freq)
+	if interval <= 0 {
+		return now, true
+	}
+	t, ok := parseActivityTime(last)
+	if !ok {
+		return now, true
+	}
+	return t.Add(interval), true
+}
+
+func (m *Manager) versionDue(now time.Time) bool {
+	if !m.nextVersionRetry.IsZero() && now.Before(m.nextVersionRetry) {
+		return false
+	}
+	if m == nil || m.vstate == nil {
+		return true
+	}
+	return m.due(m.vstate.LastCheckAt, versionCheckFrequency(m.vc), now)
+}
+
+// swhether a usage stats report should run now
+func (m *Manager) statsDue(now time.Time) bool {
+	if !m.nextStatsRetry.IsZero() && now.Before(m.nextStatsRetry) {
+		return false
+	}
+	if m == nil || m.state == nil {
+		return true
+	}
+	return m.due(m.state.LastReportAt, statsFrequency(m.cfg), now)
+}
+
+// format a due instant for log fields, in the configured log location.
+func formatDue(t time.Time) string {
+	if loc := log.Location(); loc != nil {
+		t = t.In(loc)
+	}
+	return t.Format(time.RFC3339)
+}
+
+// return when next version check due. ok=false when version check disabled.
+func (m *Manager) NextVersionDue(now time.Time) (time.Time, bool) {
+	if !m.VersionCheckEnabled() {
+		return time.Time{}, false
+	}
+	if m == nil || m.vstate == nil {
+		return now.Add(initialReportDelay), true
+	}
+	t, _ := m.dueTime(m.vstate.LastCheckAt, versionCheckFrequency(m.vc), now)
+	if !m.nextVersionRetry.IsZero() && m.nextVersionRetry.After(t) {
+		t = m.nextVersionRetry
+	}
+	return t, true
+}
+
+// return when next stats report due. ok=false when disabled.
+func (m *Manager) NextStatsDue(now time.Time) (time.Time, bool) {
+	if !m.Enabled() {
+		return time.Time{}, false
+	}
+	if m == nil || m.state == nil {
+		return now.Add(initialReportDelay), true
+	}
+	t, _ := m.dueTime(m.state.LastReportAt, statsFrequency(m.cfg), now)
+	if !m.nextStatsRetry.IsZero() && m.nextStatsRetry.After(t) {
+		t = m.nextStatsRetry
+	}
+	return t, true
+}
+
+// returns the earliest upcoming due. now when due.
+func (m *Manager) NextDue(now time.Time) time.Time {
+	var best time.Time
+	if t, ok := m.NextVersionDue(now); ok {
+		best = t
+	}
+	if t, ok := m.NextStatsDue(now); ok {
+		if best.IsZero() || t.Before(best) {
+			best = t
+		}
+	}
+	return best
 }
 
 // returns the ts of the last acknowledged submit
@@ -411,12 +538,9 @@ func lastActivityInLoc(last string) string {
 	if loc == nil {
 		return last
 	}
-	t, err := time.Parse(time.RFC3339, last)
-	if err != nil {
+	t, ok := parseActivityTime(last)
+	if !ok {
 		return last
-	}
-	if t2, err2 := time.Parse(time.RFC3339Nano, last); err2 == nil {
-		t = t2
 	}
 	return t.In(loc).Format(time.RFC3339)
 }
@@ -432,20 +556,19 @@ func newID() string {
 
 // return next due time or 'now'
 func (m *Manager) nextDue(last, freq string, now time.Time) string {
-	if m == nil || last == "" {
+	if m == nil {
 		return "now"
+	}
+	if last == "" {
+		return formatDue(now.Add(initialReportDelay))
 	}
 	interval := frequencyDuration(freq)
 	if interval <= 0 {
 		return "now"
 	}
-	t, err := time.Parse(time.RFC3339, last)
-	if err != nil {
-		if t2, err2 := time.Parse(time.RFC3339Nano, last); err2 == nil {
-			t = t2
-		} else {
-			return "now"
-		}
+	t, ok := parseActivityTime(last)
+	if !ok {
+		return "now"
 	}
 	next := t.Add(interval)
 	if loc := log.Location(); loc != nil {

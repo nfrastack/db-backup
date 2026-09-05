@@ -99,25 +99,33 @@ func cmdScheduler(args []string) int {
 	return 0
 }
 
-const reportLoopInterval = time.Hour
-
 func startReportLoop(ctx context.Context, cfg *config.Config) <-chan struct{} {
 	if statsMgr == nil || !(statsMgr.Enabled() || statsMgr.VersionCheckEnabled()) {
 		return nil
 	}
 	done := make(chan struct{})
 	go func() {
-		statsMgr.TryReport(ctx, statsOpts(), cfg, statsTracker)
-		close(done)
-		ticker := time.NewTicker(reportLoopInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				statsMgr.TryReport(ctx, statsOpts(), cfg, statsTracker)
+		closed := false
+		closeOnce := func() {
+			if !closed {
+				close(done)
+				closed = true
 			}
+		}
+		for first := true; ; first = false {
+			if wait := time.Until(statsMgr.NextDue(time.Now())); wait > 0 {
+				if first {
+					closeOnce()
+				}
+				select {
+				case <-ctx.Done():
+					closeOnce()
+					return
+				case <-time.After(wait):
+				}
+			}
+			statsMgr.TryReport(ctx, statsOpts(), cfg, statsTracker)
+			closeOnce()
 		}
 	}()
 	return done
