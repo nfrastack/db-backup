@@ -112,14 +112,15 @@ func ApplyRetentionAt(backups []BackupEntry, policy RetentionPolicy, now time.Ti
 	return toDelete
 }
 
-func DeleteBackups(st storage.Storage, filenames []string) error {
-	return DeleteBackupsWithContext(context.Background(), st, filenames)
+func DeleteBackups(st storage.Storage, filenames []string, fields ...any) error {
+	return DeleteBackupsWithContext(context.Background(), st, filenames, fields...)
 }
 
-func DeleteBackupsWithContext(ctx context.Context, st storage.Storage, filenames []string) error {
+func DeleteBackupsWithContext(ctx context.Context, st storage.Storage, filenames []string, fields ...any) error {
 	var errs []string
 	for _, f := range filenames {
-		log.Debug("prune", "deleted file", "file", f, "status", "debug")
+		args := append(append([]any{}, fields...), "file", f, "status", "debug")
+		log.Debug("prune", "deleted file", args...)
 		if err := st.Delete(ctx, f); err != nil {
 			errs = append(errs, fmt.Sprintf("%s: %v", f, err))
 		}

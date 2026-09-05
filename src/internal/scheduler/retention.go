@@ -44,10 +44,11 @@ func (s *Scheduler) applyArchive(job config.JobConfig) {
 	}
 
 	acfg := &retention.ArchiveConfig{
-		Last:   job.Archive.Last,
-		Within: within,
-		Src:    srcSt,
-		Dst:    dstSt,
+		Last:      job.Archive.Last,
+		Within:    within,
+		Src:       srcSt,
+		Dst:       dstSt,
+		LogFields: jobFields(job),
 	}
 
 	start := time.Now()
@@ -120,7 +121,7 @@ func (s *Scheduler) applyPrune(job config.JobConfig, stCfg *config.StorageConfig
 	jlog(log.LevelInfo, "prune", job, "pruning backups", startFields...)
 
 	tDel := time.Now()
-	if err := retention.DeleteBackups(st, toDelete); err != nil {
+	if err := retention.DeleteBackups(st, toDelete, jobFields(job)...); err != nil {
 		delDur := time.Since(tDel)
 		ef := []any{"status", "failed", "stage", "delete", "error", err.Error()}
 		if timingsEnabled(job) {

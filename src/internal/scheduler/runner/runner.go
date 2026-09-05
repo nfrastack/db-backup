@@ -77,6 +77,8 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 	if job.RunID == "" {
 		job.RunID = RandomID(4)
 	}
+
+	ctx = common.WithLogFields(ctx, jobRunFields(job)...)
 	start := time.Now()
 	outcome := recordOutcome
 

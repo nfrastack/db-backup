@@ -135,7 +135,7 @@ func (s *Scheduler) runJob(ctx context.Context, job config.JobConfig, idx int) {
 	defer s.wg.Done()
 
 	if job.Connectivity == nil || !job.Connectivity.Enabled {
-		log.Warn("backup", "connectivity check disabled - backing up blindly", "job", job.Name, "status", "warn")
+		jlog(log.LevelWarn, "backup", job, "connectivity check disabled - backing up blindly", "status", "warn")
 	}
 
 	scheduleDesc := job.Schedule.Describe()

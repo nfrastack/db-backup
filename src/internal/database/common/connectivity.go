@@ -47,6 +47,7 @@ func MethodOf(cfg *config.ConnectivityConfig) string {
 }
 
 func retryLoop(ctx context.Context, name string, interval int, deadline time.Time, fn func() error) error {
+	extra := LogFieldsFromContext(ctx)
 	attempt := 0
 	for {
 		attempt++
@@ -61,9 +62,9 @@ func retryLoop(ctx context.Context, name string, interval int, deadline time.Tim
 		}
 		if err == nil {
 			if attempt > 1 {
-				log.Info("connectivity", "check ok", "engine", name, "attempt", attempt, "status", "info")
+				log.Info("connectivity", "check ok", append(append([]any{}, extra...), "engine", name, "attempt", attempt, "status", "info")...)
 			} else {
-				log.Debug("connectivity", "check ok", "engine", name, "attempt", attempt, "status", "debug")
+				log.Debug("connectivity", "check ok", append(append([]any{}, extra...), "engine", name, "attempt", attempt, "status", "debug")...)
 			}
 			return nil
 		}
@@ -75,11 +76,11 @@ func retryLoop(ctx context.Context, name string, interval int, deadline time.Tim
 			}
 			remaining = rem.String()
 			if time.Now().After(deadline) {
-				log.Error("connectivity", "not reachable after timeout", "engine", name, "attempt", attempt, "error", err, "timeout", interval*attempt, "status", "error")
+				log.Error("connectivity", "not reachable after timeout", append(append([]any{}, extra...), "engine", name, "attempt", attempt, "error", err, "timeout", interval*attempt, "status", "error")...)
 				return fmt.Errorf("%s not reachable after timeout (%ds, %d attempts): %w", name, int(time.Since(deadline.Add(-time.Duration(interval*attempt)*time.Second)).Seconds()), attempt, err)
 			}
 		}
-		log.Warn("connectivity", "check failed - waiting for database", "engine", name, "attempt", attempt, "error", err, "retry_in", interval, "remaining", remaining, "status", "warn")
+		log.Warn("connectivity", "check failed - waiting for database", append(append([]any{}, extra...), "engine", name, "attempt", attempt, "error", err, "retry_in", interval, "remaining", remaining, "status", "warn")...)
 		timer := time.NewTimer(time.Duration(interval) * time.Second)
 		select {
 		case <-ctx.Done():
@@ -106,9 +107,10 @@ func TCPDialContext(ctx context.Context, host string, port int) error {
 }
 
 func WithConnectivity(ctx context.Context, name string, cfg *config.ConnectivityConfig, probe, connect, ping func() error) error {
+	extra := LogFieldsFromContext(ctx)
 	if cfg == nil || !cfg.Enabled || MethodOf(cfg) == config.MethodNone {
 		if cfg != nil && (!cfg.Enabled || MethodOf(cfg) == config.MethodNone) {
-			log.Warn("connectivity", "check disabled - backing up blindly", "engine", name, "status", "warn")
+			log.Warn("connectivity", "check disabled - backing up blindly", append(append([]any{}, extra...), "engine", name, "status", "warn")...)
 		}
 		return connect()
 	}
@@ -123,7 +125,7 @@ func WithConnectivity(ctx context.Context, name string, cfg *config.Connectivity
 	}
 
 	if err := connect(); err != nil {
-		log.Error("connectivity", "connect failed", "engine", name, "method", MethodOf(cfg), "error", err, "status", "error")
+		log.Error("connectivity", "connect failed", append(append([]any{}, extra...), "engine", name, "method", MethodOf(cfg), "error", err, "status", "error")...)
 		return err
 	}
 
@@ -132,7 +134,7 @@ func WithConnectivity(ctx context.Context, name string, cfg *config.Connectivity
 			return nil
 		}
 		if err := retryLoop(ctx, name, interval, deadline, probe); err != nil {
-			log.Error("connectivity", "reachability check failed", "engine", name, "method", "simple", "error", err, "status", "error")
+			log.Error("connectivity", "reachability check failed", append(append([]any{}, extra...), "engine", name, "method", "simple", "error", err, "status", "error")...)
 			return err
 		}
 		return nil

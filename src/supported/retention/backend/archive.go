@@ -96,7 +96,8 @@ func runArchive(cfg *retention.ArchiveConfig) (int, []string, error) {
 	var moved int
 
 	for _, b := range toArchive {
-		log.Debug("archive", "moved file", "file", b.path, "status", "debug")
+		args := append(append([]any{}, cfg.LogFields...), "file", b.path, "status", "debug")
+		log.Debug("archive", "moved file", args...)
 		candidates = append(candidates, b.path)
 		if err := moveFile(cfg.Src, cfg.Dst, b.path); err != nil {
 			return moved, candidates, fmt.Errorf("move %s: %w", b.path, err)

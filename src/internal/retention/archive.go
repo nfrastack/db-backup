@@ -13,10 +13,11 @@ import (
 )
 
 type ArchiveConfig struct {
-	Last   int
-	Within time.Duration
-	Src    storage.Storage
-	Dst    storage.Storage
+	Last      int
+	Within    time.Duration
+	Src       storage.Storage
+	Dst       storage.Storage
+	LogFields []any
 }
 
 var ArchiveRunner = func(cfg *ArchiveConfig) (int, []string, error) {

@@ -7,6 +7,8 @@
    ### Changed
       - Mysql - accomodate differences between mysql 8.x and mariadb sub operations
       - Mysql - introduce toggles for events, stored procedures, triggers and views
+      - Optimize nfrastack container usage detection
+      - Enforce job ids to occur during archive ops
 
 ## 5.0.0 2026-09-03 <code at nfrastack dot com>
 
