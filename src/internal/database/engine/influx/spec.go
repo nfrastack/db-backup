@@ -21,7 +21,7 @@ func Spec() registry.EngineSpec {
 			return NewDumper(o.Host, o.Port, o.User, o.Pass, o.DB, o.Version, o.TLS), nil
 		},
 		ListDatabases: func(host string, port int, user, pass, authSource string, tlsCfg *config.TLSConfig) ([]string, error) {
-			return ListDatabases(host, port, tlsCfg)
+			return ListDatabases(host, port, user, pass, authSource, tlsCfg)
 		},
 		Maintain: func(host string, port int, user, pass, dbName, authSource string, cfg *common.MaintenanceCfg, tlsCfg *config.TLSConfig) ([]common.OpResult, error) {
 			return Maintain()

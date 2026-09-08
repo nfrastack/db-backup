@@ -1,3 +1,13 @@
+## 5.0.2 develop
+
+   ### Added
+      - Container `backup-now` / `backup##-now` allows passing log level as argument eg `backup-now debug`
+ 
+   ### Changed
+      - more container quality of life config auto detections
+      - (influx) chunk measurement dumps with large amount of datapoints
+      - (influx) additional debugging and tracing output
+
 ## 5.0.1 2026-09-08 <code at nfrastack dot com>
 
    ### Added
