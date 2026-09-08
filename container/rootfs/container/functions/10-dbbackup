@@ -1293,7 +1293,7 @@ dbbackup_generate_helpers() {
         esac
         printf -v idx '%02d' "${i}"
         {
-            printf '#!/command/with-contenv bash\nexec /usr/local/bin/backup-now %s\n' \
+            printf '#!/command/with-contenv bash\nexec /usr/local/bin/backup-now %s "$@"\n' \
                 "$(printf '%s' "${name}" | sed -e "s/'/'\\\\''/g" -e "s/^/'/" -e "s/$/'/")"
         } > "${helpers_dir}/backup${idx}-now"
         chmod +x "${helpers_dir}/backup${idx}-now"
