@@ -124,6 +124,13 @@ func chownLogFile(path, userName, groupName string) {
 }
 
 func discoverConfig() string {
+	if ok, _ := container.Detect(); ok {
+		for _, p := range container.NfrastackConfigCandidates(os.Getenv) {
+			if _, err := os.Stat(p); err == nil {
+				return p
+			}
+		}
+	}
 	for _, p := range []string{
 		"db-backup.yaml",
 		"db-backup.yml",
@@ -145,6 +152,7 @@ func discoverConfig() string {
 func hasCommercialNotice() bool {
 	return buildEdition == "supporter" && runtimeMode() == "supporter"
 }
+
 func main() {
 	invocation := os.Getenv("INVOCATION_ID") != ""
 	journal := os.Getenv("JOURNAL_STREAM") != ""
