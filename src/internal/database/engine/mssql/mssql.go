@@ -16,6 +16,7 @@ import (
 
 	"github.com/nfrastack/db-backup/internal/config"
 	"github.com/nfrastack/db-backup/internal/database/common"
+	"github.com/nfrastack/db-backup/internal/log"
 )
 
 type Dumper struct {
@@ -75,6 +76,10 @@ func (d *Dumper) Close() error {
 }
 
 func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
+	start := time.Now()
+	log.Debug("mssql", "backup start",
+		"host", d.host, "port", d.port,
+		"databases", strings.Join(dbNames, ","))
 	fmt.Fprintf(w, "-- dbbackup MSSQL dump\n")
 	fmt.Fprintf(w, "-- Host: %s:%d\n--\n\n", d.host, d.port)
 
@@ -82,8 +87,10 @@ func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
 		var err error
 		dbNames, err = d.listDatabases()
 		if err != nil {
+			log.Debug("mssql", "expand ALL failed", "host", d.host, "error", err.Error())
 			return err
 		}
+		log.Debug("mssql", "expanded ALL", "count", len(dbNames), "databases", strings.Join(dbNames, ","))
 	}
 
 	ctx := d.ctxOrBg()
@@ -92,6 +99,9 @@ func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
 			return fmt.Errorf("dump %s: %w", dbName, err)
 		}
 	}
+	log.Debug("mssql", "backup done",
+		"databases", len(dbNames),
+		"elapsed", time.Since(start).Round(time.Millisecond).String())
 	return nil
 }
 func NewDumper(host string, port int, user, pass, dbName string, tlsCfg ...*config.TLSConfig) *Dumper {
@@ -118,6 +128,9 @@ func (d *Dumper) Open() error {
 
 func (d *Dumper) OpenContext(ctx context.Context) error {
 	d.ctx = ctx
+	log.Debug("mssql", "connect start",
+		"host", d.host, "port", d.port, "user", d.user,
+		"tls", d.tlsCfg != nil)
 	probe := func() error { return common.TCPDial(d.host, d.port) }
 	connect := func() error {
 		connStr := ConnStr(d.user, d.pass, d.host, d.port, d.dbName, d.tlsCfg)
@@ -132,6 +145,7 @@ func (d *Dumper) OpenContext(ctx context.Context) error {
 		if err := d.db.PingContext(ctx); err != nil {
 			return fmt.Errorf("ping: %w", err)
 		}
+		log.Debug("mssql", "connected", "host", d.host, "port", d.port)
 		return nil
 	}
 	return common.WithConnectivity(ctx, "mssql", d.connCfg, probe, connect, ping)
@@ -155,10 +169,13 @@ func (d *Dumper) ctxOrBg() context.Context {
 }
 
 func (d *Dumper) dumpDatabase(ctx context.Context, w io.Writer, dbName string) error {
+	dbStart := time.Now()
 	tables, err := d.listTables(ctx, dbName)
 	if err != nil {
 		return err
 	}
+	log.Debug("mssql", "dumping database",
+		"database", dbName, "tables", len(tables))
 
 	fmt.Fprintf(w, "-- Database: %s\n", dbName)
 
@@ -166,6 +183,8 @@ func (d *Dumper) dumpDatabase(ctx context.Context, w io.Writer, dbName string) e
 		if d.Tables != nil {
 			included, _ := d.Tables.Apply(table)
 			if !included {
+				log.Trace("mssql", "table excluded by filter",
+					"database", dbName, "table", table)
 				continue
 			}
 		}
@@ -174,6 +193,9 @@ func (d *Dumper) dumpDatabase(ctx context.Context, w io.Writer, dbName string) e
 			return err
 		}
 	}
+	log.Debug("mssql", "database done",
+		"database", dbName, "tables", len(tables),
+		"elapsed", time.Since(dbStart).Round(time.Millisecond).String())
 	return nil
 }
 
