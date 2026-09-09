@@ -31,7 +31,7 @@ jobs:
           fail=0
           while IFS= read -r f; do
             if ! grep -q "SPDX-License-Identifier" "$f"; then
-              echo "::error::missing SPDX-License-Identifier in $f"
+              echo "ERROR missing SPDX-License-Identifier in $f"
               fail=1
             fi
           done < <(git ls-files -- 'src/**/*.go' '*.sh' 'Containerfile' 'container/**/Containerfile' | sort)
@@ -101,7 +101,7 @@ jobs:
                 tag_list+=("latest")
               ;;
               develop )
-                tag_list+=("develop")
+                tag_list+=("develop" "develop-${GITHUB_SHA:0:7}")
               ;;
               * )
                 tag_list+=("$(echo "$branch_name" | sed 's|/|-|g')")
@@ -327,7 +327,7 @@ jobs:
           sources=$(echo "$sources" | xargs)
 
           if [ -z "$sources" ]; then
-            echo "::error::No successful arch builds to create manifest from"
+            echo "ERROR No successful arch builds to create manifest from"
             exit 1
           fi
 
@@ -337,6 +337,48 @@ jobs:
             if [ -z "$tag" ]; then continue; fi
             echo "Creating manifest for: $tag"
             docker buildx imagetools create -t "$tag" $sources
+          done
+
+  cleanup-staging:
+    name: Delete staging tags
+    runs-on: ubuntu-latest
+    needs: [prepare, manifest]
+    if: needs.manifest.result == 'success'
+    permissions:
+      packages: write
+    steps:
+      - name: Delete <sha>-amd64/-arm64 staging versions from GHCR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          STAGING_PREFIX: ${{ needs.prepare.outputs.staging_prefix }}
+        run: |
+          set -euo pipefail
+          repo="${GITHUB_REPOSITORY}"
+          owner="${repo%%/*}"
+          pkg="${repo##*/}"
+          for tag in "${STAGING_PREFIX}-amd64" "${STAGING_PREFIX}-arm64"; do
+            id=$(gh api \
+              -H "Accept: application/vnd.github+json" \
+              "/orgs/${owner}/packages/container/${pkg}/versions?per_page=100" \
+              --paginate -q ".[] | select(.metadata.container.tags // [] | index(\"${tag}\")) | .id" 2>/dev/null | head -1 || true)
+            if [ -z "$id" ]; then
+              id=$(gh api \
+                -H "Accept: application/vnd.github+json" \
+                "/user/packages/container/${pkg}/versions?per_page=100" \
+                --paginate -q ".[] | select(.metadata.container.tags // [] | index(\"${tag}\")) | .id" 2>/dev/null | head -1 || true)
+            fi
+            if [ -n "$id" ]; then
+              echo "Deleting staging version $id (tag $tag)"
+              gh api --method DELETE \
+                -H "Accept: application/vnd.github+json" \
+                "/orgs/${owner}/packages/container/${pkg}/versions/${id}" 2>/dev/null || \
+              gh api --method DELETE \
+                -H "Accept: application/vnd.github+json" \
+                "/user/packages/container/${pkg}/versions/${id}" 2>/dev/null || \
+              echo "WARN Could not delete staging tag $tag (id $id)"
+            else
+              echo "Staging tag $tag not found, nothing to delete."
+            fi
           done
 
   summary:
@@ -394,13 +436,13 @@ jobs:
           } >> $GITHUB_STEP_SUMMARY
 
           if [[ "$AMD64_RESULT" != "success" && "$BUILD_AMD64" == "true" ]]; then
-            echo "::error::amd64 build failed (status: ${AMD64_RESULT})"
+            echo "ERROR amd64 build failed (status: ${AMD64_RESULT})"
           fi
           if [[ "$ARM64_RESULT" != "success" && "$BUILD_ARM64" == "true" ]]; then
-            echo "::error::arm64 build failed (status: ${ARM64_RESULT})"
+            echo "ERROR arm64 build failed (status: ${ARM64_RESULT})"
           fi
           if [[ "$MANIFEST_RESULT" != "success" ]]; then
-            echo "::error::Manifest creation failed (status: ${MANIFEST_RESULT})"
+            echo "ERROR Manifest creation failed (status: ${MANIFEST_RESULT})"
           fi
 
           if [[ "$AMD64_RESULT" == "failure" || "$ARM64_RESULT" == "failure" || "$MANIFEST_RESULT" == "failure" ]]; then
