@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 
 	"github.com/nfrastack/db-backup/internal/config"
 	"github.com/nfrastack/db-backup/internal/database/common"
+	"github.com/nfrastack/db-backup/internal/log"
 )
 
 type Dumper struct {
@@ -39,30 +41,53 @@ func (d *Dumper) Close() error {
 
 func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
 	ctx := d.ctxOrBg()
+	start := time.Now()
+	log.Debug("redis", "backup start",
+		"host", d.host, "port", d.port, "tls", d.tlsCfg != nil,
+		"auth", d.authMode())
 
 	fmt.Fprintf(w, "# dbbackup Redis dump\n")
 	fmt.Fprintf(w, "# Host: %s:%d\n#\n\n", d.host, d.port)
 	var cursor uint64
+	var scanned, dumped, skipped int
+	var skippedKeys []string
 	for {
 		keys, next, err := d.client.Scan(ctx, cursor, "*", 1000).Result()
 		if err != nil {
 			return fmt.Errorf("scan: %w", err)
 		}
+		log.Trace("redis", "scan page",
+			"cursor", cursor, "keys", len(keys), "next", next)
+		scanned += len(keys)
 		for _, key := range keys {
 			if d.Tables != nil {
 				included, _ := d.Tables.Apply(key)
 				if !included {
+					log.Trace("redis", "key excluded by filter", "key", key)
 					continue
 				}
 			}
+			common.TraceTable(ctx, "", key)
 			if err := d.dumpKey(ctx, w, key); err != nil {
+				skipped++
+				skippedKeys = append(skippedKeys, key)
+				log.Warn("redis", "skipping key - dump failed",
+					"key", key, "error", err.Error())
 				continue
 			}
+			dumped++
 		}
 		cursor = next
 		if cursor == 0 {
 			break
 		}
+	}
+	log.Debug("redis", "backup done",
+		"scanned", scanned, "dumped", dumped, "skipped", skipped,
+		"elapsed", time.Since(start).Round(time.Millisecond).String())
+	if skipped > 0 {
+		return fmt.Errorf("redis: backup incomplete - %d of %d keys skipped (%s)",
+			skipped, scanned, strings.Join(skippedKeys, ", "))
 	}
 	return nil
 }
@@ -84,6 +109,9 @@ func (d *Dumper) Open() error {
 
 func (d *Dumper) OpenContext(ctx context.Context) error {
 	d.ctx = ctx
+	log.Debug("redis", "connect start",
+		"host", d.host, "port", d.port, "tls", d.tlsCfg != nil,
+		"auth", d.authMode())
 	probe := func() error { return common.TCPDial(d.host, d.port) }
 	connect := func() error {
 		opts := &redis.Options{
@@ -101,9 +129,19 @@ func (d *Dumper) OpenContext(ctx context.Context) error {
 		if err := d.client.Ping(ctx).Err(); err != nil {
 			return fmt.Errorf("ping: %w", err)
 		}
+		log.Debug("redis", "connected",
+			"host", d.host, "port", d.port, "tls", d.tlsCfg != nil,
+			"auth", d.authMode())
 		return nil
 	}
 	return common.WithConnectivity(ctx, "redis", d.connCfg, probe, connect, ping)
+}
+
+func (d *Dumper) authMode() string {
+	if d.pass == "" {
+		return "none"
+	}
+	return "password"
 }
 
 func QuoteRedis(s string) string {
@@ -130,11 +168,15 @@ func (d *Dumper) dumpKey(ctx context.Context, w io.Writer, key string) error {
 	if err != nil {
 		return fmt.Errorf("ttl: %w", err)
 	}
+	if ttl < 0 {
+		ttl = 0
+	}
 	typ, err := d.client.Type(ctx, key).Result()
 	if err != nil {
 		return fmt.Errorf("type: %w", err)
 	}
 	qKey := QuoteRedis(key)
+	log.Trace("redis", "dumping key", "key", key, "type", typ, "ttl", ttl.String())
 	switch typ {
 	case "string":
 		val, err := d.client.Get(ctx, key).Result()
@@ -166,9 +208,11 @@ func (d *Dumper) dumpKey(ctx context.Context, w io.Writer, key string) error {
 			return fmt.Errorf("zrange: %w", err)
 		}
 		d.writeRestoreZSet(w, qKey, vals, ttl)
-	case "stream", "":
-
+	case "":
+		log.Trace("redis", "key vanished mid-scan", "key", key)
 		return nil
+	case "stream":
+		return fmt.Errorf("unsupported type %q", typ)
 	default:
 
 		val, err := d.client.Get(ctx, key).Result()
@@ -206,17 +250,14 @@ func (d *Dumper) getKeyValue(ctx context.Context, key string) (string, error) {
 	}
 }
 func strconvFormatFloat(f float64) string {
-	return strings.TrimRight(strings.TrimRight(fmt.Sprintf("%v", f), "0"), ".")
+	return strconv.FormatFloat(f, 'f', -1, 64)
 }
 func (d *Dumper) writeRestoreCmd(w io.Writer, parts []string, ttl time.Duration) {
 	fmt.Fprintln(w, strings.Join(parts, " "))
-	ttlSec := int64(ttl.Seconds())
-	switch {
+	switch ttlSec := int64(ttl.Seconds()); {
 	case ttlSec > 0:
 		fmt.Fprintf(w, "EXPIRE %s %d\n", parts[1], ttlSec)
-	case ttlSec < 0:
-
-	default:
+	case ttl > 0:
 		fmt.Fprintf(w, "PEXPIREAT %s %d\n", parts[1], time.Now().Add(ttl).UnixMilli())
 	}
 }
@@ -272,13 +313,12 @@ func (d *Dumper) writeRestoreZSet(w io.Writer, qKey string, entries []redis.Z, t
 }
 func (d *Dumper) writeWithTTL(w io.Writer, qKey, val string, ttl time.Duration) {
 	qVal := QuoteRedis(val)
-	ttlSec := int64(ttl.Seconds())
-	switch {
+	switch ttlSec := int64(ttl.Seconds()); {
 	case ttlSec > 0:
 		fmt.Fprintf(w, "SET %s %s EX %d\n", qKey, qVal, ttlSec)
-	case ttlSec < 0:
-		fmt.Fprintf(w, "SET %s %s\n", qKey, qVal)
-	default:
+	case ttl > 0:
 		fmt.Fprintf(w, "SET %s %s PXAT %d\n", qKey, qVal, time.Now().Add(ttl).UnixMilli())
+	default:
+		fmt.Fprintf(w, "SET %s %s\n", qKey, qVal)
 	}
 }
