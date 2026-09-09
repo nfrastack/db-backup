@@ -18,6 +18,7 @@ import (
 
 	"github.com/nfrastack/db-backup/internal/config"
 	"github.com/nfrastack/db-backup/internal/database/common"
+	"github.com/nfrastack/db-backup/internal/log"
 )
 
 type Dumper struct {
@@ -46,6 +47,10 @@ func (d *Dumper) Close() error {
 
 func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
 	ctx := d.ctxOrBg()
+	start := time.Now()
+	log.Debug("mongo", "backup start",
+		"host", d.host, "port", d.port, "server", d.serverVer,
+		"databases", strings.Join(dbNames, ","))
 
 	fmt.Fprintf(w, "// dbbackup MongoDB dump\n")
 	fmt.Fprintf(w, "// Host: %s  Server: %s\n//\n\n", d.host, d.serverVer)
@@ -69,6 +74,9 @@ func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
 		}
 	}
 
+	log.Debug("mongo", "backup done",
+		"databases", len(dbNames),
+		"elapsed", time.Since(start).Round(time.Millisecond).String())
 	return nil
 }
 
@@ -96,6 +104,9 @@ func (d *Dumper) Open() error {
 
 func (d *Dumper) OpenContext(ctx context.Context) error {
 	d.ctx = ctx
+	log.Debug("mongo", "connect start",
+		"host", d.host, "port", d.port, "user", d.user,
+		"auth_source", d.authSource, "tls", d.tlsCfg != nil)
 	probe := func() error { return common.TCPDial(d.host, d.port) }
 	connect := func() error {
 		uri := d.uri
@@ -121,6 +132,8 @@ func (d *Dumper) OpenContext(ctx context.Context) error {
 				d.serverVer = v
 			}
 		}
+		log.Debug("mongo", "connected",
+			"host", d.host, "port", d.port, "server", d.serverVer)
 		return nil
 	}
 	return common.WithConnectivity(ctx, "mongo", d.connCfg, probe, connect, ping)
@@ -169,6 +182,7 @@ func (d *Dumper) dumpCollection(ctx context.Context, w io.Writer, dbName, col st
 	defer cursor.Close(ctx)
 
 	fmt.Fprintf(w, "// Collection: %s\n", col)
+	colStart := time.Now()
 
 	var docCount int
 	for cursor.Next(ctx) {
@@ -190,22 +204,32 @@ func (d *Dumper) dumpCollection(ctx context.Context, w io.Writer, dbName, col st
 	if docCount > 0 {
 		fmt.Fprintf(w, "\n]);\n\n")
 	}
-
-	return cursor.Err()
+	if err := cursor.Err(); err != nil {
+		return err
+	}
+	log.Trace("mongo", "collection done",
+		"database", dbName, "collection", col, "docs", docCount,
+		"elapsed", time.Since(colStart).Round(time.Millisecond).String())
+	return nil
 }
 
 func (d *Dumper) dumpDatabase(ctx context.Context, w io.Writer, dbName string) error {
+	dbStart := time.Now()
 	fmt.Fprintf(w, "\n// Database: %s\n\n", dbName)
 
 	collections, err := d.client.Database(dbName).ListCollectionNames(ctx, bson.D{})
 	if err != nil {
 		return fmt.Errorf("list collections: %w", err)
 	}
+	log.Debug("mongo", "dumping database",
+		"database", dbName, "collections", len(collections))
 
 	for _, col := range collections {
 		if d.Tables != nil {
 			included, _ := d.Tables.Apply(col)
 			if !included {
+				log.Trace("mongo", "collection excluded by filter",
+					"database", dbName, "collection", col)
 				continue
 			}
 		}
@@ -215,6 +239,9 @@ func (d *Dumper) dumpDatabase(ctx context.Context, w io.Writer, dbName string) e
 		}
 	}
 
+	log.Debug("mongo", "database done",
+		"database", dbName, "collections", len(collections),
+		"elapsed", time.Since(dbStart).Round(time.Millisecond).String())
 	return nil
 }
 
