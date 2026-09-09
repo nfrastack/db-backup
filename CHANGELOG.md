@@ -5,8 +5,16 @@
  
    ### Changed
       - more container quality of life config auto detections
-      - (influx) chunk measurement dumps with large amount of datapoints
-      - (influx) additional debugging and tracing output
+      - (couch) chunk large operations
+      - (couch) additional tracing output
+      - (influx2) chunk measurement dumps with large amount of datapoints
+      - (influx2) additional debugging and tracing output
+      - (mysql) additional tracing output
+      - (mssql) additional tracing output
+      - (redis) additional tracing output, and restore pexpireat routines
+      - (sqlite) additional tracing output
+      - (postgres) additional tracing output
+
 
 ## 5.0.1 2026-09-08 <code at nfrastack dot com>
 
