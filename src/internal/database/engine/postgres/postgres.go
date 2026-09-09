@@ -16,6 +16,7 @@ import (
 
 	"github.com/nfrastack/db-backup/internal/config"
 	"github.com/nfrastack/db-backup/internal/database/common"
+	"github.com/nfrastack/db-backup/internal/log"
 )
 
 type Dumper struct {
@@ -42,6 +43,10 @@ func (d *Dumper) Close() error {
 }
 
 func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
+	start := time.Now()
+	log.Debug("postgres", "backup start",
+		"host", d.host, "port", d.port, "server", d.serverVer,
+		"databases", strings.Join(dbNames, ","))
 	d.writeHeader(w, dbNames)
 
 	for _, dbName := range dbNames {
@@ -69,6 +74,9 @@ func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
 	}
 
 	d.writeFooter(w)
+	log.Debug("postgres", "backup done",
+		"databases", len(dbNames),
+		"elapsed", time.Since(start).Round(time.Millisecond).String())
 	return nil
 }
 
@@ -198,6 +206,9 @@ func (d *Dumper) Open() error {
 
 func (d *Dumper) OpenContext(ctx context.Context) error {
 	d.ctx = ctx
+	log.Debug("postgres", "connect start",
+		"host", d.host, "port", d.port, "user", d.user,
+		"tls", d.tlsCfg != nil)
 	probe := func() error { return common.TCPDial(d.host, d.port) }
 	connect := func() error {
 		connStr := ConnStr(d.user, d.pass, d.host, d.port, d.dbname, d.tlsCfg)
@@ -216,6 +227,8 @@ func (d *Dumper) OpenContext(ctx context.Context) error {
 			return fmt.Errorf("ping: %w", err)
 		}
 		d.serverVer = ver
+		log.Debug("postgres", "connected",
+			"host", d.host, "port", d.port, "server", ver)
 		return nil
 	}
 	return common.WithConnectivity(ctx, "postgres", d.connCfg, probe, connect, ping)
@@ -327,12 +340,15 @@ func (d *Dumper) dumpAll(w io.Writer) error {
 }
 
 func (d *Dumper) dumpDatabase(w io.Writer, dbName string) error {
+	dbStart := time.Now()
 	fmt.Fprintf(w, "\n-- Database: %s\n", dbName)
 
 	tables, err := d.listTables(dbName)
 	if err != nil {
 		return err
 	}
+	log.Debug("postgres", "dumping database",
+		"database", dbName, "tables", len(tables))
 
 	for _, table := range tables {
 		if d.Tables != nil {
@@ -358,6 +374,9 @@ func (d *Dumper) dumpDatabase(w io.Writer, dbName string) error {
 	if err := d.dumpFunctions(w, dbName); err != nil {
 		return err
 	}
+	log.Debug("postgres", "database done",
+		"database", dbName, "tables", len(tables),
+		"elapsed", time.Since(dbStart).Round(time.Millisecond).String())
 	return nil
 }
 
