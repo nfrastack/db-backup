@@ -13,6 +13,24 @@ on:
       - 'README.md'
       - '**.md'
       - 'flake.*'
+  workflow_dispatch:
+    inputs:
+      container:
+        description: 'Build + push container (:develop, :develop-<sha>)'
+        required: false
+        type: boolean
+        default: true
+      binaries:
+        description: 'Binaries to build'
+        required: false
+        type: choice
+        options: [none, slim, full]
+        default: none
+      scan:
+        description: 'Run govulncheck scan'
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -40,7 +58,31 @@ jobs:
         env:
           HEAD_MSG: ${{ github.event.head_commit.message }}
           COMMITS_JSON: ${{ toJson(github.event.commits) }}
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_CONTAINER: ${{ inputs.container }}
+          INPUT_BINARIES: ${{ inputs.binaries }}
+          INPUT_SCAN: ${{ inputs.scan }}
         run: |
+          # Manual dispatch bypasses commit-message flags (and paths-ignore).
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            run_container="$INPUT_CONTAINER"
+            [ "$run_container" != "true" ] && run_container="false"
+            run_binaries="$INPUT_BINARIES"
+            case "$run_binaries" in
+              slim|full) ;;
+              *) run_binaries="none" ;;
+            esac
+            run_scan="$INPUT_SCAN"
+            [ "$run_scan" != "true" ] && [ "$run_scan" != "false" ] && run_scan="true"
+            if [ "$run_binaries" != "none" ] || [ "$run_container" = "true" ]; then
+              run_scan="true"
+            fi
+            echo "run_binaries=$run_binaries" >> $GITHUB_OUTPUT
+            echo "run_container=$run_container" >> $GITHUB_OUTPUT
+            echo "run_scan=$run_scan" >> $GITHUB_OUTPUT
+            echo "flags (dispatch): binaries=$run_binaries container=$run_container scan=$run_scan"
+            exit 0
+          fi
           msgs="$HEAD_MSG
           $(echo "$COMMITS_JSON" | jq -r '.[].message // empty' 2>/dev/null || true)"
           lower=$(echo "$msgs" | tr '[:upper:]' '[:lower:]')
