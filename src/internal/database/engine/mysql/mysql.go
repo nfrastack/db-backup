@@ -10,11 +10,13 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	_ "github.com/go-sql-driver/mysql"
 
 	"github.com/nfrastack/db-backup/internal/config"
 	"github.com/nfrastack/db-backup/internal/database/common"
+	"github.com/nfrastack/db-backup/internal/log"
 )
 
 type Dumper struct {
@@ -52,6 +54,10 @@ func (d *Dumper) Close() error {
 }
 
 func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
+	start := time.Now()
+	log.Debug("mysql", "backup start",
+		"host", d.host, "port", d.port, "server", d.serverVer,
+		"databases", strings.Join(dbNames, ","))
 	var tx *sql.Tx
 	var err error
 
@@ -89,6 +95,9 @@ func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
 	}
 
 	d.writeFooter(w)
+	log.Debug("mysql", "backup done",
+		"databases", len(dbNames),
+		"elapsed", time.Since(start).Round(time.Millisecond).String())
 	return nil
 }
 
@@ -125,6 +134,9 @@ func (d *Dumper) Open() error {
 
 func (d *Dumper) OpenContext(ctx context.Context) error {
 	d.ctx = ctx
+	log.Debug("mysql", "connect start",
+		"host", d.host, "port", d.port, "user", d.user,
+		"tls", d.tlsCfg != nil)
 	probe := func() error { return common.TCPDial(d.host, d.port) }
 	connect := func() error {
 		if d.tlsName == "" && d.tlsCfg != nil {
@@ -157,6 +169,9 @@ func (d *Dumper) OpenContext(ctx context.Context) error {
 		}
 		d.serverVer = ver
 		d.isMariaDB = strings.Contains(strings.ToLower(ver), "mariadb")
+		log.Debug("mysql", "connected",
+			"host", d.host, "port", d.port,
+			"server", ver, "mariadb", d.isMariaDB)
 		return nil
 	}
 	return common.WithConnectivity(ctx, "mysql", d.connCfg, probe, connect, ping)
@@ -187,10 +202,13 @@ func (d *Dumper) ctxOrBg() context.Context {
 }
 
 func (d *Dumper) dumpDatabase(w io.Writer, conn *sql.DB, tx *sql.Tx, dbName string) error {
+	dbStart := time.Now()
 	tables, views, err := d.listTables(conn, tx, dbName)
 	if err != nil {
 		return err
 	}
+	log.Debug("mysql", "dumping database",
+		"database", dbName, "tables", len(tables), "views", len(views))
 
 	fmt.Fprintf(w, "\n-- Database: %s\n", dbName)
 	fmt.Fprintf(w, "USE %s;\n\n", quoteMySQLIdent(dbName))
@@ -262,6 +280,9 @@ func (d *Dumper) dumpDatabase(w io.Writer, conn *sql.DB, tx *sql.Tx, dbName stri
 		}
 	}
 
+	log.Debug("mysql", "database done",
+		"database", dbName, "tables", len(tables), "views", len(views),
+		"elapsed", time.Since(dbStart).Round(time.Millisecond).String())
 	return nil
 }
 
