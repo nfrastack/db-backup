@@ -7,7 +7,9 @@ package influx
 import (
 	"bufio"
 	"context"
+	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -54,12 +56,13 @@ func effectiveWorkers() int {
 }
 
 type exportTask struct {
-	m     string
-	tags  map[string]bool
-	start string
-	end   string
-	index int
-	total int
+	m      string
+	tags   map[string]bool
+	ftypes map[string]string
+	start  string
+	end    string
+	index  int
+	total  int
 }
 
 type measState struct {
@@ -356,6 +359,7 @@ func (d *Dumper) dumpMeasurements(w *bufio.Writer, db string) (*dumpStats, error
 	log.Debug("influx", "measurements listed", "database", db, "count", len(measurements))
 
 	bulkTags := d.loadTagSchemas(db, measurements)
+	bulkFields := d.loadFieldTypes(db)
 
 	workers := effectiveWorkers()
 	log.Debug("influx", "export workers",
@@ -379,6 +383,8 @@ func (d *Dumper) dumpMeasurements(w *bufio.Writer, db string) (*dumpStats, error
 		}()
 	}
 
+	windows := d.exportWindows(db)
+
 	for i, m := range measurements {
 		common.TraceTable(d.ctxOrBg(), db, m)
 		log.Trace("influx", "measurement start", "database", db, "measurement", m,
@@ -392,13 +398,12 @@ func (d *Dumper) dumpMeasurements(w *bufio.Writer, db string) (*dumpStats, error
 			continue
 		}
 
-		windows := d.measurementWindows(db, m)
 		ms := states[m]
 		ms.mu.Lock()
 		ms.pending = len(windows)
 		ms.mu.Unlock()
 		for _, win := range windows {
-			tasks <- exportTask{m: m, tags: tags, start: win[0], end: win[1], index: i + 1, total: len(measurements)}
+			tasks <- exportTask{m: m, tags: tags, ftypes: bulkFields[m], start: win[0], end: win[1], index: i + 1, total: len(measurements)}
 		}
 	}
 	close(tasks)
@@ -419,9 +424,40 @@ func (d *Dumper) dumpMeasurements(w *bufio.Writer, db string) (*dumpStats, error
 	return st, nil
 }
 
-func (d *Dumper) measurementWindows(db, m string) [][2]string {
-	minNs, maxNs, ok := d.measurementRange(db, m)
-	if !ok || maxNs <= minNs {
+func (d *Dumper) loadFieldTypes(db string) map[string]map[string]string {
+	ftypes := map[string]map[string]string{}
+	result, err := d.query(db, "SHOW FIELD KEYS")
+	if err != nil {
+		log.Debug("influx", "bulk field keys failed - legacy value rendering",
+			"database", db, "error", err.Error())
+		return ftypes
+	}
+	for _, r := range result.Results {
+		for _, s := range r.Series {
+			set := make(map[string]string)
+			for _, v := range s.Values {
+				if len(v) >= 2 {
+					if k, ok := v[0].(string); ok {
+						if t, ok := v[1].(string); ok {
+							set[k] = t
+						}
+					}
+				}
+			}
+			ftypes[s.Name] = set
+		}
+	}
+	log.Trace("influx", "bulk field keys ok", "database", db, "measurements", len(ftypes))
+	return ftypes
+}
+
+func (d *Dumper) exportWindows(db string) [][2]string {
+	minNs, ok1 := d.globalBound(db, false)
+	maxNs, ok2 := d.globalBound(db, true)
+	if !ok1 || !ok2 || maxNs <= minNs {
+		if !ok1 || !ok2 {
+			log.Debug("influx", "global bounds failed - single window", "database", db)
+		}
 		return [][2]string{{"", ""}}
 	}
 	n := effectiveWorkers()
@@ -438,26 +474,23 @@ func (d *Dumper) measurementWindows(db, m string) [][2]string {
 			time.Unix(0, e).UTC().Format(time.RFC3339Nano),
 		})
 	}
+	log.Debug("influx", "export windows",
+		"database", db, "windows", len(windows),
+		"from", windows[0][0], "to", windows[len(windows)-1][1])
 	return windows
 }
 
-func (d *Dumper) measurementRange(db, m string) (int64, int64, bool) {
-	minNs, ok := d.boundaryTime(db, fmt.Sprintf("SELECT * FROM %q LIMIT 1", m))
-	if !ok {
-		return 0, 0, false
+func (d *Dumper) globalBound(db string, desc bool) (int64, bool) {
+	q := `SELECT * FROM /.*/ LIMIT 1`
+	if desc {
+		q = `SELECT * FROM /.*/ ORDER BY time DESC LIMIT 1`
 	}
-	maxNs, ok := d.boundaryTime(db, fmt.Sprintf("SELECT * FROM %q ORDER BY time DESC LIMIT 1", m))
-	if !ok {
-		return 0, 0, false
-	}
-	return minNs, maxNs, true
-}
-
-func (d *Dumper) boundaryTime(db, q string) (int64, bool) {
 	result, err := d.query(db, q)
 	if err != nil {
 		return 0, false
 	}
+	var bound int64
+	found := false
 	for _, r := range result.Results {
 		for _, s := range r.Series {
 			tIdx := -1
@@ -472,14 +505,18 @@ func (d *Dumper) boundaryTime(db, q string) (int64, bool) {
 			}
 			for _, row := range s.Values {
 				if tIdx < len(row) {
-					if ns, ok := nsValue(row[tIdx]); ok {
-						return ns, true
+					ns, ok := nsValue(row[tIdx])
+					if !ok {
+						continue
+					}
+					if !found || (!desc && ns < bound) || (desc && ns > bound) {
+						bound, found = ns, true
 					}
 				}
 			}
 		}
 	}
-	return 0, false
+	return bound, found
 }
 
 func nsValue(v any) (int64, bool) {
@@ -504,9 +541,9 @@ func (d *Dumper) runTask(w *bufio.Writer, wmu *sync.Mutex, db string, ms *measSt
 	}
 	failed := false
 	lb := lineBuilderPool.Get().(*strings.Builder)
-	err := d.queryChunked(db, q, func(cols []string, row []any) error {
+	emit := func(cols []string, row []any) error {
 		lb.Reset()
-		if !buildLineProtocolInto(lb, t.m, cols, row, t.tags) {
+		if !buildLineProtocolInto(lb, t.m, cols, row, t.tags, t.ftypes) {
 			return nil
 		}
 		lb.WriteByte('\n')
@@ -537,7 +574,15 @@ func (d *Dumper) runTask(w *bufio.Writer, wmu *sync.Mutex, db string, ms *measSt
 		ms.lines++
 		ms.mu.Unlock()
 		return nil
-	})
+	}
+	err := d.queryChunked(db, q, true, t.tags, t.ftypes, emit)
+	var csvErr *csvParseError
+	if errors.As(err, &csvErr) {
+		log.Debug("influx", "csv decode failed - retrying window as json",
+			"database", db, "measurement", t.m,
+			"start", t.start, "end", t.end, "error", err.Error())
+		err = d.queryChunked(db, q, false, t.tags, t.ftypes, emit)
+	}
 	lineBuilderPool.Put(lb)
 	if err != nil {
 		failed = true
@@ -624,7 +669,7 @@ func appendLineProtocolValue(b *strings.Builder, v any) {
 	}
 }
 
-func buildLineProtocolInto(b *strings.Builder, m string, cols []string, row []any, tags map[string]bool) bool {
+func buildLineProtocolInto(b *strings.Builder, m string, cols []string, row []any, tags map[string]bool, ftypes map[string]string) bool {
 	b.WriteString(m)
 	n := len(cols)
 	if len(row) < n {
@@ -665,6 +710,13 @@ func buildLineProtocolInto(b *strings.Builder, m string, cols []string, row []an
 		}
 		b.WriteString(lpTagEscaper.Replace(col))
 		b.WriteByte('=')
+		if ftypes[col] == "integer" {
+			if lit, ok := integerLiteral(row[i]); ok {
+				b.WriteString(lit)
+				b.WriteByte('i')
+				continue
+			}
+		}
 		appendLineProtocolValue(b, row[i])
 	}
 	if !wroteField {
@@ -673,6 +725,35 @@ func buildLineProtocolInto(b *strings.Builder, m string, cols []string, row []an
 	if ts != "" {
 		b.WriteByte(' ')
 		b.WriteString(ts)
+	}
+	return true
+}
+
+func integerLiteral(v any) (string, bool) {
+	switch v := v.(type) {
+	case json.Number:
+		s := v.String()
+		if isIntLiteral(s) {
+			return s, true
+		}
+	case float64:
+		if v == float64(int64(v)) {
+			return strconv.FormatInt(int64(v), 10), true
+		}
+	}
+	return "", false
+}
+
+func isIntLiteral(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			if !(i == 0 && s[i] == '-') {
+				return false
+			}
+		}
 	}
 	return true
 }
@@ -944,7 +1025,7 @@ func (d *Dumper) query(db, q string) (*influxQueryResult, error) {
 	return &result, nil
 }
 
-func (d *Dumper) queryChunked(db, q string, fn func(cols []string, row []any) error) error {
+func (d *Dumper) queryChunked(db, q string, wantCSV bool, tags map[string]bool, ftypes map[string]string, fn func(cols []string, row []any) error) error {
 	if d.Version() == 2 && (strings.TrimSpace(d.user) == "" || strings.TrimSpace(d.pass) == "") {
 		return fmt.Errorf("influx v2 backup requires org (user) and token (pass) - got org %q", d.user)
 	}
@@ -956,6 +1037,9 @@ func (d *Dumper) queryChunked(db, q string, fn func(cols []string, row []any) er
 	req, err := http.NewRequestWithContext(d.ctxOrBg(), "GET", u, nil)
 	if err != nil {
 		return err
+	}
+	if wantCSV {
+		req.Header.Set("Accept", "application/csv")
 	}
 	d.setAuth(req)
 	resp, err := d.streamClient.Do(req)
@@ -979,25 +1063,34 @@ func (d *Dumper) queryChunked(db, q string, fn func(cols []string, row []any) er
 
 	var rows int
 	ttfb := time.Since(start)
-	dec := json.NewDecoder(resp.Body)
-	dec.UseNumber()
-	for {
-		var chunk influxQueryResult
-		if err := dec.Decode(&chunk); err != nil {
-			if err == io.EOF {
-				break
-			}
-			return fmt.Errorf("influx query %q: stream decode: %w", q, err)
+	format := "json"
+	if isCSVResponse(resp) {
+		format = "csv"
+		rows, err = decodeCSVStream(resp.Body, tags, ftypes, fn)
+		if err != nil {
+			return err
 		}
-		for _, r := range chunk.Results {
-			if r.Error != "" {
-				return fmt.Errorf("influx query %q: %s", q, r.Error)
+	} else {
+		dec := json.NewDecoder(resp.Body)
+		dec.UseNumber()
+		for {
+			var chunk influxQueryResult
+			if err := dec.Decode(&chunk); err != nil {
+				if err == io.EOF {
+					break
+				}
+				return fmt.Errorf("influx query %q: stream decode: %w", q, err)
 			}
-			for _, s := range r.Series {
-				for _, row := range s.Values {
-					rows++
-					if err := fn(s.Columns, row); err != nil {
-						return err
+			for _, r := range chunk.Results {
+				if r.Error != "" {
+					return fmt.Errorf("influx query %q: %s", q, r.Error)
+				}
+				for _, s := range r.Series {
+					for _, row := range s.Values {
+						rows++
+						if err := fn(s.Columns, row); err != nil {
+							return err
+						}
 					}
 				}
 			}
@@ -1005,9 +1098,128 @@ func (d *Dumper) queryChunked(db, q string, fn func(cols []string, row []any) er
 	}
 	log.Trace("influx", "stream query ok",
 		"database", db, "query", q, "status", resp.StatusCode,
+		"format", format,
 		"ttfb", ttfb.Round(time.Millisecond).String(),
 		"latency", time.Since(start).Round(time.Millisecond).String(), "rows", rows)
 	return nil
+}
+
+func isCSVResponse(resp *http.Response) bool {
+	return strings.Contains(resp.Header.Get("Content-Type"), "csv")
+}
+
+type csvParseError struct{ msg string }
+
+func (e *csvParseError) Error() string { return "csv decode: " + e.msg }
+
+func decodeCSVStream(r io.Reader, tags map[string]bool, ftypes map[string]string, fn func(cols []string, row []any) error) (int, error) {
+	cr := csv.NewReader(r)
+	cr.FieldsPerRecord = -1
+	header, err := cr.Read()
+	if err != nil {
+		return 0, &csvParseError{msg: "read header: " + err.Error()}
+	}
+	timeIdx := -1
+	for i, c := range header {
+		if c == "time" {
+			timeIdx = i
+			break
+		}
+	}
+	if timeIdx < 0 || len(header) < timeIdx+1 {
+		return 0, &csvParseError{msg: fmt.Sprintf("no time column in header %q", header)}
+	}
+	cols := append([]string{"time"}, header[timeIdx+1:]...)
+	var rows int
+	for {
+		rec, err := cr.Read()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return rows, &csvParseError{msg: "read row: " + err.Error()}
+		}
+		if len(rec) == 0 {
+			continue
+		}
+		if len(rec) == len(header) {
+			same := true
+			for i := range rec {
+				if rec[i] != header[i] {
+					same = false
+					break
+				}
+			}
+			if same {
+				continue
+			}
+		}
+		if len(rec) < len(header) {
+			return rows, &csvParseError{msg: fmt.Sprintf("ragged row: %d fields, want %d", len(rec), len(header))}
+		}
+		ts, err := csvTimestamp(rec[timeIdx])
+		if err != nil {
+			return rows, &csvParseError{msg: err.Error()}
+		}
+		row := make([]any, 0, len(cols))
+		row = append(row, json.Number(ts))
+		for i, col := range cols[1:] {
+			raw := rec[timeIdx+1+i]
+			if raw == "" {
+				row = append(row, nil)
+				continue
+			}
+			if tags[col] {
+				row = append(row, raw)
+				continue
+			}
+			v, err := csvFieldValue(col, raw, ftypes[col])
+			if err != nil {
+				return rows, &csvParseError{msg: err.Error()}
+			}
+			row = append(row, v)
+		}
+		rows++
+		if err := fn(cols, row); err != nil {
+			return rows, err
+		}
+	}
+	return rows, nil
+}
+
+func csvTimestamp(raw string) (string, error) {
+	if _, err := strconv.ParseInt(raw, 10, 64); err == nil {
+		return raw, nil
+	}
+	if ts, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+		return strconv.FormatInt(ts.UnixNano(), 10), nil
+	}
+	return "", fmt.Errorf("bad timestamp %q", raw)
+}
+
+func csvFieldValue(col, raw, ftype string) (any, error) {
+	switch ftype {
+	case "boolean":
+		if raw == "true" {
+			return true, nil
+		}
+		if raw == "false" {
+			return false, nil
+		}
+		return nil, fmt.Errorf("column %q: not a boolean %q", col, raw)
+	case "string":
+		return raw, nil
+	case "integer", "float", "":
+		if _, err := strconv.ParseFloat(raw, 64); err != nil {
+			if ftype == "" {
+				return raw, nil
+			}
+			return nil, fmt.Errorf("column %q: not a number %q", col, raw)
+		}
+		return json.Number(raw), nil
+	default:
+		return nil, fmt.Errorf("column %q: unknown type %q", col, ftype)
+	}
 }
 
 func (d *Dumper) authMode() string {

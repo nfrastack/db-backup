@@ -12,6 +12,7 @@
          - chunk measurement dumps with large amount of datapoints
          - fetch tag keys once per database instead of once per measurement
          - add parallel workers for  measurements
+         - try csv export
       - (mysql) additional tracing output
       - (mssql) additional tracing output
       - (redis) additional tracing output, and restore pexpireat routines
