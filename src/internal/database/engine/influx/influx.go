@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -35,6 +36,41 @@ var (
 
 const traceProgressRows = 500000
 const influxChunkSize = 20000
+
+const influxExportWorkers = 0
+
+func effectiveWorkers() int {
+	if influxExportWorkers > 0 {
+		return influxExportWorkers
+	}
+	n := runtime.NumCPU()
+	if n < 2 {
+		return 2
+	}
+	if n > 16 {
+		return 16
+	}
+	return n
+}
+
+type exportTask struct {
+	m     string
+	tags  map[string]bool
+	start string
+	end   string
+	index int
+	total int
+}
+
+type measState struct {
+	mu      sync.Mutex
+	start   time.Time
+	rows    int
+	lines   int
+	bytes   int64
+	pending int
+	failed  bool
+}
 
 type Dumper struct {
 	host            string
@@ -273,6 +309,7 @@ func (d *Dumper) tagKeysFor(db, m string, bulk map[string]map[string]bool) map[s
 		if tags, ok := bulk[m]; ok {
 			return tags
 		}
+		return map[string]bool{}
 	}
 	tagResult, err := d.query(db, fmt.Sprintf("SHOW TAG KEYS FROM %q", m))
 	if err != nil {
@@ -320,79 +357,237 @@ func (d *Dumper) dumpMeasurements(w *bufio.Writer, db string) (*dumpStats, error
 
 	bulkTags := d.loadTagSchemas(db, measurements)
 
+	workers := effectiveWorkers()
+	log.Debug("influx", "export workers",
+		"database", db, "workers", workers, "measurements", len(measurements))
+
+	var wmu sync.Mutex
+	states := make(map[string]*measState, len(measurements))
+	for _, m := range measurements {
+		states[m] = &measState{start: time.Now(), pending: 1}
+	}
+
+	tasks := make(chan exportTask)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for t := range tasks {
+				d.runTask(w, &wmu, db, states[t.m], t)
+			}
+		}()
+	}
+
 	for i, m := range measurements {
 		common.TraceTable(d.ctxOrBg(), db, m)
-		mStart := time.Now()
 		log.Trace("influx", "measurement start", "database", db, "measurement", m,
 			"index", i+1, "total", len(measurements))
 
 		tags := d.tagKeysFor(db, m, bulkTags)
 		if tags == nil {
+			d.finishMeasurement(w, &wmu, db, m, states[m], true)
 			st.skipped++
 			st.skippedNames = append(st.skippedNames, db+"."+m)
-			log.Warn("influx", "skipping measurement - tag keys query failed",
-				"database", db, "measurement", m)
 			continue
 		}
 
-		var mLines, mRows int
-		var mBytes int64
-		lb := lineBuilderPool.Get().(*strings.Builder)
-		queryErr := d.queryChunked(db, fmt.Sprintf("SELECT * FROM %q", m), func(cols []string, row []any) error {
-			mRows++
-			lb.Reset()
-			if !buildLineProtocolInto(lb, m, cols, row, tags) {
-				return nil
-			}
-			lb.WriteByte('\n')
-			n, err := w.WriteString(lb.String())
-			mBytes += int64(n)
-			if err != nil {
-				return err
-			}
-			mLines++
-			if mRows%traceProgressRows == 0 {
-				elapsed := time.Since(mStart)
-				var rowsSec float64
-				if elapsed > 0 {
-					rowsSec = float64(mRows) / elapsed.Seconds()
-				}
-				log.Trace("influx", "measurement progress",
-					"database", db, "measurement", m,
-					"rows", mRows, "lines", mLines, "bytes", mBytes,
-					"rows_sec", int64(rowsSec),
-					"elapsed", elapsed.Round(time.Millisecond).String())
-			}
-			return nil
-		})
-		lineBuilderPool.Put(lb)
-		if queryErr != nil {
+		windows := d.measurementWindows(db, m)
+		ms := states[m]
+		ms.mu.Lock()
+		ms.pending = len(windows)
+		ms.mu.Unlock()
+		for _, win := range windows {
+			tasks <- exportTask{m: m, tags: tags, start: win[0], end: win[1], index: i + 1, total: len(measurements)}
+		}
+	}
+	close(tasks)
+	wg.Wait()
+
+	for _, m := range measurements {
+		ms := states[m]
+		if ms.failed {
 			st.skipped++
 			st.skippedNames = append(st.skippedNames, db+"."+m)
-			log.Warn("influx", "skipping measurement - data query failed",
-				"database", db, "measurement", m, "error", queryErr.Error())
 			continue
 		}
-
-		fmt.Fprintf(w, "\n# CONTEXT-DATABASE: %s\n# MEASUREMENT: %s\n", db, m)
-		if err := w.Flush(); err != nil {
-			return st, fmt.Errorf("flush measurement %s: %w", m, err)
-		}
-		mElapsed := time.Since(mStart)
-		var rowsSec float64
-		if mElapsed > 0 {
-			rowsSec = float64(mRows) / mElapsed.Seconds()
-		}
-		log.Trace("influx", "measurement done",
-			"database", db, "measurement", m, "rows", mRows, "lines", mLines,
-			"bytes", mBytes, "rows_sec", int64(rowsSec),
-			"elapsed", mElapsed.Round(time.Millisecond).String())
-		st.lines += mLines
+		st.lines += ms.lines
 	}
 	log.Debug("influx", "database done",
 		"database", db, "measurements", len(measurements),
 		"lines", st.lines, "skipped_measurements", st.skipped)
 	return st, nil
+}
+
+func (d *Dumper) measurementWindows(db, m string) [][2]string {
+	minNs, maxNs, ok := d.measurementRange(db, m)
+	if !ok || maxNs <= minNs {
+		return [][2]string{{"", ""}}
+	}
+	n := effectiveWorkers()
+	windows := make([][2]string, 0, n)
+	span := maxNs - minNs
+	for i := int64(0); i < int64(n); i++ {
+		s := minNs + i*span/int64(n)
+		e := maxNs + 1
+		if i+1 < int64(n) {
+			e = minNs + (i+1)*span/int64(n)
+		}
+		windows = append(windows, [2]string{
+			time.Unix(0, s).UTC().Format(time.RFC3339Nano),
+			time.Unix(0, e).UTC().Format(time.RFC3339Nano),
+		})
+	}
+	return windows
+}
+
+func (d *Dumper) measurementRange(db, m string) (int64, int64, bool) {
+	minNs, ok := d.boundaryTime(db, fmt.Sprintf("SELECT * FROM %q LIMIT 1", m))
+	if !ok {
+		return 0, 0, false
+	}
+	maxNs, ok := d.boundaryTime(db, fmt.Sprintf("SELECT * FROM %q ORDER BY time DESC LIMIT 1", m))
+	if !ok {
+		return 0, 0, false
+	}
+	return minNs, maxNs, true
+}
+
+func (d *Dumper) boundaryTime(db, q string) (int64, bool) {
+	result, err := d.query(db, q)
+	if err != nil {
+		return 0, false
+	}
+	for _, r := range result.Results {
+		for _, s := range r.Series {
+			tIdx := -1
+			for i, c := range s.Columns {
+				if c == "time" {
+					tIdx = i
+					break
+				}
+			}
+			if tIdx < 0 {
+				continue
+			}
+			for _, row := range s.Values {
+				if tIdx < len(row) {
+					if ns, ok := nsValue(row[tIdx]); ok {
+						return ns, true
+					}
+				}
+			}
+		}
+	}
+	return 0, false
+}
+
+func nsValue(v any) (int64, bool) {
+	switch v := v.(type) {
+	case json.Number:
+		if n, err := v.Int64(); err == nil {
+			return n, true
+		}
+		if f, err := v.Float64(); err == nil {
+			return int64(f), true
+		}
+	case float64:
+		return int64(v), true
+	}
+	return 0, false
+}
+
+func (d *Dumper) runTask(w *bufio.Writer, wmu *sync.Mutex, db string, ms *measState, t exportTask) {
+	q := fmt.Sprintf("SELECT * FROM %q", t.m)
+	if t.start != "" {
+		q = fmt.Sprintf("SELECT * FROM %q WHERE time >= '%s' AND time < '%s'", t.m, t.start, t.end)
+	}
+	failed := false
+	lb := lineBuilderPool.Get().(*strings.Builder)
+	err := d.queryChunked(db, q, func(cols []string, row []any) error {
+		lb.Reset()
+		if !buildLineProtocolInto(lb, t.m, cols, row, t.tags) {
+			return nil
+		}
+		lb.WriteByte('\n')
+		s := lb.String()
+		ms.mu.Lock()
+		ms.rows++
+		if ms.rows%traceProgressRows == 0 {
+			elapsed := time.Since(ms.start)
+			var rowsSec float64
+			if elapsed > 0 {
+				rowsSec = float64(ms.rows) / elapsed.Seconds()
+			}
+			log.Trace("influx", "measurement progress",
+				"database", db, "measurement", t.m,
+				"rows", ms.rows, "lines", ms.lines, "bytes", ms.bytes,
+				"rows_sec", int64(rowsSec),
+				"elapsed", elapsed.Round(time.Millisecond).String())
+		}
+		ms.mu.Unlock()
+		wmu.Lock()
+		n, werr := w.WriteString(s)
+		wmu.Unlock()
+		if werr != nil {
+			return werr
+		}
+		ms.mu.Lock()
+		ms.bytes += int64(n)
+		ms.lines++
+		ms.mu.Unlock()
+		return nil
+	})
+	lineBuilderPool.Put(lb)
+	if err != nil {
+		failed = true
+		log.Warn("influx", "window query failed",
+			"database", db, "measurement", t.m,
+			"start", t.start, "end", t.end, "error", err.Error())
+	}
+	d.finishMeasurement(w, wmu, db, t.m, ms, failed)
+}
+
+func (d *Dumper) finishMeasurement(w *bufio.Writer, wmu *sync.Mutex, db, m string, ms *measState, failed bool) {
+	ms.mu.Lock()
+	if failed {
+		ms.failed = true
+	}
+	ms.pending--
+	last := ms.pending == 0
+	ms.mu.Unlock()
+	if !last {
+		return
+	}
+	if ms.failed {
+		log.Warn("influx", "skipping measurement - queries failed",
+			"database", db, "measurement", m)
+		return
+	}
+	wmu.Lock()
+	fmt.Fprintf(w, "\n# CONTEXT-DATABASE: %s\n# MEASUREMENT: %s\n", db, m)
+	flushErr := w.Flush()
+	wmu.Unlock()
+	if flushErr != nil {
+		ms.mu.Lock()
+		ms.failed = true
+		ms.mu.Unlock()
+		log.Warn("influx", "skipping measurement - flush failed",
+			"database", db, "measurement", m, "error", flushErr.Error())
+		return
+	}
+	ms.mu.Lock()
+	rows, lines, bytes := ms.rows, ms.lines, ms.bytes
+	elapsed := time.Since(ms.start)
+	ms.mu.Unlock()
+	var rowsSec float64
+	if elapsed > 0 {
+		rowsSec = float64(rows) / elapsed.Seconds()
+	}
+	log.Trace("influx", "measurement done",
+		"database", db, "measurement", m, "rows", rows, "lines", lines,
+		"bytes", bytes, "rows_sec", int64(rowsSec),
+		"elapsed", elapsed.Round(time.Millisecond).String())
 }
 
 func appendLineProtocolValue(b *strings.Builder, v any) {
@@ -734,7 +929,9 @@ func (d *Dumper) query(db, q string) (*influxQueryResult, error) {
 	}
 
 	var result influxQueryResult
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	dec := json.NewDecoder(resp.Body)
+	dec.UseNumber()
+	if err := dec.Decode(&result); err != nil {
 		return nil, fmt.Errorf("influx query %q: decode: %w", q, err)
 	}
 	series := 0
@@ -781,6 +978,7 @@ func (d *Dumper) queryChunked(db, q string, fn func(cols []string, row []any) er
 	}
 
 	var rows int
+	ttfb := time.Since(start)
 	dec := json.NewDecoder(resp.Body)
 	dec.UseNumber()
 	for {
@@ -807,6 +1005,7 @@ func (d *Dumper) queryChunked(db, q string, fn func(cols []string, row []any) er
 	}
 	log.Trace("influx", "stream query ok",
 		"database", db, "query", q, "status", resp.StatusCode,
+		"ttfb", ttfb.Round(time.Millisecond).String(),
 		"latency", time.Since(start).Round(time.Millisecond).String(), "rows", rows)
 	return nil
 }
