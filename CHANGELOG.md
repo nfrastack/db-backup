@@ -5,10 +5,12 @@
  
    ### Changed
       - more container quality of life config auto detections
-      - (couch) chunk large operations
       - (couch) additional tracing output
-      - (influx2) chunk measurement dumps with large amount of datapoints
+      - (couch) chunk large operations
       - (influx2) additional debugging and tracing output
+      - (influx2) chunk measurement dumps with large amount of datapoints
+      - (influx2) reuse line builders, hoist escaping tables
+      - (influx2) fetch tag keys once per database instead of once per measurement
       - (mysql) additional tracing output
       - (mssql) additional tracing output
       - (redis) additional tracing output, and restore pexpireat routines

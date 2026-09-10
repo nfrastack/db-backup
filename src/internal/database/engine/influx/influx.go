@@ -5,6 +5,7 @@
 package influx
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -14,12 +15,26 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nfrastack/db-backup/internal/config"
 	"github.com/nfrastack/db-backup/internal/database/common"
 	"github.com/nfrastack/db-backup/internal/log"
 )
+
+var (
+	lpTagEscaper    = strings.NewReplacer(`\`, `\\`, " ", `\ `, ",", `\,`, "=", `\=`)
+	lpStrEscaper    = strings.NewReplacer(`\`, `\\`, `"`, `\"`, " ", `\ `, `,`, `\,`, "=", `\=`)
+	lineBuilderPool = sync.Pool{New: func() any {
+		b := &strings.Builder{}
+		b.Grow(256)
+		return b
+	}}
+)
+
+const traceProgressRows = 500000
+const influxChunkSize = 20000
 
 type Dumper struct {
 	host            string
@@ -72,8 +87,9 @@ func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
 	}
 
 	var total dumpStats
+	bw := bufio.NewWriterSize(w, 1<<20)
 	for _, db := range dbNames {
-		st, err := d.dumpDatabase(w, db)
+		st, err := d.dumpDatabase(bw, db)
 		if err != nil {
 			return fmt.Errorf("dump %s: %w", db, err)
 		}
@@ -81,6 +97,9 @@ func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
 		total.skipped += st.skipped
 		total.measurements += st.measurements
 		total.skippedNames = append(total.skippedNames, st.skippedNames...)
+	}
+	if err := bw.Flush(); err != nil {
+		return fmt.Errorf("flush backup stream: %w", err)
 	}
 	log.Debug("influx", "backup done",
 		"databases", len(dbNames), "lines", total.lines,
@@ -203,28 +222,78 @@ func (d *Dumper) ctxOrBg() context.Context {
 	return context.Background()
 }
 
-func (d *Dumper) dumpDatabase(w io.Writer, db string) (*dumpStats, error) {
+func (d *Dumper) dumpDatabase(w *bufio.Writer, db string) (*dumpStats, error) {
 	if d.Version() == 1 {
 		return d.dumpV1(w, db)
 	}
 	return d.dumpV2(w, db)
 }
 
-func (d *Dumper) dumpV1(w io.Writer, db string) (*dumpStats, error) {
+func (d *Dumper) dumpV1(w *bufio.Writer, db string) (*dumpStats, error) {
 	fmt.Fprintf(w, "# INFLUXDB EXPORT: %s\n", db)
 	fmt.Fprintf(w, "# DDL\n")
 	fmt.Fprintf(w, "CREATE DATABASE %s\n\n", db)
 	return d.dumpMeasurements(w, db)
 }
 
-func (d *Dumper) dumpV2(w io.Writer, bucket string) (*dumpStats, error) {
+func (d *Dumper) dumpV2(w *bufio.Writer, bucket string) (*dumpStats, error) {
 	fmt.Fprintf(w, "# INFLUXDB V2 EXPORT: %s (org %s)\n", bucket, d.user)
 	fmt.Fprintf(w, "# DDL\n")
 	fmt.Fprintf(w, "CREATE DATABASE %s\n\n", bucket)
 	return d.dumpMeasurements(w, bucket)
 }
 
-func (d *Dumper) dumpMeasurements(w io.Writer, db string) (*dumpStats, error) {
+func (d *Dumper) loadTagSchemas(db string, measurements []string) map[string]map[string]bool {
+	schemas := make(map[string]map[string]bool, len(measurements))
+	result, err := d.query(db, "SHOW TAG KEYS")
+	if err != nil {
+		log.Debug("influx", "bulk tag keys failed - falling back to per-measurement queries",
+			"database", db, "error", err.Error())
+		return nil
+	}
+	for _, r := range result.Results {
+		for _, s := range r.Series {
+			set := make(map[string]bool)
+			for _, v := range s.Values {
+				if len(v) > 0 {
+					if k, ok := v[0].(string); ok {
+						set[k] = true
+					}
+				}
+			}
+			schemas[s.Name] = set
+		}
+	}
+	log.Trace("influx", "bulk tag keys ok", "database", db, "measurements", len(schemas))
+	return schemas
+}
+
+func (d *Dumper) tagKeysFor(db, m string, bulk map[string]map[string]bool) map[string]bool {
+	if bulk != nil {
+		if tags, ok := bulk[m]; ok {
+			return tags
+		}
+	}
+	tagResult, err := d.query(db, fmt.Sprintf("SHOW TAG KEYS FROM %q", m))
+	if err != nil {
+		return nil
+	}
+	tags := map[string]bool{}
+	for _, r := range tagResult.Results {
+		for _, s := range r.Series {
+			for _, v := range s.Values {
+				if len(v) > 0 {
+					if k, ok := v[0].(string); ok {
+						tags[k] = true
+					}
+				}
+			}
+		}
+	}
+	return tags
+}
+
+func (d *Dumper) dumpMeasurements(w *bufio.Writer, db string) (*dumpStats, error) {
 	st := &dumpStats{}
 	result, err := d.query(db, "SHOW MEASUREMENTS")
 	if err != nil {
@@ -249,55 +318,75 @@ func (d *Dumper) dumpMeasurements(w io.Writer, db string) (*dumpStats, error) {
 	st.measurements = len(measurements)
 	log.Debug("influx", "measurements listed", "database", db, "count", len(measurements))
 
-	for _, m := range measurements {
+	bulkTags := d.loadTagSchemas(db, measurements)
+
+	for i, m := range measurements {
 		common.TraceTable(d.ctxOrBg(), db, m)
 		mStart := time.Now()
-		log.Trace("influx", "measurement start", "database", db, "measurement", m)
+		log.Trace("influx", "measurement start", "database", db, "measurement", m,
+			"index", i+1, "total", len(measurements))
 
-		tagResult, err := d.query(db, fmt.Sprintf("SHOW TAG KEYS FROM %q", m))
-		if err != nil {
+		tags := d.tagKeysFor(db, m, bulkTags)
+		if tags == nil {
 			st.skipped++
 			st.skippedNames = append(st.skippedNames, db+"."+m)
 			log.Warn("influx", "skipping measurement - tag keys query failed",
-				"database", db, "measurement", m, "error", err.Error())
+				"database", db, "measurement", m)
 			continue
-		}
-		tags := map[string]bool{}
-		for _, r := range tagResult.Results {
-			for _, s := range r.Series {
-				for _, v := range s.Values {
-					if len(v) > 0 {
-						if k, ok := v[0].(string); ok {
-							tags[k] = true
-						}
-					}
-				}
-			}
 		}
 
 		var mLines, mRows int
-		err = d.queryChunked(db, fmt.Sprintf("SELECT * FROM %q", m), func(cols []string, row []any) error {
+		var mBytes int64
+		lb := lineBuilderPool.Get().(*strings.Builder)
+		queryErr := d.queryChunked(db, fmt.Sprintf("SELECT * FROM %q", m), func(cols []string, row []any) error {
 			mRows++
-			line, ok := buildLineProtocol(m, cols, row, tags)
-			if !ok {
+			lb.Reset()
+			if !buildLineProtocolInto(lb, m, cols, row, tags) {
 				return nil
 			}
-			fmt.Fprintln(w, line)
+			lb.WriteByte('\n')
+			n, err := w.WriteString(lb.String())
+			mBytes += int64(n)
+			if err != nil {
+				return err
+			}
 			mLines++
+			if mRows%traceProgressRows == 0 {
+				elapsed := time.Since(mStart)
+				var rowsSec float64
+				if elapsed > 0 {
+					rowsSec = float64(mRows) / elapsed.Seconds()
+				}
+				log.Trace("influx", "measurement progress",
+					"database", db, "measurement", m,
+					"rows", mRows, "lines", mLines, "bytes", mBytes,
+					"rows_sec", int64(rowsSec),
+					"elapsed", elapsed.Round(time.Millisecond).String())
+			}
 			return nil
 		})
-		if err != nil {
+		lineBuilderPool.Put(lb)
+		if queryErr != nil {
 			st.skipped++
 			st.skippedNames = append(st.skippedNames, db+"."+m)
 			log.Warn("influx", "skipping measurement - data query failed",
-				"database", db, "measurement", m, "error", err.Error())
+				"database", db, "measurement", m, "error", queryErr.Error())
 			continue
 		}
 
 		fmt.Fprintf(w, "\n# CONTEXT-DATABASE: %s\n# MEASUREMENT: %s\n", db, m)
+		if err := w.Flush(); err != nil {
+			return st, fmt.Errorf("flush measurement %s: %w", m, err)
+		}
+		mElapsed := time.Since(mStart)
+		var rowsSec float64
+		if mElapsed > 0 {
+			rowsSec = float64(mRows) / mElapsed.Seconds()
+		}
 		log.Trace("influx", "measurement done",
 			"database", db, "measurement", m, "rows", mRows, "lines", mLines,
-			"elapsed", time.Since(mStart).Round(time.Millisecond).String())
+			"bytes", mBytes, "rows_sec", int64(rowsSec),
+			"elapsed", mElapsed.Round(time.Millisecond).String())
 		st.lines += mLines
 	}
 	log.Debug("influx", "database done",
@@ -306,44 +395,95 @@ func (d *Dumper) dumpMeasurements(w io.Writer, db string) (*dumpStats, error) {
 	return st, nil
 }
 
-func buildLineProtocol(m string, cols []string, row []any, tags map[string]bool) (line string, ok bool) {
-	var tagParts, fieldParts []string
+func appendLineProtocolValue(b *strings.Builder, v any) {
+	switch v := v.(type) {
+	case bool:
+		if v {
+			b.WriteString("true")
+		} else {
+			b.WriteString("false")
+		}
+	case json.Number:
+		if strings.ContainsAny(v.String(), ".eE") {
+			if f, err := v.Float64(); err == nil {
+				b.WriteString(formatFloat(f))
+				return
+			}
+			b.WriteString(v.String())
+			return
+		}
+		if f, err := v.Float64(); err == nil {
+			b.WriteString(formatFloat(f))
+			return
+		}
+		b.WriteString(v.String())
+	case float64:
+		b.WriteString(formatFloat(v))
+	case string:
+		b.WriteByte('"')
+		b.WriteString(lpStrEscaper.Replace(v))
+		b.WriteByte('"')
+	default:
+		enc, _ := json.Marshal(v)
+		b.Write(enc)
+	}
+}
+
+func buildLineProtocolInto(b *strings.Builder, m string, cols []string, row []any, tags map[string]bool) bool {
+	b.WriteString(m)
+	n := len(cols)
+	if len(row) < n {
+		n = len(row)
+	}
 	ts := ""
-	for i, col := range cols {
-		if i >= len(row) {
-			break
+	for i := 0; i < n; i++ {
+		col := cols[i]
+		if col == "time" {
+			ts = formatTimestamp(row[i])
+			continue
 		}
-		val := row[i]
-		switch {
-		case col == "time":
-			ts = formatTimestamp(val)
-		case tags[col]:
-			if val != nil {
-				tagParts = append(tagParts, escapeLineProtocolTag(col)+"="+escapeLineProtocolTag(stringifyTag(val)))
-			}
-		default:
-			if val != nil {
-				fieldParts = append(fieldParts, escapeLineProtocolTag(col)+"="+formatLineProtocolValue(val))
-			}
+		if !tags[col] {
+			continue
 		}
+		if row[i] == nil {
+			continue
+		}
+		b.WriteByte(',')
+		b.WriteString(lpTagEscaper.Replace(col))
+		b.WriteByte('=')
+		b.WriteString(lpTagEscaper.Replace(stringifyTag(row[i])))
 	}
-	if len(fieldParts) == 0 {
-		return "", false
+	wroteField := false
+	for i := 0; i < n; i++ {
+		col := cols[i]
+		if col == "time" || tags[col] {
+			continue
+		}
+		if row[i] == nil {
+			continue
+		}
+		if !wroteField {
+			b.WriteByte(' ')
+			wroteField = true
+		} else {
+			b.WriteByte(',')
+		}
+		b.WriteString(lpTagEscaper.Replace(col))
+		b.WriteByte('=')
+		appendLineProtocolValue(b, row[i])
 	}
-	line = m
-	for _, tp := range tagParts {
-		line += "," + tp
+	if !wroteField {
+		return false
 	}
-	line += " " + strings.Join(fieldParts, ",")
 	if ts != "" {
-		line += " " + ts
+		b.WriteByte(' ')
+		b.WriteString(ts)
 	}
-	return line, true
+	return true
 }
 
 func escapeLineProtocolTag(s string) string {
-	r := strings.NewReplacer(`\`, `\\`, " ", `\ `, ",", `\,`, "=", `\=`)
-	return r.Replace(s)
+	return lpTagEscaper.Replace(s)
 }
 
 func formatFloat(f float64) string {
@@ -355,32 +495,12 @@ func formatFloat(f float64) string {
 }
 
 func formatLineProtocolValue(v any) string {
-	switch v := v.(type) {
-	case bool:
-		if v {
-			return "true"
-		}
-		return "false"
-	case json.Number:
-		if strings.ContainsAny(v.String(), ".eE") {
-			if f, err := v.Float64(); err == nil {
-				return formatFloat(f)
-			}
-			return v.String()
-		}
-		if f, err := v.Float64(); err == nil {
-			return formatFloat(f)
-		}
-		return v.String()
-	case float64:
-		return formatFloat(v)
-	case string:
-		r := strings.NewReplacer(`\`, `\\`, `"`, `\"`, " ", `\ `, `,`, `\,`, "=", `\=`)
-		return `"` + r.Replace(v) + `"`
-	default:
-		b, _ := json.Marshal(v)
-		return string(b)
-	}
+	b := lineBuilderPool.Get().(*strings.Builder)
+	b.Reset()
+	appendLineProtocolValue(b, v)
+	s := b.String()
+	lineBuilderPool.Put(b)
+	return s
 }
 
 func formatTimestamp(v any) string {
@@ -397,10 +517,19 @@ func formatTimestamp(v any) string {
 }
 
 func stringifyTag(v any) string {
-	if n, ok := v.(json.Number); ok {
-		return n.String()
+	switch v := v.(type) {
+	case string:
+		return v
+	case json.Number:
+		return v.String()
+	case bool:
+		if v {
+			return "true"
+		}
+		return "false"
+	default:
+		return fmt.Sprintf("%v", v)
 	}
-	return fmt.Sprintf("%v", v)
 }
 
 func (d *Dumper) listDatabases() ([]string, error) {
@@ -564,8 +693,6 @@ func (d *Dumper) probeV2(ctx context.Context) error {
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("health: influx responded %d", resp.StatusCode)
 	}
-	// A v1 server may also answer /health. Only claim v2 when the
-	// version header agrees (or is absent, assuming v2-first).
 	if n, ok := parseMajorVersion(verHeader); ok && n != 2 {
 		return fmt.Errorf("health: server reports version v%d, not v2", n)
 	}
@@ -624,7 +751,7 @@ func (d *Dumper) queryChunked(db, q string, fn func(cols []string, row []any) er
 	if d.Version() == 2 && (strings.TrimSpace(d.user) == "" || strings.TrimSpace(d.pass) == "") {
 		return fmt.Errorf("influx v2 backup requires org (user) and token (pass) - got org %q", d.user)
 	}
-	u := d.baseURL() + "/query?db=" + url.QueryEscape(db) + "&epoch=ns&chunked=true&q=" + url.QueryEscape(q)
+	u := d.baseURL() + "/query?db=" + url.QueryEscape(db) + "&epoch=ns&chunked=true&chunk_size=" + strconv.Itoa(influxChunkSize) + "&q=" + url.QueryEscape(q)
 	if d.Version() == 2 {
 		u += "&org=" + url.QueryEscape(d.user)
 	}
