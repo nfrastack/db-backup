@@ -9,6 +9,7 @@ import (
 	"bufio"
 	"compress/gzip"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -23,69 +24,86 @@ import (
 	"github.com/nfrastack/db-backup/internal/log"
 )
 
-var influxBackupMode = "native" // logical
+// influxBackupMode selects the backup protocol for v2:
+//
+//	"physical": TSM shard snapshots (CLI protocol; needs operator token).
+//	"logical":  InfluxQL export to line protocol (bucket tokens, v1).
+//
+// v1 always uses logical. On v2, a 403 from the physical path falls back
+// to logical with a warning. A var (not const) so tests can flip it;
+// treat as a build-time toggle.
+var influxBackupMode = "physical"
+
+// errOperatorRequired marks physical-protocol 403s eligible for fallback.
+var errOperatorRequired = errors.New("influx: operator token required")
+
+// IsOperatorError reports 401/403-style failures eligible for fallback.
+// Exported for incremental orchestration outside this package.
+func IsOperatorError(err error) bool {
+	return errors.Is(err, errOperatorRequired)
+}
 
 const (
-	nativeManifestVersion   = 2
-	nativeManifestExtension = "manifest"
-	nativeBackupTimeFormat  = "20060102T150405Z"
+	physicalManifestVersion   = 2
+	physicalManifestExtension = "manifest"
+	physicalBackupTimeFormat  = "20060102T150405Z"
 
-	nativeCompressionNone = 0
-	nativeCompressionGzip = 1
+	physicalCompressionNone = 0
+	physicalCompressionGzip = 1
 )
 
-type nativeFileEntry struct {
+type physicalFileEntry struct {
 	FileName    string `json:"fileName"`
 	Size        int64  `json:"size"`
 	Compression int    `json:"compression"`
 }
 
-type nativeManifest struct {
-	Version int                 `json:"manifestVersion"`
-	KV      nativeFileEntry     `json:"kv"`
-	SQL     *nativeFileEntry    `json:"sql,omitempty"`
-	Buckets []nativeBucketEntry `json:"buckets"`
+type physicalManifest struct {
+	Version int                   `json:"manifestVersion"`
+	KV      physicalFileEntry     `json:"kv"`
+	SQL     *physicalFileEntry    `json:"sql,omitempty"`
+	Buckets []physicalBucketEntry `json:"buckets"`
 }
 
-type nativeBucketEntry struct {
-	OrganizationID         string                  `json:"organizationID"`
-	OrganizationName       string                  `json:"organizationName"`
-	BucketID               string                  `json:"bucketID"`
-	BucketName             string                  `json:"bucketName"`
-	Description            *string                 `json:"description,omitempty"`
-	DefaultRetentionPolicy string                  `json:"defaultRetentionPolicy"`
-	RetentionPolicies      []nativeRetentionPolicy `json:"retentionPolicies"`
+type physicalBucketEntry struct {
+	OrganizationID         string                    `json:"organizationID"`
+	OrganizationName       string                    `json:"organizationName"`
+	BucketID               string                    `json:"bucketID"`
+	BucketName             string                    `json:"bucketName"`
+	Description            *string                   `json:"description,omitempty"`
+	DefaultRetentionPolicy string                    `json:"defaultRetentionPolicy"`
+	RetentionPolicies      []physicalRetentionPolicy `json:"retentionPolicies"`
 }
 
-type nativeRetentionPolicy struct {
-	Name               string               `json:"name"`
-	ReplicaN           int32                `json:"replicaN"`
-	Duration           int64                `json:"duration"`
-	ShardGroupDuration int64                `json:"shardGroupDuration"`
-	ShardGroups        []nativeShardGroup   `json:"shardGroups"`
-	Subscriptions      []nativeSubscription `json:"subscriptions"`
+type physicalRetentionPolicy struct {
+	Name               string                 `json:"name"`
+	ReplicaN           int32                  `json:"replicaN"`
+	Duration           int64                  `json:"duration"`
+	ShardGroupDuration int64                  `json:"shardGroupDuration"`
+	ShardGroups        []physicalShardGroup   `json:"shardGroups"`
+	Subscriptions      []physicalSubscription `json:"subscriptions"`
 }
 
-type nativeShardGroup struct {
-	ID          int64              `json:"id"`
-	StartTime   time.Time          `json:"startTime"`
-	EndTime     time.Time          `json:"endTime"`
-	DeletedAt   *time.Time         `json:"deletedAt,omitempty"`
-	TruncatedAt *time.Time         `json:"truncatedAt,omitempty"`
-	Shards      []nativeShardEntry `json:"shards"`
+type physicalShardGroup struct {
+	ID          int64                `json:"id"`
+	StartTime   time.Time            `json:"startTime"`
+	EndTime     time.Time            `json:"endTime"`
+	DeletedAt   *time.Time           `json:"deletedAt,omitempty"`
+	TruncatedAt *time.Time           `json:"truncatedAt,omitempty"`
+	Shards      []physicalShardEntry `json:"shards"`
 }
 
-type nativeShardEntry struct {
-	ID          int64              `json:"id"`
-	ShardOwners []nativeShardOwner `json:"shardOwners"`
-	nativeFileEntry
+type physicalShardEntry struct {
+	ID          int64                `json:"id"`
+	ShardOwners []physicalShardOwner `json:"shardOwners"`
+	physicalFileEntry
 }
 
-type nativeShardOwner struct {
+type physicalShardOwner struct {
 	NodeID int64 `json:"nodeID"`
 }
 
-type nativeSubscription struct {
+type physicalSubscription struct {
 	Name         string   `json:"name"`
 	Mode         string   `json:"mode"`
 	Destinations []string `json:"destinations"`
@@ -120,8 +138,8 @@ type serverShardGroup struct {
 }
 
 type serverShard struct {
-	ID          int64              `json:"id"`
-	ShardOwners []nativeShardOwner `json:"shardOwners"`
+	ID          int64                `json:"id"`
+	ShardOwners []physicalShardOwner `json:"shardOwners"`
 }
 
 type serverSub struct {
@@ -130,29 +148,52 @@ type serverSub struct {
 	Destinations []string `json:"destinations"`
 }
 
-func (d *Dumper) NativeBackup(w io.Writer, dbNames []string) error {
+func (d *Dumper) PhysicalBackup(w io.Writer, dbNames []string) error {
+	return d.physicalBackupRange(w, dbNames, "", "")
+}
+
+// PhysicalBackupRange writes one bounded slice. Empty since yields a full
+// backup. Non-empty since fetches metadata with ?since= and skips shards
+// fully predating since-overlap (shard-granular incremental; boundary
+// shards re-fetch fully and converge idempotently on replay).
+func (d *Dumper) PhysicalBackupRange(w io.Writer, dbNames []string, since, end string) error {
+	return d.physicalBackupRange(w, dbNames, since, end)
+}
+
+func (d *Dumper) physicalBackupRange(w io.Writer, dbNames []string, since, end string) error {
 	if d.Version() == 1 {
-		return fmt.Errorf("influx: native backup requires InfluxDB v2 (2.1+)")
+		return fmt.Errorf("influx: physical backup requires InfluxDB v2 (2.1+)")
 	}
-	if ok, err := d.serverAtLeast21(); err != nil || !ok {
+	if strings.TrimSpace(d.user) == "" || strings.TrimSpace(d.pass) == "" {
+		return fmt.Errorf("influx v2 backup requires org (user) and token (pass) - got org %q", d.user)
+	}
+	if ok, err := d.ServerAtLeast21(); err != nil || !ok {
 		if err != nil {
 			return fmt.Errorf("influx: version probe: %w", err)
 		}
-		return fmt.Errorf("influx: native backup requires server 2.1+")
+		return fmt.Errorf("influx: physical backup requires server 2.1+")
 	}
 
-	base := time.Now().UTC().Format(nativeBackupTimeFormat)
+	cutoff, upper, bounded := sliceCutoff(since, end)
+	label := "full"
+	if bounded {
+		label = "slice"
+		log.Debug("influx", "physical slice",
+			"since", since, "cutoff", cutoff.Format(time.RFC3339), "upper", upper.Format(time.RFC3339))
+	}
+
+	base := time.Now().UTC().Format(physicalBackupTimeFormat)
 	bw := bufio.NewWriterSize(w, 1<<20)
 	tw := tar.NewWriter(bw)
 
-	manifest := nativeManifest{Version: nativeManifestVersion}
+	manifest := physicalManifest{Version: physicalManifestVersion}
 	tmpDir, err := os.MkdirTemp("", "influx-native-")
 	if err != nil {
 		return fmt.Errorf("influx: temp dir: %w", err)
 	}
 	defer os.RemoveAll(tmpDir)
 
-	buckets, kvEntry, sqlEntry, err := d.downloadMetadata(tw, tmpDir, base)
+	buckets, kvEntry, sqlEntry, err := d.downloadMetadata(tw, tmpDir, base, since)
 	if err != nil {
 		return err
 	}
@@ -171,20 +212,24 @@ func (d *Dumper) NativeBackup(w io.Writer, dbNames []string) error {
 		}
 	}
 	if len(matched) == 0 {
-		return fmt.Errorf("influx: native backup matched no buckets")
+		return fmt.Errorf("influx: physical backup matched no buckets")
 	}
-	log.Debug("influx", "native buckets matched", "count", len(matched))
+	log.Debug("influx", "physical buckets matched", "count", len(matched))
 
-	manifest.Buckets = make([]nativeBucketEntry, 0, len(matched))
+	manifest.Buckets = make([]physicalBucketEntry, 0, len(matched))
 	for _, b := range matched {
-		be, err := d.downloadBucket(tw, tmpDir, base, b)
+		be, skipped, err := d.downloadBucket(tw, tmpDir, base, b, cutoff, upper, bounded)
 		if err != nil {
 			return err
 		}
 		manifest.Buckets = append(manifest.Buckets, be)
+		if skipped > 0 {
+			log.Debug("influx", "physical shards skipped (predate slice)",
+				"bucket", b.BucketName, "skipped", skipped)
+		}
 	}
 
-	mName := base + "." + nativeManifestExtension
+	mName := base + "." + physicalManifestExtension
 	var mBuf strings.Builder
 	enc := json.NewEncoder(&mBuf)
 	enc.SetIndent("", "  ")
@@ -197,7 +242,7 @@ func (d *Dumper) NativeBackup(w io.Writer, dbNames []string) error {
 	if _, err := io.WriteString(tw, mBuf.String()); err != nil {
 		return fmt.Errorf("influx: manifest write: %w", err)
 	}
-	log.Debug("influx", "native manifest written", "file", mName, "buckets", len(manifest.Buckets))
+	log.Debug("influx", "physical manifest written", "file", mName, "buckets", len(manifest.Buckets))
 
 	if err := tw.Close(); err != nil {
 		return fmt.Errorf("influx: close tar: %w", err)
@@ -205,8 +250,32 @@ func (d *Dumper) NativeBackup(w io.Writer, dbNames []string) error {
 	if err := bw.Flush(); err != nil {
 		return fmt.Errorf("influx: flush: %w", err)
 	}
-	log.Debug("influx", "native backup done", "buckets", len(manifest.Buckets))
+	log.Debug("influx", "physical backup done",
+		"buckets", len(manifest.Buckets), "mode", label)
 	return nil
+}
+
+// sliceCutoff resolves the shard-skip cutoff (since minus overlap) and the
+// exclusive upper bound for a physical slice. ok=false means full backup.
+func sliceCutoff(since, end string) (cutoff, upper time.Time, ok bool) {
+	if strings.TrimSpace(since) == "" {
+		return time.Time{}, time.Time{}, false
+	}
+	sinceT, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(since))
+	if err != nil {
+		if sinceT, err = time.Parse(time.RFC3339, strings.TrimSpace(since)); err != nil {
+			return time.Time{}, time.Time{}, false
+		}
+	}
+	upper = time.Now().UTC()
+	if strings.TrimSpace(end) != "" {
+		if endT, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(end)); err == nil {
+			upper = endT
+		} else if endT, err := time.Parse(time.RFC3339, strings.TrimSpace(end)); err == nil {
+			upper = endT
+		}
+	}
+	return sinceT.Add(-incrementalOverlap).UTC(), upper.UTC(), true
 }
 
 func containsName(names []string, want string) bool {
@@ -218,7 +287,7 @@ func containsName(names []string, want string) bool {
 	return false
 }
 
-func (d *Dumper) serverAtLeast21() (bool, error) {
+func (d *Dumper) ServerAtLeast21() (bool, error) {
 	u := d.baseURL() + "/health"
 	req, err := http.NewRequestWithContext(d.ctxOrBg(), "GET", u, nil)
 	if err != nil {
@@ -249,16 +318,26 @@ func (d *Dumper) serverAtLeast21() (bool, error) {
 	return major == 2 && minor >= 1, nil
 }
 
-func (d *Dumper) downloadMetadata(tw *tar.Writer, tmpDir, base string) ([]serverBucketManifest, nativeFileEntry, *nativeFileEntry, error) {
+func (d *Dumper) downloadMetadata(tw *tar.Writer, tmpDir, base, since string) ([]serverBucketManifest, physicalFileEntry, *physicalFileEntry, error) {
 	var buckets []serverBucketManifest
-	var kvEntry nativeFileEntry
-	var sqlEntry *nativeFileEntry
+	var kvEntry physicalFileEntry
+	var sqlEntry *physicalFileEntry
 
 	u := d.baseURL() + "/api/v2/backup/metadata"
 	start := time.Now()
 	req, err := http.NewRequestWithContext(d.ctxOrBg(), "GET", u, nil)
 	if err != nil {
 		return nil, kvEntry, nil, err
+	}
+	if strings.TrimSpace(since) != "" {
+		// The spec carries `since` as a header; send it as a query param
+		// too — servers ignore unknown query params, and either or both
+		// may be honored depending on version.
+		sinceT := strings.TrimSpace(since)
+		q := req.URL.Query()
+		q.Set("since", sinceT)
+		req.URL.RawQuery = q.Encode()
+		req.Header.Set("Since", sinceT)
 	}
 	req.Header.Set("Accept-Encoding", "gzip")
 	d.setAuth(req)
@@ -269,7 +348,7 @@ func (d *Dumper) downloadMetadata(tw *tar.Writer, tmpDir, base string) ([]server
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return nil, kvEntry, nil, fmt.Errorf("influx: backup metadata: HTTP %d - native backup requires an operator token", resp.StatusCode)
+		return nil, kvEntry, nil, fmt.Errorf("influx: backup metadata: HTTP %d: %w", resp.StatusCode, errOperatorRequired)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
@@ -323,7 +402,7 @@ func (d *Dumper) downloadMetadata(tw *tar.Writer, tmpDir, base string) ([]server
 			return nil, kvEntry, nil, fmt.Errorf("influx: unexpected metadata part %q", name)
 		}
 	}
-	log.Debug("influx", "native metadata done",
+	log.Debug("influx", "physical metadata done",
 		"buckets", len(buckets), "has_sql", sqlEntry != nil,
 		"elapsed", time.Since(start).Round(time.Millisecond).String())
 	if len(buckets) == 0 {
@@ -332,58 +411,72 @@ func (d *Dumper) downloadMetadata(tw *tar.Writer, tmpDir, base string) ([]server
 	return buckets, kvEntry, sqlEntry, nil
 }
 
-func (d *Dumper) downloadBucket(tw *tar.Writer, tmpDir, base string, b serverBucketManifest) (nativeBucketEntry, error) {
-	be := nativeBucketEntry{
+// downloadBucket downloads all shards of one bucket in range and builds its
+// manifest entry. Shards fully predating cutoff (and shards starting after
+// upper, when bounded) are skipped; the skip count is returned.
+func (d *Dumper) downloadBucket(tw *tar.Writer, tmpDir, base string, b serverBucketManifest, cutoff, upper time.Time, bounded bool) (physicalBucketEntry, int, error) {
+	be := physicalBucketEntry{
 		OrganizationID:         b.OrganizationID,
 		OrganizationName:       b.OrganizationName,
 		BucketID:               b.BucketID,
 		BucketName:             b.BucketName,
 		Description:            b.Description,
 		DefaultRetentionPolicy: b.DefaultRetentionPolicy,
-		RetentionPolicies:      make([]nativeRetentionPolicy, len(b.RetentionPolicies)),
+		RetentionPolicies:      make([]physicalRetentionPolicy, len(b.RetentionPolicies)),
 	}
+	skipped := 0
 	for i, rp := range b.RetentionPolicies {
-		nrp := nativeRetentionPolicy{
+		nrp := physicalRetentionPolicy{
 			Name:               rp.Name,
 			ReplicaN:           rp.ReplicaN,
 			Duration:           rp.Duration,
 			ShardGroupDuration: rp.ShardGroupDuration,
-			ShardGroups:        make([]nativeShardGroup, len(rp.ShardGroups)),
-			Subscriptions:      make([]nativeSubscription, len(rp.Subscriptions)),
+			ShardGroups:        make([]physicalShardGroup, len(rp.ShardGroups)),
+			Subscriptions:      make([]physicalSubscription, len(rp.Subscriptions)),
 		}
 		for j, sub := range rp.Subscriptions {
-			nrp.Subscriptions[j] = nativeSubscription{Name: sub.Name, Mode: sub.Mode, Destinations: sub.Destinations}
+			nrp.Subscriptions[j] = physicalSubscription{Name: sub.Name, Mode: sub.Mode, Destinations: sub.Destinations}
 		}
 		for k, sg := range rp.ShardGroups {
-			nsg := nativeShardGroup{
+			nsg := physicalShardGroup{
 				ID: sg.ID, StartTime: sg.StartTime, EndTime: sg.EndTime,
 				DeletedAt: sg.DeletedAt, TruncatedAt: sg.TruncatedAt,
-				Shards: make([]nativeShardEntry, 0, len(sg.Shards)),
+				Shards: make([]physicalShardEntry, 0, len(sg.Shards)),
+			}
+			if bounded && !sg.EndTime.IsZero() && !sg.EndTime.After(cutoff) {
+				skipped++
+				nrp.ShardGroups[k] = nsg
+				continue
+			}
+			if bounded && !sg.StartTime.IsZero() && sg.StartTime.After(upper) {
+				skipped++
+				nrp.ShardGroups[k] = nsg
+				continue
 			}
 			for _, sh := range sg.Shards {
 				entry, err := d.downloadShard(tw, tmpDir, base, sh.ID)
 				if err != nil {
-					return nativeBucketEntry{}, err
+					return physicalBucketEntry{}, skipped, err
 				}
 				if entry == nil {
 					continue
 				}
-				owners := make([]nativeShardOwner, len(sh.ShardOwners))
+				owners := make([]physicalShardOwner, len(sh.ShardOwners))
 				for o, owner := range sh.ShardOwners {
-					owners[o] = nativeShardOwner{NodeID: owner.NodeID}
+					owners[o] = physicalShardOwner{NodeID: owner.NodeID}
 				}
-				nsg.Shards = append(nsg.Shards, nativeShardEntry{
-					ID: sh.ID, ShardOwners: owners, nativeFileEntry: *entry,
+				nsg.Shards = append(nsg.Shards, physicalShardEntry{
+					ID: sh.ID, ShardOwners: owners, physicalFileEntry: *entry,
 				})
 			}
 			nrp.ShardGroups[k] = nsg
 		}
 		be.RetentionPolicies[i] = nrp
 	}
-	return be, nil
+	return be, skipped, nil
 }
 
-func (d *Dumper) downloadShard(tw *tar.Writer, tmpDir, base string, shardID int64) (*nativeFileEntry, error) {
+func (d *Dumper) downloadShard(tw *tar.Writer, tmpDir, base string, shardID int64) (*physicalFileEntry, error) {
 	start := time.Now()
 	u := d.baseURL() + "/api/v2/backup/shards/" + strconv.FormatInt(shardID, 10)
 	req, err := http.NewRequestWithContext(d.ctxOrBg(), "GET", u, nil)
@@ -403,7 +496,7 @@ func (d *Dumper) downloadShard(tw *tar.Writer, tmpDir, base string, shardID int6
 		return nil, nil
 	}
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return nil, fmt.Errorf("shard %d: HTTP %d - native backup requires an operator token", shardID, resp.StatusCode)
+		return nil, fmt.Errorf("shard %d: HTTP %d: %w", shardID, resp.StatusCode, errOperatorRequired)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
@@ -411,11 +504,11 @@ func (d *Dumper) downloadShard(tw *tar.Writer, tmpDir, base string, shardID int6
 	}
 
 	name := fmt.Sprintf("%s.%d.tar", base, shardID)
-	compression := nativeCompressionNone
+	compression := physicalCompressionNone
 	body := io.Reader(resp.Body)
 	if resp.Header.Get("Content-Encoding") == "gzip" {
 		name += ".gz"
-		compression = nativeCompressionGzip
+		compression = physicalCompressionGzip
 	}
 
 	var size int64
@@ -441,22 +534,22 @@ func (d *Dumper) downloadShard(tw *tar.Writer, tmpDir, base string, shardID int6
 	log.Trace("influx", "shard done",
 		"shard", shardID, "file", name, "bytes", size,
 		"elapsed", time.Since(start).Round(time.Millisecond).String())
-	return &nativeFileEntry{FileName: name, Size: size, Compression: compression}, nil
+	return &physicalFileEntry{FileName: name, Size: size, Compression: compression}, nil
 }
 
-func (d *Dumper) tarStagedEntry(tw *tar.Writer, tmpDir, name string, r io.Reader) (nativeFileEntry, error) {
+func (d *Dumper) tarStagedEntry(tw *tar.Writer, tmpDir, name string, r io.Reader) (physicalFileEntry, error) {
 	_ = d
 	staged, err := stageToTemp(tmpDir, r)
 	if err != nil {
-		return nativeFileEntry{}, err
+		return physicalFileEntry{}, err
 	}
 	size, err := tarFileEntry(tw, name, staged)
 	os.Remove(staged)
 	if err != nil {
-		return nativeFileEntry{}, err
+		return physicalFileEntry{}, err
 	}
 	log.Trace("influx", "metadata file stored", "file", name, "bytes", size)
-	return nativeFileEntry{FileName: name, Size: size, Compression: nativeCompressionNone}, nil
+	return physicalFileEntry{FileName: name, Size: size, Compression: physicalCompressionNone}, nil
 }
 
 func stageToTemp(tmpDir string, r io.Reader) (string, error) {

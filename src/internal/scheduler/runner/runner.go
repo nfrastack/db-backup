@@ -478,7 +478,11 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 		} else {
 			JLog(log.LevelDebug, job, "running incremental/differential dump",
 				"status", "debug", "step", "dump", "strategy", strat, "since", since, "chain_depth", chainDepth)
-			if err := database.RunBackup(ctx, mw, database.BackupOptions{
+			incrCtx := ctx
+			if job.InfluxMode != "" {
+				incrCtx = common.WithBackupMode(ctx, job.InfluxMode)
+			}
+			if err := database.RunBackup(incrCtx, mw, database.BackupOptions{
 				Type:       job.Type,
 				Host:       job.Host,
 				Port:       port,
@@ -624,6 +628,9 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 			}
 		}
 
+		backupProtocol := common.TakeBackupProtocol(
+			common.ProtocolKey(job.Host, port, job.User, dbName))
+
 		sc := &retention.Sidecar{
 			Base:          baseFile,
 			Format:        retention.FormatName,
@@ -641,6 +648,7 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 			DurationMs:      totalTime.Milliseconds(),
 			RawSize:         timing.rawSize,
 			Strategy:        strat,
+			Protocol:        backupProtocol,
 			Type:            job.Type,
 			DB:              dbName,
 			Host:            job.Host,

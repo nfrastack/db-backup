@@ -170,7 +170,7 @@ func incrementalEngineRegistered(dbType string) bool {
 
 func positionAnchored(dbType string) bool {
 	switch strings.ToLower(dbType) {
-	case "mongo", "mongodb", "mysql", "mariadb":
+	case "mongo", "mongodb", "mysql", "mariadb", "influx", "influxdb":
 		return true
 	}
 	return false

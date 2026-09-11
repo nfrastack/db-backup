@@ -21,6 +21,7 @@ import (
 
 	"github.com/nfrastack/db-backup/internal/config"
 	"github.com/nfrastack/db-backup/internal/database"
+	"github.com/nfrastack/db-backup/internal/database/registry"
 	"github.com/nfrastack/db-backup/internal/license"
 	"github.com/nfrastack/db-backup/internal/log"
 	"github.com/nfrastack/db-backup/internal/retention"
@@ -362,6 +363,71 @@ func cmdRestore(args []string) int {
 
 	var restoredBytes int64
 	restoreChecksum := ""
+	engSpec := registry.LookupEngine(*dbType)
+	restoreChain := func() int {
+		tmpDir, err := os.MkdirTemp("", "restore-chain-")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
+			return 1
+		}
+		defer os.RemoveAll(tmpDir)
+		var paths []string
+		for gi, gf := range order {
+			isMain := gi == len(order)-1
+			rc, _, err := st.Download(context.Background(), gf)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "ERROR: download %s: %v\n", gf, err)
+				return 1
+			}
+			var encMeta *retention.EncryptionMeta
+			if sidecar, serr := retention.ReadSidecar(st, gf); serr == nil {
+				encMeta = sidecar.Encryption
+				if restoreChecksum == "" {
+					restoreChecksum = checksumTypeFromSidecar(sidecar)
+				}
+			}
+			compressHint := *compressType
+			if !isMain {
+				compressHint = ""
+			}
+			decoded, oerr := retention.OpenBackup(rc, encMeta, opts, gf, compressHint)
+			rc.Close()
+			if oerr != nil {
+				fmt.Fprintf(os.Stderr, "ERROR: %v\n", oerr)
+				return 1
+			}
+			tmp, err := os.CreateTemp(tmpDir, "chain-*")
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
+				return 1
+			}
+			if _, err := io.Copy(tmp, decoded); err != nil {
+				tmp.Close()
+				fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
+				return 1
+			}
+			tmp.Close()
+			paths = append(paths, tmp.Name())
+		}
+		n, err := engSpec.RestoreChain(paths, order, func(name string, r io.Reader) error {
+			cr := &countingReader{r: r}
+			if err := database.RestoreTo(cr, *dbType, *dbHost, *dbPort, *dbUser, pass, *dbName, restoreAuthSource, restoreTLS); err != nil {
+				return fmt.Errorf("restore %s: %w", name, err)
+			}
+			return nil
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "ERROR: restore: %v\n", err)
+			return 1
+		}
+		restoredBytes = n
+		manualOpDetail = manualDetail{engine: *dbType, bytes: restoredBytes, checksum: restoreChecksum}
+		fmt.Fprintf(os.Stderr, "Restore complete (%d backup(s))\n", len(paths))
+		return 0
+	}
+	if engSpec != nil && engSpec.RestoreChain != nil {
+		return restoreChain()
+	}
 	for gi, gf := range order {
 		isMain := gi == len(order)-1
 
@@ -1144,6 +1210,9 @@ func printSidecarPanel(sc *retention.Sidecar) {
 	fmt.Fprintf(os.Stderr, "  trigger  : %s\n", orDash(sc.Trigger))
 	fmt.Fprintf(os.Stderr, "  taken    : %s\n", orDash(sc.Timestamp))
 	fmt.Fprintf(os.Stderr, "  strategy : %s\n", orDash(sc.Strategy))
+	if sc.Protocol != "" {
+		fmt.Fprintf(os.Stderr, "  protocol : %s\n", sc.Protocol)
+	}
 	if sc.SchemaOnly {
 		fmt.Fprintf(os.Stderr, "  content  : schema only\n")
 	}

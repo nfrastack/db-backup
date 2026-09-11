@@ -33,6 +33,9 @@ func dumpTo(ctx context.Context, w io.Writer, job config.JobConfig, port int, pa
 	if tr := tableTracer(job, effective, onTable); tr != nil {
 		ctx = common.WithTracer(ctx, tr)
 	}
+	if job.InfluxMode != "" {
+		ctx = common.WithBackupMode(ctx, job.InfluxMode)
+	}
 
 	opts := database.Options{Type: dbType, Host: host, Port: port, User: user, Pass: pass, DB: dbName, Version: job.Version, TLS: tlsCfg, AuthSource: job.AuthSource}
 	if job.Databases != nil {

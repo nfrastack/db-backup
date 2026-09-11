@@ -39,6 +39,25 @@ var (
 const traceProgressRows = 500000
 const influxChunkSize = 20000
 const influxExportWorkers = 0
+const incrementalOverlap = 2 * time.Minute
+
+func sliceBounds(since, until string) (string, string) {
+	if strings.TrimSpace(since) == "" {
+		return "", ""
+	}
+	sinceT, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(since))
+	if err != nil {
+		if sinceT, err = time.Parse(time.RFC3339, strings.TrimSpace(since)); err != nil {
+			return "", ""
+		}
+	}
+	end := strings.TrimSpace(until)
+	if end == "" {
+		end = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	start := sinceT.Add(-incrementalOverlap).UTC().Format(time.RFC3339Nano)
+	return start, end
+}
 
 var influxExportMode = "parallel" // legacy
 
@@ -89,6 +108,26 @@ type Dumper struct {
 	streamClient    *http.Client
 	ctx             context.Context
 	lastPingVersion string
+	mode            string
+}
+
+func resolveBackupMode(requested string) string {
+	switch strings.ToLower(strings.TrimSpace(requested)) {
+	case "physical":
+		return "physical"
+	case "logical":
+		return "logical"
+	case "", "auto":
+		return influxBackupMode
+	default:
+		log.Warn("influx", "unknown backup mode - using default",
+			"requested", requested, "mode", influxBackupMode)
+		return influxBackupMode
+	}
+}
+
+func (d *Dumper) protocolKey(dbNames []string) string {
+	return common.ProtocolKey(d.host, d.port, d.user, strings.Join(dbNames, ","))
 }
 
 type influxQueryResult struct {
@@ -105,8 +144,26 @@ type influxQueryResult struct {
 func (d *Dumper) Close() error { return nil }
 
 func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
-	if influxBackupMode == "native" {
-		return d.NativeBackup(w, dbNames)
+	mode := d.mode
+	if mode == "" {
+		mode = resolveBackupMode(common.BackupModeFromContext(d.ctxOrBg()))
+		d.mode = mode
+	}
+	if mode == "physical" && d.Version() == 2 {
+		if err := d.PhysicalBackup(w, dbNames); err != nil {
+			if errors.Is(err, errOperatorRequired) {
+				log.Warn("influx", "physical backup forbidden - falling back to logical export",
+					"host", d.host, "error", err.Error())
+			} else {
+				return err
+			}
+		} else {
+			common.RecordBackupProtocol(d.protocolKey(dbNames), "physical")
+			return nil
+		}
+	} else if mode == "physical" {
+		log.Debug("influx", "v1 has no physical protocol - using logical export",
+			"host", d.host)
 	}
 	ver := d.Version()
 	log.Debug("influx", "backup start",
@@ -132,7 +189,7 @@ func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
 	var total dumpStats
 	bw := bufio.NewWriterSize(w, 1<<20)
 	for _, db := range dbNames {
-		st, err := d.dumpDatabase(bw, db)
+		st, err := d.dumpDatabase(bw, db, "", "")
 		if err != nil {
 			return fmt.Errorf("dump %s: %w", db, err)
 		}
@@ -152,6 +209,7 @@ func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
 		return fmt.Errorf("influx: backup incomplete - %d of %d measurements skipped (%s)",
 			total.skipped, total.measurements, strings.Join(total.skippedNames, ", "))
 	}
+	common.RecordBackupProtocol(d.protocolKey(dbNames), "logical")
 	return nil
 }
 
@@ -190,6 +248,7 @@ func (d *Dumper) Open() error {
 
 func (d *Dumper) OpenContext(ctx context.Context) error {
 	d.ctx = ctx
+	d.mode = resolveBackupMode(common.BackupModeFromContext(ctx))
 	explicit := d.version
 	log.Debug("influx", "connect start",
 		"host", d.host, "port", d.port, "scheme", d.scheme(),
@@ -258,6 +317,39 @@ func (d *Dumper) Version() int {
 	return d.version
 }
 
+func (d *Dumper) Mode() string {
+	if d.mode == "" {
+		return influxBackupMode
+	}
+	return d.mode
+}
+
+func (d *Dumper) LogicalSlice(w io.Writer, dbs []string, since, end string) error {
+	var total dumpStats
+	bw := bufio.NewWriterSize(w, 1<<20)
+	for _, db := range dbs {
+		st, err := d.dumpDatabase(bw, db, since, end)
+		if err != nil {
+			return fmt.Errorf("dump %s: %w", db, err)
+		}
+		total.lines += st.lines
+		total.skipped += st.skipped
+		total.measurements += st.measurements
+		total.skippedNames = append(total.skippedNames, st.skippedNames...)
+	}
+	if err := bw.Flush(); err != nil {
+		return fmt.Errorf("flush slice: %w", err)
+	}
+	log.Debug("influx", "slice done",
+		"databases", len(dbs), "lines", total.lines,
+		"skipped_measurements", total.skipped)
+	if total.skipped > 0 {
+		return fmt.Errorf("influx: slice incomplete - %d of %d measurements skipped (%s)",
+			total.skipped, total.measurements, strings.Join(total.skippedNames, ", "))
+	}
+	return nil
+}
+
 func (d *Dumper) ctxOrBg() context.Context {
 	if d.ctx != nil {
 		return d.ctx
@@ -265,25 +357,33 @@ func (d *Dumper) ctxOrBg() context.Context {
 	return context.Background()
 }
 
-func (d *Dumper) dumpDatabase(w *bufio.Writer, db string) (*dumpStats, error) {
+func (d *Dumper) dumpDatabase(w *bufio.Writer, db, since, until string) (*dumpStats, error) {
 	if d.Version() == 1 {
-		return d.dumpV1(w, db)
+		return d.dumpV1(w, db, since, until)
 	}
-	return d.dumpV2(w, db)
+	return d.dumpV2(w, db, since, until)
 }
 
-func (d *Dumper) dumpV1(w *bufio.Writer, db string) (*dumpStats, error) {
+func (d *Dumper) dumpV1(w *bufio.Writer, db, since, until string) (*dumpStats, error) {
 	fmt.Fprintf(w, "# INFLUXDB EXPORT: %s\n", db)
 	fmt.Fprintf(w, "# DDL\n")
-	fmt.Fprintf(w, "CREATE DATABASE %s\n\n", db)
-	return d.dumpMeasurements(w, db)
+	fmt.Fprintf(w, "CREATE DATABASE %s\n", db)
+	if start, end := sliceBounds(since, until); start != "" {
+		fmt.Fprintf(w, "# WINDOW: %s to %s\n", start, end)
+	}
+	fmt.Fprintf(w, "\n")
+	return d.dumpMeasurements(w, db, since, until)
 }
 
-func (d *Dumper) dumpV2(w *bufio.Writer, bucket string) (*dumpStats, error) {
+func (d *Dumper) dumpV2(w *bufio.Writer, bucket, since, until string) (*dumpStats, error) {
 	fmt.Fprintf(w, "# INFLUXDB V2 EXPORT: %s (org %s)\n", bucket, d.user)
 	fmt.Fprintf(w, "# DDL\n")
-	fmt.Fprintf(w, "CREATE DATABASE %s\n\n", bucket)
-	return d.dumpMeasurements(w, bucket)
+	fmt.Fprintf(w, "CREATE DATABASE %s\n", bucket)
+	if start, end := sliceBounds(since, until); start != "" {
+		fmt.Fprintf(w, "# WINDOW: %s to %s\n", start, end)
+	}
+	fmt.Fprintf(w, "\n")
+	return d.dumpMeasurements(w, bucket, since, until)
 }
 
 func (d *Dumper) loadTagSchemas(db string, measurements []string) map[string]map[string]bool {
@@ -337,7 +437,7 @@ func (d *Dumper) tagKeysFor(db, m string, bulk map[string]map[string]bool) map[s
 	return tags
 }
 
-func (d *Dumper) dumpMeasurements(w *bufio.Writer, db string) (*dumpStats, error) {
+func (d *Dumper) dumpMeasurements(w *bufio.Writer, db, since, until string) (*dumpStats, error) {
 	st := &dumpStats{}
 	result, err := d.query(db, "SHOW MEASUREMENTS")
 	if err != nil {
@@ -367,13 +467,17 @@ func (d *Dumper) dumpMeasurements(w *bufio.Writer, db string) (*dumpStats, error
 
 	if influxExportMode == "legacy" {
 		log.Debug("influx", "export mode", "database", db, "mode", "legacy")
-		return d.dumpMeasurementsLegacy(w, db, st, measurements, bulkTags, bulkFields)
+		return d.dumpMeasurementsLegacy(w, db, st, measurements, bulkTags, bulkFields, since, until)
 	}
 	log.Debug("influx", "export mode", "database", db, "mode", "parallel")
-	return d.dumpMeasurementsParallel(w, db, st, measurements, bulkTags, bulkFields)
+	return d.dumpMeasurementsParallel(w, db, st, measurements, bulkTags, bulkFields, since, until)
 }
 
-func (d *Dumper) dumpMeasurementsLegacy(w *bufio.Writer, db string, st *dumpStats, measurements []string, bulkTags map[string]map[string]bool, bulkFields map[string]map[string]string) (*dumpStats, error) {
+func (d *Dumper) dumpMeasurementsLegacy(w *bufio.Writer, db string, st *dumpStats, measurements []string, bulkTags map[string]map[string]bool, bulkFields map[string]map[string]string, since, until string) (*dumpStats, error) {
+	start, end := sliceBounds(since, until)
+	if start != "" {
+		log.Debug("influx", "bounded export", "database", db, "from", start, "to", end)
+	}
 	for i, m := range measurements {
 		common.TraceTable(d.ctxOrBg(), db, m)
 		mStart := time.Now()
@@ -392,7 +496,11 @@ func (d *Dumper) dumpMeasurementsLegacy(w *bufio.Writer, db string, st *dumpStat
 		var mLines, mRows int
 		var mBytes int64
 		lb := lineBuilderPool.Get().(*strings.Builder)
-		queryErr := d.queryChunked(db, fmt.Sprintf("SELECT * FROM %q", m), false, tags, bulkFields[m], func(cols []string, row []any) error {
+		q := fmt.Sprintf("SELECT * FROM %q", m)
+		if start != "" {
+			q = fmt.Sprintf("SELECT * FROM %q WHERE time >= '%s' AND time < '%s'", m, start, end)
+		}
+		queryErr := d.queryChunked(db, q, false, tags, bulkFields[m], func(cols []string, row []any) error {
 			mRows++
 			lb.Reset()
 			if !buildLineProtocolInto(lb, m, cols, row, tags, bulkFields[m]) {
@@ -449,10 +557,16 @@ func (d *Dumper) dumpMeasurementsLegacy(w *bufio.Writer, db string, st *dumpStat
 	return st, nil
 }
 
-func (d *Dumper) dumpMeasurementsParallel(w *bufio.Writer, db string, st *dumpStats, measurements []string, bulkTags map[string]map[string]bool, bulkFields map[string]map[string]string) (*dumpStats, error) {
+func (d *Dumper) dumpMeasurementsParallel(w *bufio.Writer, db string, st *dumpStats, measurements []string, bulkTags map[string]map[string]bool, bulkFields map[string]map[string]string, since, until string) (*dumpStats, error) {
 	workers := effectiveWorkers()
 	log.Debug("influx", "export workers",
 		"database", db, "workers", workers, "measurements", len(measurements))
+
+	start, end := sliceBounds(since, until)
+	if start != "" {
+		log.Debug("influx", "bounded export", "database", db, "from", start, "to", end)
+	}
+	windows := [][2]string{{start, end}}
 
 	var wmu sync.Mutex
 	states := make(map[string]*measState, len(measurements))
@@ -471,11 +585,6 @@ func (d *Dumper) dumpMeasurementsParallel(w *bufio.Writer, db string, st *dumpSt
 			}
 		}()
 	}
-
-	// Single unbounded window per measurement: workers provide
-	// inter-measurement concurrency. Bounds discovery (global regex scans)
-	// was removed — it full-scans on real datasets and always times out.
-	windows := [][2]string{{"", ""}}
 
 	for i, m := range measurements {
 		common.TraceTable(d.ctxOrBg(), db, m)

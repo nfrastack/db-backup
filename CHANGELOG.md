@@ -8,15 +8,17 @@
       - progress meter also logs throughput to file log on tty runs
       - emit version on dump / restore one shots
       - update stats schema to 3
+      - update sidecar schema to 2
       - (couch) additional tracing output
       - (couch) chunk large operations
       - (influx2) additional debugging and tracing output
       - (influx2) optimizations
-         - chunk measurement dumps with large amount of datapoints
-         - fetch tag keys once per database instead of once per measurement
-         - add parallel workers (num cpu -1)
-         - try csv export
-         - add native mode to see if throughput increases
+         - split into physical and logical backups for 2.1+ (influx_mode)
+         - logical switch to csv export
+         - logical add parallel workers
+         - logical chunk measurement dumps with large amount of datapoints
+         - implement incremental/differential support
+         - rewrite restore functionality to support both modes
       - (mysql) additional tracing output
       - (mssql) additional tracing output
       - (redis) additional tracing output, and restore pexpireat routines

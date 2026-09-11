@@ -63,6 +63,24 @@ func Restore(r io.Reader, host string, port int, user, pass, dbName, authSource 
 		"auth", d.authMode(), "version", fmt.Sprintf("v%d", d.Version()),
 		"bucket", dbName)
 
+	peek := make([]byte, 512)
+	n, err := io.ReadFull(r, peek)
+	if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+		return fmt.Errorf("read dump: %w", err)
+	}
+	r = io.MultiReader(bytes.NewReader(peek[:n]), r)
+	if isTarStream(peek[:n]) {
+		log.Debug("influx", "tar stream detected - physical restore",
+			"bucket", dbName)
+		if err := d.restorePhysical(r, dbName); err != nil {
+			return err
+		}
+		log.Debug("influx", "restore done",
+			"bucket", dbName,
+			"elapsed", time.Since(restoreStart).Round(time.Millisecond).String())
+		return nil
+	}
+
 	if d.Version() == 1 {
 		if err := d.execV1Query("CREATE DATABASE \"" + dbName + "\""); err != nil {
 			if !strings.Contains(err.Error(), "already exists") {
@@ -340,7 +358,7 @@ func (d *Dumper) ensureDBRPMapping(name string) error {
 		}
 	}
 
-	body := []byte(fmt.Sprintf(`{"db":%q,"orgID":%q,"bucketID":%q,"retention_policy":"autogen","default":true}`, name, orgID, bucketID))
+	body := []byte(fmt.Sprintf(`{"database":%q,"orgID":%q,"bucketID":%q,"retention_policy":"autogen","default":true}`, name, orgID, bucketID))
 	createReq, err := http.NewRequestWithContext(d.ctxOrBg(), "POST", d.baseURL()+"/api/v2/dbrps", bytes.NewReader(body))
 	if err != nil {
 		return err
