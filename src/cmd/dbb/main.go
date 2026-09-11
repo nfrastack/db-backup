@@ -733,7 +733,7 @@ func printFullBanner() {
 	fmt.Println(" 888   888   888     888     d8(  888  o.  )88b   888 . d8(  888  888   .o8  888 `88b.")
 	fmt.Println("o888o o888o o888o   d888b    `Y888\"\"8o 8\"\"888P'   \"888\" `Y888\"\"8o `Y8bod8P' o888o o888o")
 	fmt.Println()
-	fmt.Printf("db-backup %s | build=%s mode=%s | © 2026 Nfrastack https://nfrastack.com\n", Version, buildEdition, runtimeMode())
+	fmt.Printf("db-backup %s | build=%s mode=%s commit=%s | © 2026 Nfrastack https://nfrastack.com\n", Version, buildEdition, runtimeMode(), displayCommit())
 	fmt.Println()
 	fmt.Println("For implementation support and consulting visit: https://nfrastack.com/db-backup")
 	fmt.Println()

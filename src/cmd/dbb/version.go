@@ -39,6 +39,7 @@ func cmdVersion(args []string) int {
 		type versionJSON struct {
 			Binary    string `json:"binary"`
 			Version   string `json:"version"`
+			Commit    string `json:"commit"`
 			BuildDate string `json:"build_date"`
 			GOOS      string `json:"goos"`
 			GOARCH    string `json:"goarch"`
@@ -49,6 +50,7 @@ func cmdVersion(args []string) int {
 		out := versionJSON{
 			Binary:    "db-backup",
 			Version:   Version,
+			Commit:    displayCommit(),
 			BuildDate: buildDate,
 			GOOS:      runtime.GOOS,
 			GOARCH:    runtime.GOARCH,
@@ -68,6 +70,7 @@ func cmdVersion(args []string) int {
 		return 0
 	}
 	fmt.Printf("db-backup %s (built %s; %s/%s)\n", Version, buildDate, runtime.GOOS, runtime.GOARCH)
+	fmt.Printf("commit:  %s\n", displayCommit())
 	fmt.Printf("build:   %s\n", buildEdition)
 	fmt.Printf("mode:    %s\n", runtimeMode())
 	if note := runtimeNote(); note != "" {

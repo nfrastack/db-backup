@@ -148,13 +148,13 @@ jobs:
           echo "container_tags=$final_tags" >> $GITHUB_OUTPUT
 
           short_sha=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
-          build_version=$(git describe --tags --abbrev=0 HEAD 2>/dev/null \
-            | awk -v sha="${short_sha}" \
-                '{ if (system("git diff --quiet HEAD") == 0 && \
-                       system("git status --porcelain") == 0) print $0; \
-                  else print $0 "-dev-" sha }')
-          if [ -z "$build_version" ]; then
+          base_tag=$(git describe --tags --abbrev=0 HEAD 2>/dev/null)
+          if [ -z "$base_tag" ]; then
             build_version="dev-${short_sha}"
+          elif git describe --tags --exact-match HEAD >/dev/null 2>&1 && git diff --quiet HEAD && [ -z "$(git status --porcelain)" ]; then
+            build_version="$base_tag"
+          else
+            build_version="${base_tag}-dev-${short_sha}"
           fi
 
           build_args="BASE_IMAGE=${INPUT_BASE_IMAGE}"

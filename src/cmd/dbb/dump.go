@@ -57,7 +57,7 @@ func cmdDump(args []string) int {
 	opensslPass := fs.String("openssl-passphrase", "", "OpenSSL passphrase (AES-256-CBC pbkdf2)")
 	fs.Parse(args)
 
-	log.Info("startup", fmt.Sprintf("db-backup %s | build=%s mode=%s | © 2026 Nfrastack https://nfrastack.com", Version, buildEdition, runtimeMode()),
+	log.Info("startup", fmt.Sprintf("db-backup %s | build=%s mode=%s commit=%s | © 2026 Nfrastack https://nfrastack.com", Version, buildEdition, runtimeMode(), displayCommit()),
 		"host", runner.Hostname())
 
 	if len(fs.Args()) > 0 && *dbType == "" && len(globalConfigPaths) == 0 {
