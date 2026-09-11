@@ -23,7 +23,7 @@ import (
 	"github.com/nfrastack/db-backup/internal/log"
 )
 
-var influxBackupMode = "native"  // logical
+var influxBackupMode = "native" // logical
 
 const (
 	nativeManifestVersion   = 2

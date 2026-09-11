@@ -39,6 +39,7 @@ var (
 const traceProgressRows = 500000
 const influxChunkSize = 20000
 const influxExportWorkers = 0
+
 var influxExportMode = "parallel" // legacy
 
 func effectiveWorkers() int {
