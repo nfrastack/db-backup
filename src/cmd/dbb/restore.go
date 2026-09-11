@@ -81,6 +81,9 @@ func cmdRestore(args []string) int {
 	nonInteractive := fs.Bool("non-interactive", false, "Never prompt or enter interactive mode")
 	fs.Parse(args)
 
+	log.Info("startup", fmt.Sprintf("db-backup %s | build=%s mode=%s | © 2026 Nfrastack https://nfrastack.com", Version, buildEdition, runtimeMode()),
+		"host", runner.Hostname())
+
 	explicitFlags := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { explicitFlags[f.Name] = true })
 

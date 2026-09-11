@@ -15,6 +15,7 @@ import (
 
 	"github.com/nfrastack/db-backup/internal/config"
 	"github.com/nfrastack/db-backup/internal/database"
+	"github.com/nfrastack/db-backup/internal/log"
 	"github.com/nfrastack/db-backup/internal/scheduler/runner"
 )
 
@@ -55,6 +56,9 @@ func cmdDump(args []string) int {
 	gpgPass := fs.String("gpg-passphrase", "", "OpenPGP/GPG passphrase (symmetric encryption)")
 	opensslPass := fs.String("openssl-passphrase", "", "OpenSSL passphrase (AES-256-CBC pbkdf2)")
 	fs.Parse(args)
+
+	log.Info("startup", fmt.Sprintf("db-backup %s | build=%s mode=%s | © 2026 Nfrastack https://nfrastack.com", Version, buildEdition, runtimeMode()),
+		"host", runner.Hostname())
 
 	if len(fs.Args()) > 0 && *dbType == "" && len(globalConfigPaths) == 0 {
 		fmt.Fprintf(os.Stderr, "ERROR: job '%s' requires a config file\n", fs.Arg(0))
