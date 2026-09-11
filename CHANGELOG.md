@@ -7,6 +7,7 @@
       - more container quality of life config auto detections
       - progress meter also logs throughput to file log on tty runs
       - emit version on dump / restore one shots
+      - update stats schema to 3
       - (couch) additional tracing output
       - (couch) chunk large operations
       - (influx2) additional debugging and tracing output

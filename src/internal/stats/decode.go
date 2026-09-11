@@ -62,6 +62,9 @@ type Job struct {
 	DurationMs     int64  `json:"duration_ms"`
 	Pruned         int    `json:"pruned"`
 	Archived       int    `json:"archived"`
+	KB             int64  `json:"kb,omitempty"`
+	RawKB          int64  `json:"raw_kb,omitempty"`
+	Checksum       string `json:"checksum,omitempty"`
 }
 
 var (
@@ -90,6 +93,12 @@ var (
 		compXz:    "xz",
 		compBz2:   "bzip2",
 		compOther: "unknown",
+	}
+	checksumNames = map[string]string{
+		csumNone:  "none",
+		csumMD5:   "md5",
+		csumSHA1:  "sha1",
+		csumOther: "unknown",
 	}
 	encryptionNames = map[string]string{
 		encNone:    "none",
@@ -248,6 +257,12 @@ func (d *Decoded) String() string {
 		if j.DurationMs > 0 {
 			fmt.Fprintf(&b, "  duration      %s\n", time.Duration(j.DurationMs)*time.Millisecond)
 		}
+		if j.KB > 0 || j.RawKB > 0 {
+			fmt.Fprintf(&b, "  size          %s (raw %s)\n", humanKB(j.KB), humanKB(j.RawKB))
+		}
+		if j.Checksum != "" {
+			fmt.Fprintf(&b, "  checksum      %s\n", j.Checksum)
+		}
 		if j.Pruned > 0 {
 			fmt.Fprintf(&b, "  pruned        %d\n", j.Pruned)
 		}
@@ -256,6 +271,22 @@ func (d *Decoded) String() string {
 		}
 	}
 	return b.String()
+}
+
+func humanKB(kb int64) string {
+	if kb <= 0 {
+		return "0 KB"
+	}
+	const unit = 1024
+	if kb < unit {
+		return fmt.Sprintf("%d KB", kb)
+	}
+	div, exp := int64(unit), 0
+	for n := kb / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(kb)/float64(div), "MGTP"[exp])
 }
 
 // parse integers and return 0 on junk
@@ -305,6 +336,15 @@ func decodeJobs(val string) []Job {
 		}
 		if len(f) >= 15 {
 			j.Archived = atoiCode(f[14])
+		}
+		if len(f) >= 16 {
+			j.KB = atoiCode64(f[15])
+		}
+		if len(f) >= 17 {
+			j.RawKB = atoiCode64(f[16])
+		}
+		if len(f) >= 18 {
+			j.Checksum = decodeName(f[17], checksumNames)
 		}
 		jobs = append(jobs, j)
 	}

@@ -360,6 +360,8 @@ func cmdRestore(args []string) int {
 		FallbackID:     restoreIdentity,
 	}
 
+	var restoredBytes int64
+	restoreChecksum := ""
 	for gi, gf := range order {
 		isMain := gi == len(order)-1
 
@@ -375,6 +377,9 @@ func cmdRestore(args []string) int {
 		var encMeta *retention.EncryptionMeta
 		if sidecar, serr := retention.ReadSidecar(st, gf); serr == nil {
 			encMeta = sidecar.Encryption
+			if restoreChecksum == "" {
+				restoreChecksum = checksumTypeFromSidecar(sidecar)
+			}
 		}
 		if encMeta == nil {
 			ext := filepath.Ext(gf)
@@ -437,11 +442,26 @@ func cmdRestore(args []string) int {
 		close(stop)
 		time.Sleep(50 * time.Millisecond)
 		fmt.Fprintf(os.Stderr, "%s: %s streamed\033[K\n", stage, formatBytes(cr.Bytes()))
+		restoredBytes += cr.Bytes()
 		rc.Close()
 	}
 
+	manualOpDetail = manualDetail{engine: *dbType, bytes: restoredBytes, checksum: restoreChecksum}
 	fmt.Fprintf(os.Stderr, "Restore complete (%d backup(s))\n", len(order))
 	return 0
+}
+
+func checksumTypeFromSidecar(sc *retention.Sidecar) string {
+	if sc == nil {
+		return ""
+	}
+	for k := range sc.Checksums {
+		if i := strings.LastIndex(k, "_"); i >= 0 && i+1 < len(k) {
+			return k[i+1:]
+		}
+		return k
+	}
+	return ""
 }
 
 func detectDBEnvCreds() []dbEnvCreds {

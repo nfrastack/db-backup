@@ -114,6 +114,7 @@ func cmdMaintain(args []string) int {
 		fmt.Fprintf(os.Stderr, "ERROR: maintain: %v\n", err)
 		return 1
 	}
+	manualOpDetail = manualDetail{engine: *dbType}
 
 	if len(results) == 0 {
 		fmt.Fprintf(os.Stderr, "No maintenance operations ran (all disabled?)\n")

@@ -29,13 +29,36 @@ const (
 )
 
 type Event struct {
-	Ts      string `json:"ts"`
-	Op      string `json:"op"`
-	Trigger string `json:"trig"`
-	Engine  string `json:"eng,omitempty"`
-	OK      bool   `json:"ok"`
-	Ms      int64  `json:"ms,omitempty"`
-	Jobs    int    `json:"n,omitempty"`
+	Ts       string `json:"ts"`
+	Op       string `json:"op"`
+	Trigger  string `json:"trig"`
+	Engine   string `json:"eng,omitempty"`
+	OK       bool   `json:"ok"`
+	Ms       int64  `json:"ms,omitempty"`
+	Jobs     int    `json:"n,omitempty"`
+	KB       int64  `json:"kb,omitempty"`
+	RawKB    int64  `json:"raw_kb,omitempty"`
+	Checksum string `json:"checksum,omitempty"`
+}
+
+type Outcome struct {
+	Op       string
+	Trigger  string
+	Engine   string
+	OK       bool
+	Ms       int64
+	Jobs     int
+	Bytes    int64
+	RawBytes int64
+	Checksum string
+}
+
+// round up to kb for a window
+func toKB(n int64) int64 {
+	if n <= 0 {
+		return 0
+	}
+	return (n + 512) / 1024
 }
 
 var (
@@ -46,11 +69,15 @@ var (
 
 // one operation/trigger bucket in a submit window
 type Agg struct {
-	Op      string `json:"op"`
-	Trigger string `json:"trig,omitempty"`
-	N       int    `json:"n"`
-	OK      int    `json:"ok"`
-	Fail    int    `json:"fail"`
+	Op       string `json:"op"`
+	Trigger  string `json:"trig,omitempty"`
+	N        int    `json:"n"`
+	OK       int    `json:"ok"`
+	Fail     int    `json:"fail"`
+	KB       int64  `json:"kb,omitempty"`
+	RawKB    int64  `json:"raw_kb,omitempty"`
+	Ms       int64  `json:"ms,omitempty"`
+	Checksum string `json:"checksum,omitempty"`
 }
 
 // purge events after completion
@@ -120,6 +147,12 @@ func Aggregate(events []Event) []Agg {
 		} else {
 			aggs[i].Fail++
 		}
+		aggs[i].KB += ev.KB
+		aggs[i].RawKB += ev.RawKB
+		aggs[i].Ms += ev.Ms
+		if aggs[i].Checksum == "" {
+			aggs[i].Checksum = ev.Checksum
+		}
 	}
 	sort.SliceStable(aggs, func(i, j int) bool {
 		if aggs[i].Op != aggs[j].Op {
@@ -132,21 +165,24 @@ func Aggregate(events []Event) []Agg {
 }
 
 // try to record event
-func Record(op, trigger, engine string, ok bool, ms int64, jobs int) {
+func Record(o Outcome) {
 	journalMu.Lock()
 	d, off := journalDir, journalDisabled
 	journalMu.Unlock()
-	if off || d == "" || op == "" {
+	if off || d == "" || o.Op == "" {
 		return
 	}
 	ev := Event{
-		Ts:      time.Now().UTC().Format(time.RFC3339Nano),
-		Op:      op,
-		Trigger: trigger,
-		Engine:  engine,
-		OK:      ok,
-		Ms:      ms,
-		Jobs:    jobs,
+		Ts:       time.Now().UTC().Format(time.RFC3339Nano),
+		Op:       o.Op,
+		Trigger:  o.Trigger,
+		Engine:   o.Engine,
+		OK:       o.OK,
+		Ms:       o.Ms,
+		Jobs:     o.Jobs,
+		KB:       toKB(o.Bytes),
+		RawKB:    toKB(o.RawBytes),
+		Checksum: o.Checksum,
 	}
 	line, err := json.Marshal(ev)
 	if err != nil {
@@ -225,15 +261,6 @@ func Window(since time.Time) []Event {
 }
 
 // renders the compact o= token body: op[:trig]:ok:fail:n joined by |.
-func (a Agg) Wire() string {
-	s := a.Op
-	if a.Trigger != "" {
-		s += ":" + a.Trigger
-	}
-	return s
-}
-
-// renders the o= value for a window ("backup:scheduled:12:11|restore:manual:3:3")
 func WireToken(events []Event) string {
 	aggs := Aggregate(events)
 	parts := make([]string, 0, len(aggs))
@@ -242,7 +269,8 @@ func WireToken(events []Event) string {
 		if a.Trigger != "" {
 			s += ":" + a.Trigger
 		}
-		parts = append(parts, fmt.Sprintf("%s:%d:%d", s, a.OK, a.Fail))
+		parts = append(parts, fmt.Sprintf("%s:%d:%d:%d:%d:%d:%s",
+			s, a.OK, a.Fail, a.KB, a.RawKB, a.Ms, checksumCode(a.Checksum)))
 	}
 	return strings.Join(parts, "|")
 }

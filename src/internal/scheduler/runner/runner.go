@@ -37,7 +37,18 @@ type countingReader struct {
 
 type countingWriter struct{ n int64 }
 
-type OutcomeSink func(dbType, trigger string, maintenance bool, ok bool, duration time.Duration)
+type OutcomeSink func(o Outcome)
+
+type Outcome struct {
+	Engine      string
+	Trigger     string
+	Maintenance bool
+	OK          bool
+	Duration    time.Duration
+	Bytes       int64
+	RawBytes    int64
+	Checksum    string
+}
 
 var (
 	recordOutcome OutcomeSink
@@ -81,10 +92,20 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 	ctx = common.WithLogFields(ctx, jobRunFields(job)...)
 	start := time.Now()
 	outcome := recordOutcome
-
+	var outcomeBytes, outcomeRaw int64
+	outcomeChecksum := ""
 	defer func() {
 		if outcome != nil {
-			outcome(job.Type, trigger, job.Maintenance != "", err == nil, time.Since(start))
+			outcome(Outcome{
+				Engine:      job.Type,
+				Trigger:     trigger,
+				Maintenance: job.Maintenance != "",
+				OK:          err == nil,
+				Duration:    time.Since(start),
+				Bytes:       outcomeBytes,
+				RawBytes:    outcomeRaw,
+				Checksum:    outcomeChecksum,
+			})
 		}
 	}()
 
@@ -553,6 +574,10 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 			"status", "warn", "step", "timing")
 	}
 	totalTime := time.Since(opStart)
+	outcomeBytes, outcomeRaw = n, timing.rawSize
+	if csType != checksum.None {
+		outcomeChecksum = job.Checksum
+	}
 
 	fields := []any{
 		"status", "complete",

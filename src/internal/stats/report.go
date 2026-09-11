@@ -40,6 +40,8 @@ type JobOutcome struct {
 	Duration time.Duration // total run time (success + failure) in the window
 	Pruned   int           // backup files deleted by retention in the window
 	Archived int           // backup files moved to archive storage in the window
+	KB       int64         // uploaded kilobytes in the window
+	RawKB    int64         // pre compression kilobytes in the window
 }
 type ReportBuilder struct {
 	opts       Options
@@ -69,6 +71,11 @@ func (b *ReportBuilder) Build(cfg *config.Config) (string, error) {
 		} else {
 			outcomes[key].Success += o.Success
 			outcomes[key].Failed += o.Failed
+			outcomes[key].Duration += o.Duration
+			outcomes[key].Pruned += o.Pruned
+			outcomes[key].Archived += o.Archived
+			outcomes[key].KB += o.KB
+			outcomes[key].RawKB += o.RawKB
 		}
 	}
 
@@ -163,10 +170,12 @@ func (b *ReportBuilder) encodeJob(job config.JobConfig, outcomes map[string]*Job
 	succ, fail := 0, 0
 	dur := int64(0)
 	pruned, archived := 0, 0
+	var kb, rawKB int64
 	if o, ok := outcomes[normalize(job.Type)]; ok {
 		succ, fail = o.Success, o.Failed
 		dur = o.Duration.Milliseconds()
 		pruned, archived = o.Pruned, o.Archived
+		kb, rawKB = o.KB, o.RawKB
 	}
 
 	return strings.Join([]string{
@@ -185,6 +194,9 @@ func (b *ReportBuilder) encodeJob(job config.JobConfig, outcomes map[string]*Job
 		itoa64(dur),
 		itoa(pruned),
 		itoa(archived),
+		itoa64(kb),
+		itoa64(rawKB),
+		checksumCode(job.Checksum),
 	}, ":")
 }
 

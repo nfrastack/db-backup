@@ -51,6 +51,14 @@ var (
 	globalProgress      *bool
 )
 
+type manualDetail struct {
+	engine   string
+	bytes    int64
+	checksum string
+}
+
+var manualOpDetail manualDetail
+
 type command struct {
 	run       func([]string) int
 	desc      string
@@ -701,12 +709,21 @@ Commands:
 
 	if c, ok := commands[cmd]; ok {
 		start := time.Now()
+		manualOpDetail = manualDetail{}
 		code := c.run(filtered)
 		if op, ok := map[string]string{
 			"restore": "restore", "maintain": "maintenance",
 			"prune": "prune", "archive": "archive", "verify": "verify",
 		}[cmd]; ok {
-			stats.Record(op, stats.TriggerManual, "", code == 0, time.Since(start).Milliseconds(), 1)
+			stats.Record(stats.Outcome{
+				Op: op, Trigger: stats.TriggerManual,
+				Engine:   manualOpDetail.engine,
+				OK:       code == 0,
+				Ms:       time.Since(start).Milliseconds(),
+				Jobs:     1,
+				Bytes:    manualOpDetail.bytes,
+				Checksum: manualOpDetail.checksum,
+			})
 		}
 		os.Exit(code)
 	} else {

@@ -6,6 +6,9 @@
 package stats
 
 import (
+	"strings"
+
+	"github.com/nfrastack/db-backup/internal/checksum"
 	"github.com/nfrastack/db-backup/internal/compress"
 	"github.com/nfrastack/db-backup/internal/config"
 	"github.com/nfrastack/db-backup/internal/encrypt"
@@ -16,7 +19,7 @@ import (
 const (
 	ToolDBBackup = "322"
 )
-const SchemaVersion = 2
+const SchemaVersion = 3
 
 // db type codes jf1
 const (
@@ -122,6 +125,33 @@ const (
 	logDestFile    = "2"
 	logDestBoth    = "3"
 )
+
+// checksum type jf8 (sv>=3) - types only, never hashes
+const (
+	csumNone  = "0" // none / unknown
+	csumMD5   = "m" // md5
+	csumSHA1  = "s" // sha1
+	csumOther = "?" // unknown
+)
+
+func checksumCode(t string) string {
+	if t == "" {
+		return csumNone
+	}
+	switch checksum.Parse(t) {
+	case checksum.MD5:
+		return csumMD5
+	case checksum.SHA1:
+		return csumSHA1
+	case checksum.None:
+		if strings.EqualFold(t, "none") {
+			return csumNone
+		}
+		return csumOther
+	default:
+		return csumOther
+	}
+}
 
 func compressionCode(t string) string {
 	switch compress.Parse(t) {
