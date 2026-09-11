@@ -38,19 +38,19 @@ var (
 
 const traceProgressRows = 500000
 const influxChunkSize = 20000
-
 const influxExportWorkers = 0
+var influxExportMode = "parallel" // legacy
 
 func effectiveWorkers() int {
 	if influxExportWorkers > 0 {
 		return influxExportWorkers
 	}
-	n := runtime.NumCPU()
-	if n < 2 {
-		return 2
+	n := runtime.NumCPU() - 1
+	if n < 1 {
+		return 1
 	}
-	if n > 16 {
-		return 16
+	if n > 8 {
+		return 8
 	}
 	return n
 }
@@ -104,6 +104,9 @@ type influxQueryResult struct {
 func (d *Dumper) Close() error { return nil }
 
 func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
+	if influxBackupMode == "native" {
+		return d.NativeBackup(w, dbNames)
+	}
 	ver := d.Version()
 	log.Debug("influx", "backup start",
 		"host", d.host, "port", d.port, "scheme", d.scheme(),
@@ -361,6 +364,91 @@ func (d *Dumper) dumpMeasurements(w *bufio.Writer, db string) (*dumpStats, error
 	bulkTags := d.loadTagSchemas(db, measurements)
 	bulkFields := d.loadFieldTypes(db)
 
+	if influxExportMode == "legacy" {
+		log.Debug("influx", "export mode", "database", db, "mode", "legacy")
+		return d.dumpMeasurementsLegacy(w, db, st, measurements, bulkTags, bulkFields)
+	}
+	log.Debug("influx", "export mode", "database", db, "mode", "parallel")
+	return d.dumpMeasurementsParallel(w, db, st, measurements, bulkTags, bulkFields)
+}
+
+func (d *Dumper) dumpMeasurementsLegacy(w *bufio.Writer, db string, st *dumpStats, measurements []string, bulkTags map[string]map[string]bool, bulkFields map[string]map[string]string) (*dumpStats, error) {
+	for i, m := range measurements {
+		common.TraceTable(d.ctxOrBg(), db, m)
+		mStart := time.Now()
+		log.Trace("influx", "measurement start", "database", db, "measurement", m,
+			"index", i+1, "total", len(measurements))
+
+		tags := d.tagKeysFor(db, m, bulkTags)
+		if tags == nil {
+			st.skipped++
+			st.skippedNames = append(st.skippedNames, db+"."+m)
+			log.Warn("influx", "skipping measurement - tag keys query failed",
+				"database", db, "measurement", m)
+			continue
+		}
+
+		var mLines, mRows int
+		var mBytes int64
+		lb := lineBuilderPool.Get().(*strings.Builder)
+		queryErr := d.queryChunked(db, fmt.Sprintf("SELECT * FROM %q", m), false, tags, bulkFields[m], func(cols []string, row []any) error {
+			mRows++
+			lb.Reset()
+			if !buildLineProtocolInto(lb, m, cols, row, tags, bulkFields[m]) {
+				return nil
+			}
+			lb.WriteByte('\n')
+			n, err := w.WriteString(lb.String())
+			mBytes += int64(n)
+			if err != nil {
+				return err
+			}
+			mLines++
+			if mRows%traceProgressRows == 0 {
+				elapsed := time.Since(mStart)
+				var rowsSec float64
+				if elapsed > 0 {
+					rowsSec = float64(mRows) / elapsed.Seconds()
+				}
+				log.Trace("influx", "measurement progress",
+					"database", db, "measurement", m,
+					"rows", mRows, "lines", mLines, "bytes", mBytes,
+					"rows_sec", int64(rowsSec),
+					"elapsed", elapsed.Round(time.Millisecond).String())
+			}
+			return nil
+		})
+		lineBuilderPool.Put(lb)
+		if queryErr != nil {
+			st.skipped++
+			st.skippedNames = append(st.skippedNames, db+"."+m)
+			log.Warn("influx", "skipping measurement - data query failed",
+				"database", db, "measurement", m, "error", queryErr.Error())
+			continue
+		}
+
+		fmt.Fprintf(w, "\n# CONTEXT-DATABASE: %s\n# MEASUREMENT: %s\n", db, m)
+		if err := w.Flush(); err != nil {
+			return st, fmt.Errorf("flush measurement %s: %w", m, err)
+		}
+		mElapsed := time.Since(mStart)
+		var rowsSec float64
+		if mElapsed > 0 {
+			rowsSec = float64(mRows) / mElapsed.Seconds()
+		}
+		log.Trace("influx", "measurement done",
+			"database", db, "measurement", m, "rows", mRows, "lines", mLines,
+			"bytes", mBytes, "rows_sec", int64(rowsSec),
+			"elapsed", mElapsed.Round(time.Millisecond).String())
+		st.lines += mLines
+	}
+	log.Debug("influx", "database done",
+		"database", db, "measurements", len(measurements),
+		"lines", st.lines, "skipped_measurements", st.skipped)
+	return st, nil
+}
+
+func (d *Dumper) dumpMeasurementsParallel(w *bufio.Writer, db string, st *dumpStats, measurements []string, bulkTags map[string]map[string]bool, bulkFields map[string]map[string]string) (*dumpStats, error) {
 	workers := effectiveWorkers()
 	log.Debug("influx", "export workers",
 		"database", db, "workers", workers, "measurements", len(measurements))
@@ -383,7 +471,10 @@ func (d *Dumper) dumpMeasurements(w *bufio.Writer, db string) (*dumpStats, error
 		}()
 	}
 
-	windows := d.exportWindows(db)
+	// Single unbounded window per measurement: workers provide
+	// inter-measurement concurrency. Bounds discovery (global regex scans)
+	// was removed — it full-scans on real datasets and always times out.
+	windows := [][2]string{{"", ""}}
 
 	for i, m := range measurements {
 		common.TraceTable(d.ctxOrBg(), db, m)
@@ -449,89 +540,6 @@ func (d *Dumper) loadFieldTypes(db string) map[string]map[string]string {
 	}
 	log.Trace("influx", "bulk field keys ok", "database", db, "measurements", len(ftypes))
 	return ftypes
-}
-
-func (d *Dumper) exportWindows(db string) [][2]string {
-	minNs, ok1 := d.globalBound(db, false)
-	maxNs, ok2 := d.globalBound(db, true)
-	if !ok1 || !ok2 || maxNs <= minNs {
-		if !ok1 || !ok2 {
-			log.Debug("influx", "global bounds failed - single window", "database", db)
-		}
-		return [][2]string{{"", ""}}
-	}
-	n := effectiveWorkers()
-	windows := make([][2]string, 0, n)
-	span := maxNs - minNs
-	for i := int64(0); i < int64(n); i++ {
-		s := minNs + i*span/int64(n)
-		e := maxNs + 1
-		if i+1 < int64(n) {
-			e = minNs + (i+1)*span/int64(n)
-		}
-		windows = append(windows, [2]string{
-			time.Unix(0, s).UTC().Format(time.RFC3339Nano),
-			time.Unix(0, e).UTC().Format(time.RFC3339Nano),
-		})
-	}
-	log.Debug("influx", "export windows",
-		"database", db, "windows", len(windows),
-		"from", windows[0][0], "to", windows[len(windows)-1][1])
-	return windows
-}
-
-func (d *Dumper) globalBound(db string, desc bool) (int64, bool) {
-	q := `SELECT * FROM /.*/ LIMIT 1`
-	if desc {
-		q = `SELECT * FROM /.*/ ORDER BY time DESC LIMIT 1`
-	}
-	result, err := d.query(db, q)
-	if err != nil {
-		return 0, false
-	}
-	var bound int64
-	found := false
-	for _, r := range result.Results {
-		for _, s := range r.Series {
-			tIdx := -1
-			for i, c := range s.Columns {
-				if c == "time" {
-					tIdx = i
-					break
-				}
-			}
-			if tIdx < 0 {
-				continue
-			}
-			for _, row := range s.Values {
-				if tIdx < len(row) {
-					ns, ok := nsValue(row[tIdx])
-					if !ok {
-						continue
-					}
-					if !found || (!desc && ns < bound) || (desc && ns > bound) {
-						bound, found = ns, true
-					}
-				}
-			}
-		}
-	}
-	return bound, found
-}
-
-func nsValue(v any) (int64, bool) {
-	switch v := v.(type) {
-	case json.Number:
-		if n, err := v.Int64(); err == nil {
-			return n, true
-		}
-		if f, err := v.Float64(); err == nil {
-			return int64(f), true
-		}
-	case float64:
-		return int64(v), true
-	}
-	return 0, false
 }
 
 func (d *Dumper) runTask(w *bufio.Writer, wmu *sync.Mutex, db string, ms *measState, t exportTask) {
