@@ -5,14 +5,16 @@
  
    ### Changed
       - more container quality of life config auto detections
+      - progress meter also logs throughput to file log on tty runs
       - (couch) additional tracing output
       - (couch) chunk large operations
       - (influx2) additional debugging and tracing output
       - (influx2) optimizations
          - chunk measurement dumps with large amount of datapoints
          - fetch tag keys once per database instead of once per measurement
-         - add parallel workers for  measurements
+         - add parallel workers (num cpu -1)
          - try csv export
+         - add native mode to see if throughput increases
       - (mysql) additional tracing output
       - (mssql) additional tracing output
       - (redis) additional tracing output, and restore pexpireat routines

@@ -28,15 +28,17 @@ type progress struct {
 
 	curTable string
 
-	mu       sync.Mutex
-	done     chan struct{}
-	tick     *time.Ticker
-	stop     chan struct{}
-	every    time.Duration
-	finished bool
-
-	meterEvery time.Duration
+	mu            sync.Mutex
+	done          chan struct{}
+	tick          *time.Ticker
+	stop          chan struct{}
+	every         time.Duration
+	finished      bool
+	lastFileLogAt time.Time
+	meterEvery    time.Duration
 }
+
+const fileLogEvery = time.Minute
 
 type progressReader struct {
 	p *progress
@@ -117,6 +119,18 @@ func (p *progress) render() {
 			line += "  (" + table + ")"
 		}
 		fmt.Fprintf(os.Stderr, "\r\x1b[K%s", line)
+	}
+
+	logIt := !p.term
+	if p.term {
+		p.mu.Lock()
+		if now.Sub(p.lastFileLogAt) >= fileLogEvery {
+			p.lastFileLogAt = now
+			logIt = true
+		}
+		p.mu.Unlock()
+	}
+	if !logIt {
 		return
 	}
 
