@@ -5,6 +5,7 @@
 package main
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 )
@@ -21,6 +22,14 @@ var (
 	devCommitRe = regexp.MustCompile(`(?i)^dev-([0-9a-f]{7,})(?:-dirty)?$`)
 	tagDevRe    = regexp.MustCompile(`(?i)-dev-([0-9a-f]{7,})(?:-dirty)?$`)
 )
+
+func bannerLine() string {
+	s := fmt.Sprintf("db-backup %s | build=%s mode=%s", Version, buildEdition, runtimeMode())
+	if c := displayCommit(); !strings.Contains(Version, c) {
+		s += " commit=" + c
+	}
+	return s + " | © 2026 Nfrastack https://nfrastack.com"
+}
 
 func displayCommit() string {
 	if c := resolveCommit(Version); c != "" {
