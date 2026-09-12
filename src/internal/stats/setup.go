@@ -6,7 +6,6 @@ package stats
 
 import (
 	"path/filepath"
-	"time"
 
 	"github.com/nfrastack/db-backup/internal/log"
 	"github.com/nfrastack/db-backup/internal/scheduler/runner"
@@ -39,17 +38,21 @@ func Setup(configPaths []string, sharedKey string, container bool, stateDir stri
 	SetJournalDir(filepath.Join(stateDir, "stats", "journal"))
 	if mgr.Enabled() {
 		tracker := NewTracker()
-		runner.SetOutcomeSink(func(dbType, trigger string, maintenance bool, ok bool, duration time.Duration) {
-			tracker.Mark(dbType, ok, duration)
+		runner.SetOutcomeSink(func(o runner.Outcome) {
+			tracker.Mark(o.Engine, o.OK, o.Duration, o.Bytes, o.RawBytes)
 			op := OpBackup
-			if maintenance {
+			if o.Maintenance {
 				op = OpMaintenance
 			}
-			trig := trigger
+			trig := o.Trigger
 			if trig == "" {
 				trig = TriggerScheduled
 			}
-			Record(op, trig, dbType, ok, duration.Milliseconds(), 1)
+			Record(Outcome{
+				Op: op, Trigger: trig, Engine: o.Engine, OK: o.OK,
+				Ms: o.Duration.Milliseconds(), Jobs: 1,
+				Bytes: o.Bytes, RawBytes: o.RawBytes, Checksum: o.Checksum,
+			})
 		})
 		return mgr, tracker
 	}

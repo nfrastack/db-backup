@@ -6,6 +6,7 @@ package container
 
 import (
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 )
@@ -47,4 +48,30 @@ func detect(getenv func(string) string, stat func(string) (os.FileInfo, error)) 
 
 func Detect() (bool, string) {
 	return detect(os.Getenv, os.Stat)
+}
+
+func NfrastackConfigCandidates(getenv func(string) string) []string {
+	return nfrastackConfigCandidates(getenv)
+}
+
+func nfrastackConfigCandidates(getenv func(string) string) []string {
+	configPath := strings.TrimSpace(getenv("CONFIG_PATH"))
+	if configPath == "" {
+		configPath = "/config/"
+	}
+	configFile := strings.TrimSpace(getenv("CONFIG_FILE"))
+	if configFile == "" {
+		configFile = "db-backup.yml"
+	}
+	var primary string
+	if filepath.IsAbs(configFile) {
+		primary = configFile
+	} else {
+		primary = filepath.Join(configPath, configFile)
+	}
+	const fallback = "/config/db-backup.yml"
+	if primary == fallback {
+		return []string{primary}
+	}
+	return []string{primary, fallback}
 }

@@ -13,18 +13,161 @@ on:
       - 'README.md'
       - '**.md'
       - 'flake.*'
+  workflow_dispatch:
+    inputs:
+      container:
+        description: 'Build + push container (:develop, :develop-<sha>)'
+        required: false
+        type: boolean
+        default: true
+      binaries:
+        description: 'Binaries to build'
+        required: false
+        type: choice
+        options: [none, slim, full]
+        default: none
+      scan:
+        description: 'Run govulncheck scan'
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   contents: read
   packages: write
+
+env:
+  GO_VERSION: '1.26.7'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  binary:
-    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+  flags:
+    name: Parse build flags
+    # [full] [slim] [container] [skip-ci]
+    runs-on: ubuntu-latest
+    outputs:
+      run_binaries: ${{ steps.parse.outputs.run_binaries }}
+      run_container: ${{ steps.parse.outputs.run_container }}
+      run_scan: ${{ steps.parse.outputs.run_scan }}
+    steps:
+      - name: Parse commit messages
+        id: parse
+        env:
+          HEAD_MSG: ${{ github.event.head_commit.message }}
+          COMMITS_JSON: ${{ toJson(github.event.commits) }}
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_CONTAINER: ${{ inputs.container }}
+          INPUT_BINARIES: ${{ inputs.binaries }}
+          INPUT_SCAN: ${{ inputs.scan }}
+        run: |
+          # Manual dispatch bypasses commit-message flags (and paths-ignore).
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            run_container="$INPUT_CONTAINER"
+            [ "$run_container" != "true" ] && run_container="false"
+            run_binaries="$INPUT_BINARIES"
+            case "$run_binaries" in
+              slim|full) ;;
+              *) run_binaries="none" ;;
+            esac
+            run_scan="$INPUT_SCAN"
+            [ "$run_scan" != "true" ] && [ "$run_scan" != "false" ] && run_scan="true"
+            if [ "$run_binaries" != "none" ] || [ "$run_container" = "true" ]; then
+              run_scan="true"
+            fi
+            echo "run_binaries=$run_binaries" >> $GITHUB_OUTPUT
+            echo "run_container=$run_container" >> $GITHUB_OUTPUT
+            echo "run_scan=$run_scan" >> $GITHUB_OUTPUT
+            echo "flags (dispatch): binaries=$run_binaries container=$run_container scan=$run_scan"
+            exit 0
+          fi
+          msgs="$HEAD_MSG
+          $(echo "$COMMITS_JSON" | jq -r '.[].message // empty' 2>/dev/null || true)"
+          lower=$(echo "$msgs" | tr '[:upper:]' '[:lower:]')
+
+          run_binaries="none"
+          run_container="false"
+
+          if echo "$lower" | grep -qE '\[skip[- ]ci\]'; then
+            echo "Skip-CI flag detected: skipping all builds."
+          else
+            if echo "$lower" | grep -qE '\[container\]'; then
+              run_container="true"
+            fi
+            if echo "$lower" | grep -qE '\[full\]'; then
+              run_binaries="full"
+            elif echo "$lower" | grep -qE '\[(slim|bin-slim|binaries=slim)\]'; then
+              run_binaries="slim"
+            fi
+            if echo "$lower" | grep -qE '\[all\]'; then
+              run_binaries="full"
+              run_container="true"
+            fi
+          fi
+
+          run_scan="false"
+          if [ "$run_binaries" != "none" ] || [ "$run_container" = "true" ]; then
+            run_scan="true"
+          fi
+
+          if echo "$lower" | grep -qE '\[(scan|test|tests)\]'; then
+            run_scan="true"
+          fi
+
+          echo "run_binaries=$run_binaries" >> $GITHUB_OUTPUT
+          echo "run_container=$run_container" >> $GITHUB_OUTPUT
+          echo "run_scan=$run_scan" >> $GITHUB_OUTPUT
+          echo "flags: binaries=$run_binaries container=$run_container scan=$run_scan"
+
+  binary-slim:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }} (slim)
+    needs: [flags]
+    if: needs.flags.outputs.run_binaries == 'slim'
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: src/go.sum
+
+      - name: Build Binary
+        working-directory: src
+        run: |
+          SUFFIX=""
+          if [ "${{ matrix.goos }}" = "windows" ]; then SUFFIX=".exe"; fi
+          COMMIT=$(git rev-parse --short=7 HEAD)
+          BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
+            go build -trimpath -ldflags "-s -w -X main.Version=${{ github.ref_name }} -X main.buildChannel=edge -X main.buildCommit=${COMMIT} -X main.buildDate=${BUILD_DATE}" \
+            -o ../dbb_${{ github.ref_name }}_${COMMIT}_${{ matrix.goos }}_${{ matrix.goarch }}${SUFFIX} ./cmd/dbb
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: dbb_${{ github.ref_name }}_${{ matrix.goos }}_${{ matrix.goarch }}
+          path: dbb_${{ github.ref_name }}_*_${{ matrix.goos }}_${{ matrix.goarch }}*
+          retention-days: 7
+
+      - name: Run unit tests
+        working-directory: src
+        run: go test -count=1 -short ./...
+
+  binary-full:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }} (full)
+    needs: [flags]
+    if: needs.flags.outputs.run_binaries == 'full'
     runs-on: ubuntu-latest
 
     strategy:
@@ -47,7 +190,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version: '1.26.7'
+          go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: src/go.sum
 
       - name: Build Binary
@@ -59,13 +202,14 @@ jobs:
           BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
             go build -trimpath -ldflags "-s -w -X main.Version=${{ github.ref_name }} -X main.buildChannel=edge -X main.buildCommit=${COMMIT} -X main.buildDate=${BUILD_DATE}" \
-            -o ../dbb_${{ github.ref_name }}_${{ matrix.goos }}_${{ matrix.goarch }}${SUFFIX} ./cmd/dbb
+            -o ../dbb_${{ github.ref_name }}_${COMMIT}_${{ matrix.goos }}_${{ matrix.goarch }}${SUFFIX} ./cmd/dbb
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:
           name: dbb_${{ github.ref_name }}_${{ matrix.goos }}_${{ matrix.goarch }}
-          path: dbb_${{ github.ref_name }}_${{ matrix.goos }}_${{ matrix.goarch }}*
+          path: dbb_${{ github.ref_name }}_*_${{ matrix.goos }}_${{ matrix.goarch }}*
+          retention-days: 7
 
       - name: Run unit tests
         working-directory: src
@@ -73,6 +217,8 @@ jobs:
 
   scan:
     name: Vulnerability scan (govulncheck)
+    needs: [flags]
+    if: needs.flags.outputs.run_scan == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -80,7 +226,7 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version: '1.26.7'
+          go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: src/go.sum
 
       - name: Run govulncheck
@@ -91,9 +237,38 @@ jobs:
 
   container:
     name: Build Container Image
-    needs: [binary, scan]
+    needs: [flags, scan]
+    if: always() && needs.flags.outputs.run_container == 'true' && (needs.scan.result == 'success' || needs.scan.result == 'skipped')
     uses: ./.github/workflows/container-build.yml
     with:
       base_image: docker.io/nfrastack/base:alpine_3.24
       platforms: linux/amd64,linux/arm64
     secrets: inherit
+
+  summary:
+    name: Build summary
+    runs-on: ubuntu-latest
+    needs: [flags, binary-slim, binary-full, scan, container]
+    if: always()
+    steps:
+      - name: Summarize skipped run
+        env:
+          BINARIES: ${{ needs.flags.outputs.run_binaries }}
+          CONTAINER: ${{ needs.flags.outputs.run_container }}
+          SCAN: ${{ needs.flags.outputs.run_scan }}
+        run: |
+          if [ "$BINARIES" = "none" ] && [ "$CONTAINER" = "false" ] && [ "$SCAN" = "false" ]; then
+            {
+              echo "## Branch Build skipped"
+              echo ""
+              echo "No build flags detected in commit message(s). Pushed binaries/container were skipped."
+              echo ""
+              echo "Use commit-message flags to opt in:"
+              echo "- \`[container]\` — build + push \`:develop\` and \`:develop-<sha>\` (amd64/arm64)"
+              echo "- \`[slim]\` — build linux amd64+arm64 binaries"
+              echo "- \`[full]\` — build all 10 OS/arch binaries"
+              echo "- \`[container] [slim]\` — container + linux binaries"
+              echo "- \`[all]\` — container + full binaries"
+              echo "- \`[skip ci]\` — force skip everything"
+            } >> $GITHUB_STEP_SUMMARY
+          fi

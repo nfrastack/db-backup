@@ -343,6 +343,7 @@ dbbackup_generate_configuration() {
         pass="$(_dbbackup_getv "${inst}" PASS "")"
         port="$(_dbbackup_getv "${inst}" PORT "")"
         influx_version="$(_dbbackup_getv "${inst}" INFLUX_VERSION "")"
+        influx_mode="$(_dbbackup_getv "${inst}" INFLUX_MODE "")"
         auth_source="$(_dbbackup_getv "${inst}" AUTH_SOURCE "")"
         legacy_auth="$(_dbbackup_getv "${inst}" AUTH "")"
         if [ -z "${auth_source}" ] && [ -n "${legacy_auth}" ]; then
@@ -377,6 +378,10 @@ dbbackup_generate_configuration() {
         if [ -n "${influx_version}" ]; then
             DBB_VER="${influx_version}"
             yq -i '.profiles.connections[strenv(DBB_REF)].version = (strenv(DBB_VER) | tonumber)' "${CONFIG_FILE_PATH}"
+        fi
+        if [ -n "${influx_mode}" ]; then
+            DBB_INFLUX_MODE="${influx_mode,,}"
+            yq -i '.profiles.connections[strenv(DBB_REF)].influx_mode = strenv(DBB_INFLUX_MODE)' "${CONFIG_FILE_PATH}"
         fi
         if [ -n "${auth_source}" ]; then
             DBB_AUTH_SOURCE="$auth_source"
@@ -1293,7 +1298,7 @@ dbbackup_generate_helpers() {
         esac
         printf -v idx '%02d' "${i}"
         {
-            printf '#!/command/with-contenv bash\nexec /usr/local/bin/backup-now %s\n' \
+            printf '#!/command/with-contenv bash\nexec /usr/local/bin/backup-now %s "$@"\n' \
                 "$(printf '%s' "${name}" | sed -e "s/'/'\\\\''/g" -e "s/^/'/" -e "s/$/'/")"
         } > "${helpers_dir}/backup${idx}-now"
         chmod +x "${helpers_dir}/backup${idx}-now"

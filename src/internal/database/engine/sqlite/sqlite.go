@@ -10,11 +10,13 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	_ "modernc.org/sqlite"
 
 	"github.com/nfrastack/db-backup/internal/config"
 	"github.com/nfrastack/db-backup/internal/database/common"
+	"github.com/nfrastack/db-backup/internal/log"
 )
 
 type Dumper struct {
@@ -34,6 +36,8 @@ func (d *Dumper) Close() error {
 }
 
 func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
+	start := time.Now()
+	log.Debug("sqlite", "backup start", "path", d.path)
 	fmt.Fprintf(w, "-- dbbackup SQLite dump\n")
 	fmt.Fprintf(w, "-- File: %s\n--\n\n", d.path)
 
@@ -41,18 +45,27 @@ func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
 	if err != nil {
 		return err
 	}
+	log.Debug("sqlite", "tables listed", "path", d.path, "count", len(tables))
 
+	var totalRows int
 	for _, table := range tables {
 		if d.Tables != nil {
 			included, _ := d.Tables.Apply(table)
 			if !included {
+				log.Trace("sqlite", "table excluded by filter", "table", table)
 				continue
 			}
 		}
-		if err := d.dumpTable(w, table); err != nil {
+		common.TraceTable(d.ctxOrBg(), "", table)
+		n, err := d.dumpTable(w, table)
+		if err != nil {
 			return fmt.Errorf("dump %s: %w", table, err)
 		}
+		totalRows += n
 	}
+	log.Debug("sqlite", "backup done",
+		"path", d.path, "tables", len(tables), "rows", totalRows,
+		"elapsed", time.Since(start).Round(time.Millisecond).String())
 	return nil
 }
 
@@ -66,6 +79,7 @@ func (d *Dumper) Open() error {
 
 func (d *Dumper) OpenContext(ctx context.Context) error {
 	d.ctx = ctx
+	log.Debug("sqlite", "connect start", "path", d.path)
 	probe := func() error { return common.FilePerms(d.path) }
 	connect := func() error {
 		dsn := "file:" + d.path + "?mode=ro"
@@ -84,6 +98,7 @@ func (d *Dumper) OpenContext(ctx context.Context) error {
 		if err := d.db.QueryRowContext(ctx, "SELECT 1").Scan(&one); err != nil {
 			return fmt.Errorf("ping: %w", err)
 		}
+		log.Debug("sqlite", "connected", "path", d.path)
 		return nil
 	}
 	return common.WithConnectivity(ctx, "sqlite", d.connCfg, probe, connect, ping)
@@ -106,11 +121,13 @@ func (d *Dumper) ctxOrBg() context.Context {
 	return context.Background()
 }
 
-func (d *Dumper) dumpTable(w io.Writer, table string) error {
+func (d *Dumper) dumpTable(w io.Writer, table string) (int, error) {
 	ctx := d.ctxOrBg()
+	start := time.Now()
+	log.Trace("sqlite", "table start", "table", table)
 	var createSQL string
 	if err := d.db.QueryRowContext(ctx, "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", table).Scan(&createSQL); err != nil && err != sql.ErrNoRows {
-		return fmt.Errorf("read create %s: %w", table, err)
+		return 0, fmt.Errorf("read create %s: %w", table, err)
 	}
 	fmt.Fprintf(w, "DROP TABLE IF EXISTS %s;\n", quoteSQLiteIdent(table))
 	fmt.Fprintf(w, "-- Table: %s\n%s;\n\n", table, createSQL)
@@ -121,18 +138,19 @@ func (d *Dumper) dumpTable(w io.Writer, table string) error {
 		schemaOnly = schemaOnly || so
 	}
 	if schemaOnly {
-		return nil
+		log.Trace("sqlite", "table done", "table", table, "rows", 0, "schema_only", true)
+		return 0, nil
 	}
 
 	rows, err := d.db.QueryContext(ctx, "SELECT * FROM "+quoteSQLiteIdent(table))
 	if err != nil {
-		return fmt.Errorf("select: %w", err)
+		return 0, fmt.Errorf("select: %w", err)
 	}
 	defer rows.Close()
 
 	cols, err := rows.Columns()
 	if err != nil {
-		return fmt.Errorf("columns: %w", err)
+		return 0, fmt.Errorf("columns: %w", err)
 	}
 	var rowCount int
 	for rows.Next() {
@@ -142,7 +160,7 @@ func (d *Dumper) dumpTable(w io.Writer, table string) error {
 			valPtrs[i] = &vals[i]
 		}
 		if err := rows.Scan(valPtrs...); err != nil {
-			return fmt.Errorf("scan data row: %w", err)
+			return rowCount, fmt.Errorf("scan data row: %w", err)
 		}
 
 		if rowCount == 0 {
@@ -184,7 +202,13 @@ func (d *Dumper) dumpTable(w io.Writer, table string) error {
 	if rowCount > 0 {
 		fmt.Fprintf(w, ";\n\n")
 	}
-	return rows.Err()
+	if err := rows.Err(); err != nil {
+		return rowCount, err
+	}
+	log.Trace("sqlite", "table done",
+		"table", table, "rows", rowCount,
+		"elapsed", time.Since(start).Round(time.Millisecond).String())
+	return rowCount, nil
 }
 
 func escapeSQLite(s string) string {

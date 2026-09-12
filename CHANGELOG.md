@@ -1,3 +1,33 @@
+## 5.0.2 2026-09-12 <code at nfrastack dot com>
+
+   ### Added
+      - (container) `backup-now` / `backup##-now` allows passing log level as argument eg `backup-now debug`
+      - influx2 incremental/differential support
+      - progress meter logs throughput to file on tty runs
+
+   ### Changed
+      - (container) quality of life config auto detections
+      - emit version on dump / restore one shots
+      - update stats schema to 3
+      - update sidecar schema to 2
+      - (couch) additional tracing output
+      - (couch) chunk large operations
+      - (influx2) additional debugging and tracing output
+      - (influx2) optimizations
+         - split into physical and logical backups for 2.1+ (influx_mode)
+         - logical switch to csv export
+         - logical add parallel workers
+         - logical chunk measurement dumps with large amount of datapoints
+         - implement incremental/differential support
+         - rewrite restore functionality to support both modes
+      - (mysql) additional tracing output
+      - (mssql) additional tracing output
+      - (redis) additional tracing output
+      - (redis) restore pexpireat routines
+      - (sqlite) additional tracing output
+      - (postgres) additional tracing output
+
+
 ## 5.0.1 2026-09-08 <code at nfrastack dot com>
 
    ### Added

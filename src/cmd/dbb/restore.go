@@ -21,6 +21,7 @@ import (
 
 	"github.com/nfrastack/db-backup/internal/config"
 	"github.com/nfrastack/db-backup/internal/database"
+	"github.com/nfrastack/db-backup/internal/database/registry"
 	"github.com/nfrastack/db-backup/internal/license"
 	"github.com/nfrastack/db-backup/internal/log"
 	"github.com/nfrastack/db-backup/internal/retention"
@@ -80,6 +81,9 @@ func cmdRestore(args []string) int {
 	dryRun := fs.Bool("dry-run", false, "Print what would be restored without doing it")
 	nonInteractive := fs.Bool("non-interactive", false, "Never prompt or enter interactive mode")
 	fs.Parse(args)
+
+	log.Info("startup", bannerLine(),
+		"host", runner.Hostname())
 
 	explicitFlags := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { explicitFlags[f.Name] = true })
@@ -357,6 +361,76 @@ func cmdRestore(args []string) int {
 		FallbackID:     restoreIdentity,
 	}
 
+	var restoredBytes int64
+	restoreChecksum := ""
+	engSpec := registry.LookupEngine(*dbType)
+	restoreChain := func() int {
+		tmpDir, err := os.MkdirTemp("", "restore-chain-")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
+			return 1
+		}
+		defer os.RemoveAll(tmpDir)
+		var paths []string
+		for gi, gf := range order {
+			isMain := gi == len(order)-1
+			rc, _, err := st.Download(context.Background(), gf)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "ERROR: download %s: %v\n", gf, err)
+				return 1
+			}
+			var encMeta *retention.EncryptionMeta
+			if sidecar, serr := retention.ReadSidecar(st, gf); serr == nil {
+				encMeta = sidecar.Encryption
+				if restoreChecksum == "" {
+					restoreChecksum = checksumTypeFromSidecar(sidecar)
+				}
+			}
+			compressHint := *compressType
+			if !isMain {
+				compressHint = ""
+			}
+			decoded, oerr := retention.OpenBackup(rc, encMeta, opts, gf, compressHint)
+			if oerr != nil {
+				rc.Close()
+				fmt.Fprintf(os.Stderr, "ERROR: %v\n", oerr)
+				return 1
+			}
+			tmp, err := os.CreateTemp(tmpDir, "chain-*")
+			if err != nil {
+				rc.Close()
+				fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
+				return 1
+			}
+			_, err = io.Copy(tmp, decoded)
+			rc.Close()
+			if err != nil {
+				tmp.Close()
+				fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
+				return 1
+			}
+			tmp.Close()
+			paths = append(paths, tmp.Name())
+		}
+		n, err := engSpec.RestoreChain(paths, order, func(name string, r io.Reader) error {
+			cr := &countingReader{r: r}
+			if err := database.RestoreTo(cr, *dbType, *dbHost, *dbPort, *dbUser, pass, *dbName, restoreAuthSource, restoreTLS); err != nil {
+				return fmt.Errorf("restore %s: %w", name, err)
+			}
+			return nil
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "ERROR: restore: %v\n", err)
+			return 1
+		}
+		restoredBytes = n
+		manualOpDetail = manualDetail{engine: *dbType, bytes: restoredBytes, checksum: restoreChecksum}
+		fmt.Fprintf(os.Stderr, "Restore complete (%d backup(s))\n", len(paths))
+		return 0
+	}
+	if engSpec != nil && engSpec.RestoreChain != nil {
+		return restoreChain()
+	}
 	for gi, gf := range order {
 		isMain := gi == len(order)-1
 
@@ -372,6 +446,9 @@ func cmdRestore(args []string) int {
 		var encMeta *retention.EncryptionMeta
 		if sidecar, serr := retention.ReadSidecar(st, gf); serr == nil {
 			encMeta = sidecar.Encryption
+			if restoreChecksum == "" {
+				restoreChecksum = checksumTypeFromSidecar(sidecar)
+			}
 		}
 		if encMeta == nil {
 			ext := filepath.Ext(gf)
@@ -434,11 +511,26 @@ func cmdRestore(args []string) int {
 		close(stop)
 		time.Sleep(50 * time.Millisecond)
 		fmt.Fprintf(os.Stderr, "%s: %s streamed\033[K\n", stage, formatBytes(cr.Bytes()))
+		restoredBytes += cr.Bytes()
 		rc.Close()
 	}
 
+	manualOpDetail = manualDetail{engine: *dbType, bytes: restoredBytes, checksum: restoreChecksum}
 	fmt.Fprintf(os.Stderr, "Restore complete (%d backup(s))\n", len(order))
 	return 0
+}
+
+func checksumTypeFromSidecar(sc *retention.Sidecar) string {
+	if sc == nil {
+		return ""
+	}
+	for k := range sc.Checksums {
+		if i := strings.LastIndex(k, "_"); i >= 0 && i+1 < len(k) {
+			return k[i+1:]
+		}
+		return k
+	}
+	return ""
 }
 
 func detectDBEnvCreds() []dbEnvCreds {
@@ -1121,6 +1213,9 @@ func printSidecarPanel(sc *retention.Sidecar) {
 	fmt.Fprintf(os.Stderr, "  trigger  : %s\n", orDash(sc.Trigger))
 	fmt.Fprintf(os.Stderr, "  taken    : %s\n", orDash(sc.Timestamp))
 	fmt.Fprintf(os.Stderr, "  strategy : %s\n", orDash(sc.Strategy))
+	if sc.Protocol != "" {
+		fmt.Fprintf(os.Stderr, "  protocol : %s\n", sc.Protocol)
+	}
 	if sc.SchemaOnly {
 		fmt.Fprintf(os.Stderr, "  content  : schema only\n")
 	}

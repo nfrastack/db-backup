@@ -33,10 +33,10 @@ docker run --rm \
   -e DB01_PASS=secret \
   -e DB01_NAME=testdb \
   -v ./backups:/backup \
-  docker.io/nfrastack/db-backup:5.0.0
+  docker.io/nfrastack/db-backup:latest
 ```
 
-Or grab a [precompiled binary](https://github.com/nfrastack/db-backup/releases), build [from source](https://nfrastack.com/db-backup/install), or use the [NixOS module](https://nfrastack.com/db-backup/nixos) and use the configuration files to perform advanced functions.
+Or grab a [precompiled binary](https://www.nfrastack.com/db-backup/install), build [from source](https://nfrastack.com/db-backup/install), or use the [NixOS module](https://nfrastack.com/db-backup/nixos) and use the configuration files to perform advanced functions.
 
 ## Documentation
 

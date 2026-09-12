@@ -83,6 +83,7 @@ type ConnConfig struct {
 	User         string              `yaml:"user"`
 	Pass         string              `yaml:"pass"`
 	Version      int                 `yaml:"version,omitempty"`
+	InfluxMode   string              `yaml:"influx_mode,omitempty"`
 	Connectivity *ConnectivityConfig `yaml:"connectivity,omitempty"`
 	TLS          *TLSConfig          `yaml:"tls,omitempty"`
 	AuthSource   string              `yaml:"auth_source,omitempty"`
@@ -693,6 +694,9 @@ func (c *Config) resolveJob(job *JobConfig) {
 						}
 						if job.Version == 0 && !job.unsetKey("version") {
 							job.Version = conn.Version
+						}
+						if job.InfluxMode == "" && !job.unsetKey("influx_mode") {
+							job.InfluxMode = conn.InfluxMode
 						}
 						if job.AuthSource == "" && !job.unsetKey("auth_source") {
 							job.AuthSource = conn.AuthSource

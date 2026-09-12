@@ -1,0 +1,162 @@
+# prune old develop-<sha> container tags
+
+name: Container Cleanup
+
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Log only, delete nothing'
+        required: false
+        type: boolean
+        default: true
+      keep_n:
+        description: 'How many develop-<sha> tags to keep'
+        required: false
+        type: number
+        default: 5
+
+permissions:
+  contents: read
+
+jobs:
+  ghcr:
+    name: Prune GHCR develop-<sha> tags
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    env:
+      KEEP_N: ${{ inputs.keep_n || 5 }}
+      DRY_RUN: ${{ github.event_name == 'schedule' && 'false' || inputs.dry_run }}
+    steps:
+      - name: Delete old develop-<sha> versions (keep newest N)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          repo="${GITHUB_REPOSITORY}"
+          owner="${repo%%/*}"
+          pkg="${repo##*/}"
+          keep="${KEEP_N}"
+          echo "GHCR cleanup: package=${pkg} keep=${keep} dry_run=${DRY_RUN}"
+
+          versions_json=$(mktemp)
+          if ! gh api -H "Accept: application/vnd.github+json" \
+            "/orgs/${owner}/packages/container/${pkg}/versions?per_page=100" \
+            --paginate > "$versions_json" 2>/dev/null; then
+            gh api -H "Accept: application/vnd.github+json" \
+              "/user/packages/container/${pkg}/versions?per_page=100" \
+              --paginate > "$versions_json"
+          fi
+          export PKG_ENDPOINT="orgs/${owner}"
+          if ! jq -e 'type == "array"' "$versions_json" >/dev/null 2>&1; then
+            echo "WARN Could not list package versions, deleting nothing."
+            exit 0
+          fi
+
+          mapfile -t candidates < <(jq -r \
+            '.[] | .updated_at as $u | .id as $id | (.metadata.container.tags // [])[] | select(test("^develop-[0-9a-f]{7,12}$")) | "\($u) \($id) \(.)"' \
+            "$versions_json" | sort || true)
+
+          total="${#candidates[@]}"
+          echo "Found ${total} develop-<sha> versions."
+          if [ "$total" -le "$keep" ]; then
+            echo "Nothing to prune (total <= keep)."
+            exit 0
+          fi
+
+          delete_count=$((total - keep))
+          echo "Deleting ${delete_count} oldest (keeping newest ${keep})."
+          for ((i = 0; i < delete_count; i++)); do
+            line="${candidates[$i]}"
+            vid=$(echo "$line" | awk '{print $2}')
+            tag=$(echo "$line" | awk '{print $3}')
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "[DRY RUN] Would delete version ${vid} (tag ${tag})"
+              continue
+            fi
+            echo "Deleting version ${vid} (tag ${tag})"
+            gh api --method DELETE -H "Accept: application/vnd.github+json" \
+              "/orgs/${owner}/packages/container/${pkg}/versions/${vid}" 2>/dev/null || \
+            gh api --method DELETE -H "Accept: application/vnd.github+json" \
+              "/user/packages/container/${pkg}/versions/${vid}" 2>/dev/null || \
+            echo "WARN Failed to delete version ${vid} (tag ${tag})"
+          done
+
+  dockerhub:
+    name: Prune Docker Hub develop-<sha> tags
+    runs-on: ubuntu-latest
+    env:
+      KEEP_N: ${{ inputs.keep_n || 5 }}
+      DRY_RUN: ${{ github.event_name == 'schedule' && 'false' || inputs.dry_run }}
+    steps:
+      - name: Delete old develop-<sha> tags (keep newest N)
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          repo="${GITHUB_REPOSITORY}"
+          ns="${repo%%/*}"
+          dh_repo="$(echo "${repo##*/}" | sed 's/^container-//')"
+          keep="${KEEP_N}"
+          echo "Docker Hub cleanup: ${ns}/${dh_repo} keep=${keep} dry_run=${DRY_RUN}"
+
+          if [ -z "${DOCKERHUB_USERNAME:-}" ] || [ -z "${DOCKERHUB_TOKEN:-}" ]; then
+            echo "WARN DOCKERHUB_USERNAME/DOCKERHUB_TOKEN not set, deleting nothing."
+            exit 0
+          fi
+
+          jwt=$(curl -sS -X POST -H "Content-Type: application/json" \
+            -d "{\"identifier\": \"${DOCKERHUB_USERNAME}\", \"secret\": \"${DOCKERHUB_TOKEN}\"}" \
+            https://hub.docker.com/v2/auth/token | jq -r '.access_token // empty')
+          if [ -z "$jwt" ]; then
+            echo "WARN Docker Hub login failed, deleting nothing."
+            exit 0
+          fi
+
+          all_tags=$(mktemp)
+          page=1
+          while :; do
+            resp=$(curl -sS -H "Authorization: Bearer ${jwt}" \
+              "https://hub.docker.com/v2/namespaces/${ns}/repositories/${dh_repo}/tags?page_size=100&page=${page}")
+            echo "$resp" | jq -r '.results[]? | "\(.last_updated) \(.name)"' >> "$all_tags" || {
+              echo "WARN Could not list Docker Hub tags, deleting nothing."
+              exit 0
+            }
+            next=$(echo "$resp" | jq -r '.next // empty')
+            [ -z "$next" ] || [ "$next" = "null" ] && break
+            page=$((page + 1))
+            [ "$page" -gt 50 ] && break
+          done
+
+          mapfile -t candidates < <(grep -E ' develop-[0-9a-f]{7,12}$' "$all_tags" | sort || true)
+          total="${#candidates[@]}"
+          echo "Found ${total} develop-<sha> tags."
+          if [ "$total" -le "$keep" ]; then
+            echo "Nothing to prune (total <= keep)."
+            exit 0
+          fi
+
+          delete_count=$((total - keep))
+          echo "Deleting ${delete_count} oldest (keeping newest ${keep})."
+          for ((i = 0; i < delete_count; i++)); do
+            tag=$(echo "${candidates[$i]}" | awk '{print $2}')
+            if ! echo "$tag" | grep -qE '^develop-[0-9a-f]{7,12}$'; then
+              echo "WARN Skipping non-matching tag: $tag"
+              continue
+            fi
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "[DRY RUN] Would delete tag ${tag}"
+              continue
+            fi
+            echo "Deleting tag ${tag}"
+            code=$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
+              -H "Authorization: Bearer ${jwt}" \
+              "https://hub.docker.com/v2/repositories/${ns}/${dh_repo}/tags/${tag}/" || echo "000")
+            if [ "$code" != "204" ] && [ "$code" != "200" ]; then
+              echo "WARN Delete of ${tag} returned HTTP ${code}"
+            fi
+          done

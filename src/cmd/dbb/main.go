@@ -51,6 +51,14 @@ var (
 	globalProgress      *bool
 )
 
+type manualDetail struct {
+	engine   string
+	bytes    int64
+	checksum string
+}
+
+var manualOpDetail manualDetail
+
 type command struct {
 	run       func([]string) int
 	desc      string
@@ -124,6 +132,13 @@ func chownLogFile(path, userName, groupName string) {
 }
 
 func discoverConfig() string {
+	if ok, _ := container.Detect(); ok {
+		for _, p := range container.NfrastackConfigCandidates(os.Getenv) {
+			if _, err := os.Stat(p); err == nil {
+				return p
+			}
+		}
+	}
 	for _, p := range []string{
 		"db-backup.yaml",
 		"db-backup.yml",
@@ -145,6 +160,7 @@ func discoverConfig() string {
 func hasCommercialNotice() bool {
 	return buildEdition == "supporter" && runtimeMode() == "supporter"
 }
+
 func main() {
 	invocation := os.Getenv("INVOCATION_ID") != ""
 	journal := os.Getenv("JOURNAL_STREAM") != ""
@@ -693,12 +709,21 @@ Commands:
 
 	if c, ok := commands[cmd]; ok {
 		start := time.Now()
+		manualOpDetail = manualDetail{}
 		code := c.run(filtered)
 		if op, ok := map[string]string{
 			"restore": "restore", "maintain": "maintenance",
 			"prune": "prune", "archive": "archive", "verify": "verify",
 		}[cmd]; ok {
-			stats.Record(op, stats.TriggerManual, "", code == 0, time.Since(start).Milliseconds(), 1)
+			stats.Record(stats.Outcome{
+				Op: op, Trigger: stats.TriggerManual,
+				Engine:   manualOpDetail.engine,
+				OK:       code == 0,
+				Ms:       time.Since(start).Milliseconds(),
+				Jobs:     1,
+				Bytes:    manualOpDetail.bytes,
+				Checksum: manualOpDetail.checksum,
+			})
 		}
 		os.Exit(code)
 	} else {
@@ -725,7 +750,7 @@ func printFullBanner() {
 	fmt.Println(" 888   888   888     888     d8(  888  o.  )88b   888 . d8(  888  888   .o8  888 `88b.")
 	fmt.Println("o888o o888o o888o   d888b    `Y888\"\"8o 8\"\"888P'   \"888\" `Y888\"\"8o `Y8bod8P' o888o o888o")
 	fmt.Println()
-	fmt.Printf("db-backup %s | build=%s mode=%s | © 2026 Nfrastack https://nfrastack.com\n", Version, buildEdition, runtimeMode())
+	fmt.Printf("%s\n", bannerLine())
 	fmt.Println()
 	fmt.Println("For implementation support and consulting visit: https://nfrastack.com/db-backup")
 	fmt.Println()

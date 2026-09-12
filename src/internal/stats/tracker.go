@@ -20,10 +20,12 @@ type counts struct {
 	success  int
 	failed   int
 	duration time.Duration
+	bytes    int64
+	rawBytes int64
 }
 
 // mark records one run outcome for a database type. duration is the total time the run took (success or failure)
-func (t *Tracker) Mark(dbType string, ok bool, duration time.Duration) {
+func (t *Tracker) Mark(dbType string, ok bool, duration time.Duration, bytes, rawBytes int64) {
 	if t == nil {
 		return
 	}
@@ -50,6 +52,8 @@ func (t *Tracker) Mark(dbType string, ok bool, duration time.Duration) {
 		c.failed++
 	}
 	c.duration += duration
+	c.bytes += bytes
+	c.rawBytes += rawBytes
 }
 
 func NewTracker() *Tracker {
@@ -85,6 +89,7 @@ func (t *Tracker) Snapshot() []JobOutcome {
 	var out []JobOutcome
 	for dbType, buckets := range t.byTs {
 		o := JobOutcome{Type: dbType}
+		var bytes, rawBytes int64
 		for hour, c := range buckets {
 			if hour < minHour {
 				delete(buckets, hour)
@@ -93,7 +98,11 @@ func (t *Tracker) Snapshot() []JobOutcome {
 			o.Success += c.success
 			o.Failed += c.failed
 			o.Duration += c.duration
+			bytes += c.bytes
+			rawBytes += c.rawBytes
 		}
+		o.KB = toKB(bytes)
+		o.RawKB = toKB(rawBytes)
 		if o.Success > 0 || o.Failed > 0 {
 			out = append(out, o)
 		}

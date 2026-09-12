@@ -14,8 +14,33 @@ if [ ! -f "${CONFIG_FILE_PATH}" ]; then
 fi
 
 if [ "$#" -gt 0 ]; then
-    # backup-now <jobname> - run a single job once
-    exec s6-setuidgid "${DBBACKUP_USER}" /app/dbb --container --config "${CONFIG_FILE_PATH}" dump "$1"
+    JOB=""
+    LOG_LEVEL=""
+    for arg in "$@"; do
+        case "${arg,,}" in
+            debug | error | info | none | trace | warn)
+                LOG_LEVEL="${arg,,}"
+            ;;
+            *)
+                if [ -n "${JOB}" ]; then
+                    print_error "Usage: backup-now [jobname] [debug|error|info|none|trace|warn]"
+                    exit 1
+                fi
+                JOB="${arg}"
+            ;;
+        esac
+    done
+
+    LOG_LEVEL_ARGS=()
+    if [ -n "${LOG_LEVEL}" ]; then
+        LOG_LEVEL_ARGS=(--log-level "${LOG_LEVEL}")
+    fi
+
+    if [ -n "${JOB}" ]; then
+        exec s6-setuidgid "${DBBACKUP_USER}" /app/dbb --container --config "${CONFIG_FILE_PATH}" "${LOG_LEVEL_ARGS[@]}" dump "${JOB}"
+    fi
+
+    exec s6-setuidgid "${DBBACKUP_USER}" /app/dbb --container --config "${CONFIG_FILE_PATH}" "${LOG_LEVEL_ARGS[@]}" scheduler --once
 fi
 
 # backup-now - run every job once in sequence

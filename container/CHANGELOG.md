@@ -1,3 +1,8 @@
+## 5.0.2 develop
+
+   ### Added
+      - Container `backup-now` / `backup##-now` allows passing log level as argument eg `backup-now debug`
+
 ## 5.0.1 2026-09-08 <code at nfrastack dot com>
 
    ### Changed

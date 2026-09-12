@@ -5,6 +5,7 @@
 package main
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 )
@@ -19,7 +20,23 @@ var betaRe = regexp.MustCompile(`(b|rc)\d+$`)
 var (
 	commitHRe   = regexp.MustCompile(`(?i)-h([0-9a-f]{7,})$`)
 	devCommitRe = regexp.MustCompile(`(?i)^dev-([0-9a-f]{7,})(?:-dirty)?$`)
+	tagDevRe    = regexp.MustCompile(`(?i)-dev-([0-9a-f]{7,})(?:-dirty)?$`)
 )
+
+func bannerLine() string {
+	s := fmt.Sprintf("db-backup %s | build=%s mode=%s", Version, buildEdition, runtimeMode())
+	if c := displayCommit(); !strings.Contains(Version, c) {
+		s += " commit=" + c
+	}
+	return s + " | © 2026 Nfrastack https://nfrastack.com"
+}
+
+func displayCommit() string {
+	if c := resolveCommit(Version); c != "" {
+		return c
+	}
+	return "unknown"
+}
 
 func resolveChannel(version string) string {
 	if buildChannel != "" {
@@ -59,6 +76,9 @@ func resolveCommit(version string) string {
 		return m[1]
 	}
 	if m := devCommitRe.FindStringSubmatch(trimmed); m != nil {
+		return m[1]
+	}
+	if m := tagDevRe.FindStringSubmatch(trimmed); m != nil {
 		return m[1]
 	}
 	return ""

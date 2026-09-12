@@ -37,7 +37,18 @@ type countingReader struct {
 
 type countingWriter struct{ n int64 }
 
-type OutcomeSink func(dbType, trigger string, maintenance bool, ok bool, duration time.Duration)
+type OutcomeSink func(o Outcome)
+
+type Outcome struct {
+	Engine      string
+	Trigger     string
+	Maintenance bool
+	OK          bool
+	Duration    time.Duration
+	Bytes       int64
+	RawBytes    int64
+	Checksum    string
+}
 
 var (
 	recordOutcome OutcomeSink
@@ -81,10 +92,20 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 	ctx = common.WithLogFields(ctx, jobRunFields(job)...)
 	start := time.Now()
 	outcome := recordOutcome
-
+	var outcomeBytes, outcomeRaw int64
+	outcomeChecksum := ""
 	defer func() {
 		if outcome != nil {
-			outcome(job.Type, trigger, job.Maintenance != "", err == nil, time.Since(start))
+			outcome(Outcome{
+				Engine:      job.Type,
+				Trigger:     trigger,
+				Maintenance: job.Maintenance != "",
+				OK:          err == nil,
+				Duration:    time.Since(start),
+				Bytes:       outcomeBytes,
+				RawBytes:    outcomeRaw,
+				Checksum:    outcomeChecksum,
+			})
 		}
 	}()
 
@@ -457,7 +478,11 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 		} else {
 			JLog(log.LevelDebug, job, "running incremental/differential dump",
 				"status", "debug", "step", "dump", "strategy", strat, "since", since, "chain_depth", chainDepth)
-			if err := database.RunBackup(ctx, mw, database.BackupOptions{
+			incrCtx := ctx
+			if job.InfluxMode != "" {
+				incrCtx = common.WithBackupMode(ctx, job.InfluxMode)
+			}
+			if err := database.RunBackup(incrCtx, mw, database.BackupOptions{
 				Type:       job.Type,
 				Host:       job.Host,
 				Port:       port,
@@ -553,6 +578,10 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 			"status", "warn", "step", "timing")
 	}
 	totalTime := time.Since(opStart)
+	outcomeBytes, outcomeRaw = n, timing.rawSize
+	if csType != checksum.None {
+		outcomeChecksum = job.Checksum
+	}
 
 	fields := []any{
 		"status", "complete",
@@ -599,6 +628,9 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 			}
 		}
 
+		backupProtocol := common.TakeBackupProtocol(
+			common.ProtocolKey(job.Host, port, job.User, dbName))
+
 		sc := &retention.Sidecar{
 			Base:          baseFile,
 			Format:        retention.FormatName,
@@ -616,6 +648,7 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 			DurationMs:      totalTime.Milliseconds(),
 			RawSize:         timing.rawSize,
 			Strategy:        strat,
+			Protocol:        backupProtocol,
 			Type:            job.Type,
 			DB:              dbName,
 			Host:            job.Host,

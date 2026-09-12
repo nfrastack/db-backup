@@ -50,7 +50,7 @@ func cmdScheduler(args []string) int {
 
 	log.SetSession(runner.RandomID(3))
 	if globalContainer || globalSystemd || !isTerminal(os.Stdout) {
-		log.Info("startup", fmt.Sprintf("db-backup %s | build=%s mode=%s | © 2026 Nfrastack https://nfrastack.com", Version, buildEdition, runtimeMode()),
+		log.Info("startup", bannerLine(),
 			"host", runner.Hostname())
 		if note := runtimeNote(); note != "" {
 			log.Info("startup", note)
