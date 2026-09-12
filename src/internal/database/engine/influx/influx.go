@@ -257,7 +257,16 @@ func (d *Dumper) OpenContext(ctx context.Context) error {
 	probe := func() error { return common.TCPDial(d.host, d.port) }
 	connect := func() error { return common.TCPDial(d.host, d.port) }
 	ping := func() error { return d.detect(ctx, explicit) }
-	return common.WithConnectivity(ctx, "influx", d.connCfg, probe, connect, ping)
+	if err := common.WithConnectivity(ctx, "influx", d.connCfg, probe, connect, ping); err != nil {
+		return err
+	}
+	if d.version == 0 {
+		if err := d.detect(ctx, 0); err != nil {
+			log.Debug("influx", "auto-detect failed - proceeding with defaults",
+				"host", d.host, "port", d.port, "error", err.Error())
+		}
+	}
+	return nil
 }
 
 func (d *Dumper) detect(ctx context.Context, explicit int) error {
