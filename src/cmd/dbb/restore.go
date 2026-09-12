@@ -391,17 +391,20 @@ func cmdRestore(args []string) int {
 				compressHint = ""
 			}
 			decoded, oerr := retention.OpenBackup(rc, encMeta, opts, gf, compressHint)
-			rc.Close()
 			if oerr != nil {
+				rc.Close()
 				fmt.Fprintf(os.Stderr, "ERROR: %v\n", oerr)
 				return 1
 			}
 			tmp, err := os.CreateTemp(tmpDir, "chain-*")
 			if err != nil {
+				rc.Close()
 				fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
 				return 1
 			}
-			if _, err := io.Copy(tmp, decoded); err != nil {
+			_, err = io.Copy(tmp, decoded)
+			rc.Close()
+			if err != nil {
 				tmp.Close()
 				fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
 				return 1
