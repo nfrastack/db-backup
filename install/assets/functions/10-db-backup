@@ -561,6 +561,15 @@ backup_couch() {
     if var_true "${DEBUG_BACKUP_COUCH}" ; then debug off; fi
     write_log debug "Databases Found: $(echo ${db_names} | xargs | tr ' ' ',')"
 
+    ## Page size for the paginated dump below. A single unbounded
+    ## `_all_docs?include_docs=true` request can run long enough on a large
+    ## database that CouchDB's own request/memory watermark timeout aborts
+    ## it mid-stream (seen in production on an Obsidian LiveSync vault DB).
+    ## Paging through _changes instead means no single request has to carry
+    ## the whole database. Tunable per-install via COUCH_BACKUP_PAGE_SIZE;
+    ## falls back to a sane default.
+    _couch_page_size="${COUCH_BACKUP_PAGE_SIZE:-2000}"
+
     for db in ${db_names} ; do
         if [ -z "${db}" ] || [ "${db}" = "undefined" ] || [ "${db}" = "null" ] ; then
             write_log warn "[backup_couch] Skipping invalid database name: '${db}'"
@@ -573,16 +582,61 @@ backup_couch() {
         compression
         if var_true "${DEBUG_BACKUP_COUCH}" ; then debug off; fi
         pre_dbbackup "${db}"
-        write_log notice "Dumping CouchDB database: '${db}' ${compression_string}"
+        write_log notice "Dumping CouchDB database: '${db}' ${compression_string} (paginated, ${_couch_page_size} docs/page)"
         if var_true "${DEBUG_BACKUP_COUCH}" ; then debug on; fi
-        ## Export in _bulk_docs format: {"docs":[...]} with _rev stripped for clean restore
-        run_as_user ${play_fair} curl -sSL ${_couch_auth} \
-            "${backup_job_db_host}:${backup_job_db_port}/${db}/_all_docs?include_docs=true" \
-            ${backup_job_extra_opts} \
-            ${backup_job_extra_backup_opts} \
-            | jq -c '{docs: [.rows[].doc | del(._rev, ._revisions)]}' \
-            | ${compress_cmd} | run_as_user tee "${temporary_directory}"/"${backup_job_filename}" > /dev/null
-        exit_code=$((PIPESTATUS[0] + PIPESTATUS[1] + PIPESTATUS[2] + PIPESTATUS[3]))
+
+        ## Export in _bulk_docs format: {"docs":[...]} with _rev stripped for
+        ## clean restore — same on-disk format as before, just assembled from
+        ## paginated _changes fetches instead of one _all_docs request.
+        _couch_ndjson="${temporary_directory}/${backup_job_filename_base}.ndjson"
+        : > "${_couch_ndjson}"
+        _couch_since=0
+        _couch_page=0
+        _couch_total=0
+        _couch_exit=0
+
+        while : ; do
+            _couch_page=$((_couch_page + 1))
+            _couch_resp=$(run_as_user ${play_fair} curl -sSL -f ${_couch_auth} \
+                "${backup_job_db_host}:${backup_job_db_port}/${db}/_changes?include_docs=true&limit=${_couch_page_size}&since=${_couch_since}" \
+                ${backup_job_extra_opts} \
+                ${backup_job_extra_backup_opts})
+            _couch_curl_rc=$?
+
+            if [ "${_couch_curl_rc}" -ne 0 ] || [ -z "${_couch_resp}" ]; then
+                write_log error "[backup_couch] '${db}': page ${_couch_page} fetch failed (since=${_couch_since}, curl exit ${_couch_curl_rc})"
+                _couch_exit=1
+                break
+            fi
+
+            if ! echo "${_couch_resp}" | jq -c '.results[]? | select(.deleted != true) | .doc | del(._rev, ._revisions)' >> "${_couch_ndjson}" ; then
+                write_log error "[backup_couch] '${db}': page ${_couch_page} returned malformed JSON"
+                _couch_exit=1
+                break
+            fi
+
+            _couch_page_count=$(echo "${_couch_resp}" | jq -r '.results | length')
+            _couch_pending=$(echo "${_couch_resp}" | jq -r '.pending // 0')
+            _couch_since=$(echo "${_couch_resp}" | jq -r '.last_seq')
+            _couch_total=$((_couch_total + _couch_page_count))
+            write_log debug "[backup_couch] '${db}': page ${_couch_page} +${_couch_page_count} docs (running total ${_couch_total}), pending ${_couch_pending}"
+
+            if [ "${_couch_pending}" = "0" ] || [ "${_couch_page_count}" -lt "${_couch_page_size}" ]; then
+                break
+            fi
+        done
+
+        if [ "${_couch_exit}" = "0" ]; then
+            jq -c -s '{docs: .}' "${_couch_ndjson}" | ${compress_cmd} | run_as_user tee "${temporary_directory}"/"${backup_job_filename}" > /dev/null
+            exit_code=$((PIPESTATUS[0] + PIPESTATUS[1] + PIPESTATUS[2]))
+            if [ "${exit_code}" = "0" ]; then
+                write_log info "[backup_couch] '${db}': ${_couch_total} docs across ${_couch_page} page(s)"
+            fi
+        else
+            exit_code=1
+        fi
+        run_as_user rm -f "${_couch_ndjson}"
+
         if var_true "${DEBUG_BACKUP_COUCH}" ; then debug off; fi
         check_exit_code backup "${backup_job_filename}"
         timer backup finish

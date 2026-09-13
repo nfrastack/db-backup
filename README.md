@@ -252,12 +252,13 @@ Encryption occurs after compression and the encrypted filename will have a `.gpg
 
 ###### CouchDB
 
-| Variable       | Description                                                                              | Default | `_FILE` |
-| -------------- | ---------------------------------------------------------------------------------------- | ------- | ------- |
-| `DEFAULT_PORT` | CouchDB Port                                                                             | `5984`  | x       |
-| `DEFAULT_NAME` | Database name or comma-separated list. Use `ALL` to back up all non-system databases      |         |         |
+| Variable                  | Description                                                                              | Default | `_FILE` |
+| ------------------------- | ---------------------------------------------------------------------------------------- | ------- | ------- |
+| `DEFAULT_PORT`            | CouchDB Port                                                                             | `5984`  | x       |
+| `DEFAULT_NAME`            | Database name or comma-separated list. Use `ALL` to back up all non-system databases      |         |         |
+| `COUCH_BACKUP_PAGE_SIZE`  | Documents fetched per `_changes` page during backup. Applies to every `couch` job in the container (global, not per-instance). | `2000`  |         |
 
-> System databases (prefixed with `_`) are automatically excluded when using `ALL`. Use `DB_NAME_EXCLUDE` to exclude additional databases.
+> System databases (prefixed with `_`) are automatically excluded when using `ALL`. Use `DB_NAME_EXCLUDE` to exclude additional databases. Backups are paginated via the CouchDB `_changes` feed (see `COUCH_BACKUP_PAGE_SIZE`) so no single request has to carry the whole database.
 
 ###### InfluxDB
 
@@ -559,7 +560,7 @@ Encryption will occur after compression and the resulting filename will have a `
 | `DB01_NAME`        | Database name or comma-separated list. Use `ALL` to back up all non-system databases      |         |         |
 | `DB01_NAME_EXCLUDE`| Comma-separated list of databases to exclude when using `ALL`                             |         |         |
 
-> System databases (prefixed with `_`) are automatically excluded when using `ALL`. Backups are saved as JSON files using the `_all_docs` API. Restore uses `_bulk_docs` to re-import documents.
+> System databases (prefixed with `_`) are automatically excluded when using `ALL`. Backups are saved as JSON files, paginated via the CouchDB `_changes` feed (global page size set via `COUCH_BACKUP_PAGE_SIZE`, see [Default Database Options](#default-database-options)). Restore uses `_bulk_docs` to re-import documents.
 
 ###### InfluxDB
 
