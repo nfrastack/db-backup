@@ -19,7 +19,7 @@ import (
 const (
 	ToolDBBackup = "322"
 )
-const SchemaVersion = 3
+const SchemaVersion = 4
 
 // db type codes jf1
 const (

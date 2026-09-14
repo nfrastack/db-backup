@@ -4,6 +4,7 @@
       - (postgres) additional trace output
 
    ### Changed
+      - Update stats schema to 4
       - (postgres) dump compatibility with `pg_dump` and emit CREATE TABLE|EXTENSION|GRANT|OWNER TO statements
       - (postgres) dump PARTITION OF with one COPY per partition to be compatible with `pg_dump`
       - (postgres) dump largeobjects referenced by OID columns

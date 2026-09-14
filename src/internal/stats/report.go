@@ -156,6 +156,11 @@ func (b *ReportBuilder) encodeJob(job config.JobConfig, outcomes map[string]*Job
 		storage = storageCode(job.Storage.Backend)
 	}
 
+	compLevel := 0
+	if job.Compression != nil {
+		compLevel = job.Compression.Level
+	}
+
 	sched := scheduleCode(job.Schedule)
 
 	maint := flagNo
@@ -197,6 +202,7 @@ func (b *ReportBuilder) encodeJob(job config.JobConfig, outcomes map[string]*Job
 		itoa64(kb),
 		itoa64(rawKB),
 		checksumCode(job.Checksum),
+		itoa(compLevel),
 	}, ":")
 }
 

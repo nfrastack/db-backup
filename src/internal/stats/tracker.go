@@ -14,7 +14,7 @@ type Tracker struct {
 	mu       sync.Mutex
 	now      func() time.Time
 	byTs     map[string]map[int64]*counts
-	activity map[string]map[string]int64
+	activity map[string]map[int64]map[string]int64 // dbType -> hour -> op -> n
 }
 type counts struct {
 	success  int
@@ -68,15 +68,19 @@ func (t *Tracker) RecordActivity(dbType, op string, n int) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.activity == nil {
-		t.activity = make(map[string]map[string]int64)
+		t.activity = make(map[string]map[int64]map[string]int64)
 	}
 	if t.activity[dbType] == nil {
-		t.activity[dbType] = make(map[string]int64)
+		t.activity[dbType] = make(map[int64]map[string]int64)
 	}
-	t.activity[dbType][op] += int64(n)
+	hour := t.now().Unix() / 3600
+	if t.activity[dbType][hour] == nil {
+		t.activity[dbType][hour] = make(map[string]int64)
+	}
+	t.activity[dbType][hour][op] += int64(n)
 }
 
-// returns per database type successes, failures, run duration and retention activity over rolling 24h window
+// per database type successes, failures, run duration and retention activity over rolling 24h window
 func (t *Tracker) Snapshot() []JobOutcome {
 	if t == nil {
 		return nil
@@ -107,11 +111,18 @@ func (t *Tracker) Snapshot() []JobOutcome {
 			out = append(out, o)
 		}
 	}
-	for dbType, ops := range t.activity {
-		o := JobOutcome{Type: dbType}
-		o.Pruned = int(ops["prune"])
-		o.Archived = int(ops["archive"])
-		if o.Pruned > 0 || o.Archived > 0 {
+	for dbType, hours := range t.activity {
+		var pruned, archived int64
+		for hour, ops := range hours {
+			if hour < minHour {
+				delete(hours, hour)
+				continue
+			}
+			pruned += ops["prune"]
+			archived += ops["archive"]
+		}
+		if pruned > 0 || archived > 0 {
+			o := JobOutcome{Type: dbType, Pruned: int(pruned), Archived: int(archived)}
 			if i := outcomeIndex(out, dbType); i >= 0 {
 				out[i].Pruned = o.Pruned
 				out[i].Archived = o.Archived
