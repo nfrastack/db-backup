@@ -9,6 +9,7 @@
       - (postgres) dump PARTITION OF with one COPY per partition to be compatible with `pg_dump`
       - (postgres) dump largeobjects referenced by OID columns
       - (postgres) restore compatibility with pg_restore --clean
+      - (influx) use http as default
 
 
 ## 5.0.2 2026-09-12 <code at nfrastack dot com>

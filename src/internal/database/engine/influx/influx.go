@@ -1367,7 +1367,7 @@ func (d *Dumper) baseURL() string {
 }
 
 func (d *Dumper) scheme() string {
-	if d.tlsCfg != nil {
+	if d.tlsCfg != nil && d.tlsCfg.Enable {
 		return "https"
 	}
 	return "http"
