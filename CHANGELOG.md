@@ -1,11 +1,24 @@
-## 5.0.2 develop
+## 5.0.3b
 
    ### Added
-      - Container `backup-now` / `backup##-now` allows passing log level as argument eg `backup-now debug`
- 
+      - (postgres) additional trace output
+
    ### Changed
-      - more container quality of life config auto detections
-      - progress meter also logs throughput to file log on tty runs
+      - (postgres) dump compatibility with `pg_dump` and emit CREATE TABLE|EXTENSION|GRANT|OWNER TO statements
+      - (postgres) dump PARTITION OF with one COPY per partition to be compatible with `pg_dump`
+      - (postgres) dump largeobjects referenced by OID columns
+      - (postgres) restore compatibility with pg_restore --clean
+
+
+## 5.0.2 2026-09-12 <code at nfrastack dot com>
+
+   ### Added
+      - (container) `backup-now` / `backup##-now` allows passing log level as argument eg `backup-now debug`
+      - influx2 incremental/differential support
+      - progress meter logs throughput to file on tty runs
+
+   ### Changed
+      - (container) quality of life config auto detections
       - emit version on dump / restore one shots
       - update stats schema to 3
       - update sidecar schema to 2
@@ -21,7 +34,8 @@
          - rewrite restore functionality to support both modes
       - (mysql) additional tracing output
       - (mssql) additional tracing output
-      - (redis) additional tracing output, and restore pexpireat routines
+      - (redis) additional tracing output
+      - (redis) restore pexpireat routines
       - (sqlite) additional tracing output
       - (postgres) additional tracing output
 
