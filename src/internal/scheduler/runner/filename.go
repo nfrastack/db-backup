@@ -6,6 +6,7 @@ package runner
 
 import (
 	"fmt"
+	"hash/fnv"
 	"os"
 	"path/filepath"
 	"strings"
@@ -59,11 +60,23 @@ func dbToken(job config.JobConfig, dbName string) string {
 	if strings.EqualFold(dbName, "__globals__") {
 		return "globals"
 	}
+	if hasAllToken(strings.Split(dbName, ",")) {
+		return "all"
+	}
 	if dbName != "" && !strings.EqualFold(dbName, "ALL") {
 		dbName = strings.ReplaceAll(dbName, ",", "_")
 		dbName = strings.ReplaceAll(dbName, "-", "_")
 	}
 	return dbName
+}
+
+func dbsToken(job config.JobConfig, dbName string) string {
+	names := dbName
+	if job.Databases != nil && len(job.Databases.Include) > 0 {
+		names = strings.Join(job.Databases.Include, ",")
+	}
+	tok := strings.NewReplacer(",", "_", "/", "_", "-", "_").Replace(names)
+	return guardToken(tok)
 }
 
 func expandFilename(tmpl string, job config.JobConfig, dbName, strat string, now time.Time) string {
@@ -80,6 +93,7 @@ func expandFilename(tmpl string, job config.JobConfig, dbName, strat string, now
 	return strings.NewReplacer(
 		"%type%", job.Type,
 		"%db%", dbToken(job, dbName),
+		"%dbs%", dbsToken(job, dbName),
 		"%host_raw%", job.Host,
 		"%host%", hostSanitizer.Replace(job.Host),
 		"%job%", job.Name,
@@ -92,4 +106,15 @@ func expandFilename(tmpl string, job config.JobConfig, dbName, strat string, now
 		"%strategy%", strat,
 		"%%", "%",
 	).Replace(tmpl)
+}
+
+func guardToken(tok string) string {
+	const max = 120
+	if len(tok) <= max {
+		return tok
+	}
+	sum := fnv.New32a()
+	sum.Write([]byte(tok))
+	r := []rune(tok)
+	return string(r[:96]) + "-" + fmt.Sprintf("%08x", sum.Sum32())
 }

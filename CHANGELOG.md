@@ -2,9 +2,13 @@
 
    ### Added
       - (postgres) additional trace output
+      - add %dbs% filename tag to expand database names when ALL+split_db:false
 
    ### Changed
-      - Update stats schema to 4
+      - change ALL database backups with split_db: false to be filename _all_
+
+   ### Changed
+      - update stats schema to 4
       - (postgres) dump compatibility with `pg_dump` and emit CREATE TABLE|EXTENSION|GRANT|OWNER TO statements
       - (postgres) dump PARTITION OF with one COPY per partition to be compatible with `pg_dump`
       - (postgres) dump largeobjects referenced by OID columns

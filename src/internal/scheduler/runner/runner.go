@@ -243,7 +243,9 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 				"status", "warn", "step", "list")
 			return nil
 		}
-		job.Databases.Include = kept
+		cp := *job.Databases
+		cp.Include = kept
+		job.Databases = &cp
 	}
 
 	configuredStrat := strat
