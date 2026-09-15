@@ -7,6 +7,7 @@
    ### Changed
       - change ALL database backups with split_db: false to be filename _all_
       - split_db revert to default true
+      - (container) s3 tls configuration properly generates in config
 
    ### Changed
       - update stats schema to 4

@@ -140,7 +140,7 @@ dbbackup_generate_configuration() {
             if [ -n "${DEFAULT_S3_BUCKET}" ]; then DBB_V="${DEFAULT_S3_BUCKET}"; yq -i '.defaults.storage.bucket = strenv(DBB_V)' "${CONFIG_FILE_PATH}"; fi
             if [ -n "${DEFAULT_S3_PATH}" ]; then DBB_V="${DEFAULT_S3_PATH}"; yq -i '.defaults.storage.path = strenv(DBB_V)' "${CONFIG_FILE_PATH}"; fi
             if [ -n "${DEFAULT_S3_REGION}" ]; then DBB_V="${DEFAULT_S3_REGION}"; yq -i '.defaults.storage.region = strenv(DBB_V)' "${CONFIG_FILE_PATH}"; fi
-            if [ -n "${DEFAULT_S3_HOST}" ]; then DBB_V="${DEFAULT_S3_HOST}"; if [ -n "${DEFAULT_S3_PROTOCOL}" ]; then DBB_V="${DEFAULT_S3_PROTOCOL}://${DEFAULT_S3_HOST}"; fi; yq -i '.defaults.storage.endpoint = strenv(DBB_V)' "${CONFIG_FILE_PATH}"; fi
+            if [ -n "${DEFAULT_S3_HOST}" ]; then DBB_V="${DEFAULT_S3_HOST}"; case "${DBB_V}" in *://*) ;; *) if [ -n "${DEFAULT_S3_PROTOCOL}" ]; then DBB_V="${DEFAULT_S3_PROTOCOL}://${DEFAULT_S3_HOST}"; else DBB_V="https://${DEFAULT_S3_HOST}"; fi;; esac; yq -i '.defaults.storage.endpoint = strenv(DBB_V)' "${CONFIG_FILE_PATH}"; fi
             if [ -n "${DEFAULT_S3_KEY_ID}" ]; then DBB_V="${DEFAULT_S3_KEY_ID}"; yq -i '.defaults.storage.key_id = strenv(DBB_V)' "${CONFIG_FILE_PATH}"; fi
             if [ -n "${DEFAULT_S3_KEY_SECRET}" ]; then DBB_V="${DEFAULT_S3_KEY_SECRET}"; yq -i '.defaults.storage.key_secret = strenv(DBB_V)' "${CONFIG_FILE_PATH}"; fi
             if [ -n "${DEFAULT_S3_CERT_CA_FILE}" ] || [ -n "${DEFAULT_S3_CERT_SKIP_VERIFY}" ]; then
@@ -1010,9 +1010,16 @@ dbbackup_generate_configuration() {
                     fi
                     if [ -n "${s3_host}" ]; then
                         DBB_V="${s3_host}"
-                        if [ -n "${s3_protocol}" ]; then
-                            DBB_V="${s3_protocol}://${s3_host}"
-                        fi
+                        case "${DBB_V}" in
+                            *://*) ;;
+                            *)
+                                if [ -n "${s3_protocol}" ]; then
+                                    DBB_V="${s3_protocol}://${s3_host}"
+                                else
+                                    DBB_V="https://${s3_host}"
+                                fi
+                            ;;
+                        esac
                         yq -i '.jobs[strenv(DBB_JNUM) | tonumber].storage.endpoint = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
                     fi
                     if [ -n "${s3_key_id}" ]; then
