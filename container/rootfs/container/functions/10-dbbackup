@@ -59,7 +59,7 @@ dbbackup_generate_configuration() {
         DEFAULT_GCS_BUCKET DEFAULT_GCS_KEY DEFAULT_GCS_PATH DEFAULT_GZ_RSYNCABLE \
         DEFAULT_LOG_LEVEL DEFAULT_MAINTENANCE DEFAULT_MAINTENANCE_ANALYZE DEFAULT_MAINTENANCE_CHECK_TABLES DEFAULT_MAINTENANCE_COMPACT \
         DEFAULT_MAINTENANCE_MEMORY_PURGE DEFAULT_MAINTENANCE_OPTIMIZE DEFAULT_MAINTENANCE_REINDEX DEFAULT_MAINTENANCE_SCHEDULE DEFAULT_MAINTENANCE_VACUUM \
-        DEFAULT_S3_BUCKET DEFAULT_S3_HOST DEFAULT_S3_KEY_ID DEFAULT_S3_KEY_SECRET DEFAULT_S3_PATH DEFAULT_S3_PROTOCOL DEFAULT_S3_REGION \
+        DEFAULT_S3_BUCKET DEFAULT_S3_CERT_CA_FILE DEFAULT_S3_CERT_SKIP_VERIFY DEFAULT_S3_HOST DEFAULT_S3_KEY_ID DEFAULT_S3_KEY_SECRET DEFAULT_S3_PATH DEFAULT_S3_PROTOCOL DEFAULT_S3_REGION \
         DEFAULT_TLS_CA_FILE DEFAULT_TLS_CERT_FILE DEFAULT_TLS_ENABLE DEFAULT_TLS_KEY_FILE DEFAULT_TLS_VERIFY DEFAULT_TLS_VERSION \
         DEFAULT_WEBDAV_PASS DEFAULT_WEBDAV_PATH DEFAULT_WEBDAV_URL DEFAULT_WEBDAV_USER; do
         _dbbackup_dnorm "${_dbb_d}"
@@ -143,6 +143,24 @@ dbbackup_generate_configuration() {
             if [ -n "${DEFAULT_S3_HOST}" ]; then DBB_V="${DEFAULT_S3_HOST}"; if [ -n "${DEFAULT_S3_PROTOCOL}" ]; then DBB_V="${DEFAULT_S3_PROTOCOL}://${DEFAULT_S3_HOST}"; fi; yq -i '.defaults.storage.endpoint = strenv(DBB_V)' "${CONFIG_FILE_PATH}"; fi
             if [ -n "${DEFAULT_S3_KEY_ID}" ]; then DBB_V="${DEFAULT_S3_KEY_ID}"; yq -i '.defaults.storage.key_id = strenv(DBB_V)' "${CONFIG_FILE_PATH}"; fi
             if [ -n "${DEFAULT_S3_KEY_SECRET}" ]; then DBB_V="${DEFAULT_S3_KEY_SECRET}"; yq -i '.defaults.storage.key_secret = strenv(DBB_V)' "${CONFIG_FILE_PATH}"; fi
+            if [ -n "${DEFAULT_S3_CERT_CA_FILE}" ] || [ -n "${DEFAULT_S3_CERT_SKIP_VERIFY}" ]; then
+                yq -i '.defaults.storage.tls = {"enable": true}' "${CONFIG_FILE_PATH}"
+                if [ -n "${DEFAULT_S3_CERT_CA_FILE}" ]; then DBB_V="${DEFAULT_S3_CERT_CA_FILE}"; yq -i '.defaults.storage.tls.ca_file = strenv(DBB_V)' "${CONFIG_FILE_PATH}"; fi
+                if [ -n "${DEFAULT_S3_CERT_SKIP_VERIFY}" ]; then
+                    case "${DEFAULT_S3_CERT_SKIP_VERIFY,,}" in
+                        true | 1 | yes )
+                            yq -i '.defaults.storage.tls.verify = false' "${CONFIG_FILE_PATH}"
+                        ;;
+                        false | 0 | no )
+                            yq -i '.defaults.storage.tls.verify = true' "${CONFIG_FILE_PATH}"
+                        ;;
+                        * )
+                            print_warn "DEFAULT_S3_CERT_SKIP_VERIFY=${DEFAULT_S3_CERT_SKIP_VERIFY} is not a valid boolean - defaulting to verify=true"
+                            yq -i '.defaults.storage.tls.verify = true' "${CONFIG_FILE_PATH}"
+                        ;;
+                    esac
+                fi
+            fi
         ;;
         webdav )
             if [ -n "${DEFAULT_WEBDAV_URL}" ]; then DBB_V="${DEFAULT_WEBDAV_URL}"; yq -i '.defaults.storage.url = strenv(DBB_V)' "${CONFIG_FILE_PATH}"; fi
@@ -662,6 +680,8 @@ dbbackup_generate_configuration() {
         local s3_protocol="$(_dbbackup_getv "${inst}" S3_PROTOCOL "${DEFAULT_S3_PROTOCOL}")"
         local s3_key_id="$(_dbbackup_getv "${inst}" S3_KEY_ID "${DEFAULT_S3_KEY_ID}")"
         local s3_key_secret="$(_dbbackup_getv "${inst}" S3_KEY_SECRET "${DEFAULT_S3_KEY_SECRET}")"
+        local s3_cert_ca_file="$(_dbbackup_getv "${inst}" S3_CERT_CA_FILE "${DEFAULT_S3_CERT_CA_FILE}")"
+        local s3_cert_skip_verify="$(_dbbackup_getv "${inst}" S3_CERT_SKIP_VERIFY "${DEFAULT_S3_CERT_SKIP_VERIFY}")"
 
         # storage: webdav
         local webdav_url="$(_dbbackup_getv "${inst}" WEBDAV_URL "${DEFAULT_WEBDAV_URL}")"
@@ -1004,22 +1024,28 @@ dbbackup_generate_configuration() {
                         yq -i '.jobs[strenv(DBB_JNUM) | tonumber].storage.key_secret = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
                     fi
                     local s3_tls_ca s3_tls_skip
-                    s3_tls_ca="$(_dbbackup_explicit_env "${inst}" S3_CERT_CA_FILE)"
-                    s3_tls_skip="$(_dbbackup_explicit_env "${inst}" S3_CERT_SKIP_VERIFY)"; s3_tls_skip="${s3_tls_skip,,}"
+                    s3_tls_ca="${s3_cert_ca_file}"
+                    s3_tls_skip="${s3_cert_skip_verify,,}"
                     if [ -n "$s3_tls_ca" ] || [ -n "$s3_tls_skip" ]; then
-                        yq -i '.jobs[strenv(DBB_JNUM) | tonumber].tls = {"enable": true}' "${CONFIG_FILE_PATH}"
+                        yq -i '.jobs[strenv(DBB_JNUM) | tonumber].storage.tls = {"enable": true}' "${CONFIG_FILE_PATH}"
                         if [ -n "$s3_tls_ca" ]; then
                             DBB_V="$s3_tls_ca"
-                            yq -i '.jobs[strenv(DBB_JNUM) | tonumber].tls.ca_file = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+                            yq -i '.jobs[strenv(DBB_JNUM) | tonumber].storage.tls.ca_file = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
                         fi
-                        case "${s3_tls_skip,,}" in
-                            false | 0 |no )
-                                yq -i '.jobs[strenv(DBB_JNUM) | tonumber].tls.verify = true' "${CONFIG_FILE_PATH}"
-                            ;;
-                            * )
-                                yq -i '.jobs[strenv(DBB_JNUM) | tonumber].tls.verify = false' "${CONFIG_FILE_PATH}"
-                            ;;
-                        esac
+                        if [ -n "$s3_tls_skip" ]; then
+                            case "${s3_tls_skip,,}" in
+                                true | 1 | yes )
+                                    yq -i '.jobs[strenv(DBB_JNUM) | tonumber].storage.tls.verify = false' "${CONFIG_FILE_PATH}"
+                                ;;
+                                false | 0 | no )
+                                    yq -i '.jobs[strenv(DBB_JNUM) | tonumber].storage.tls.verify = true' "${CONFIG_FILE_PATH}"
+                                ;;
+                                * )
+                                    print_warn "DB${inst}_S3_CERT_SKIP_VERIFY=${s3_cert_skip_verify} is not a valid boolean - defaulting to verify=true"
+                                    yq -i '.jobs[strenv(DBB_JNUM) | tonumber].storage.tls.verify = true' "${CONFIG_FILE_PATH}"
+                                ;;
+                            esac
+                        fi
                     fi
                 ;;
                 webdav )
@@ -1495,6 +1521,8 @@ _dbbackup_warn_bare_aliases() {
                     FILESYSTEM_PERMISSION \
                     FILESYSTEM_PATH_PERMISSION \
                     S3_BUCKET \
+                    S3_CERT_CA_FILE \
+                    S3_CERT_SKIP_VERIFY \
                     S3_PATH \
                     S3_REGION \
                     S3_HOST \
