@@ -27,6 +27,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nfrastack/db-backup/internal/log"
 	"github.com/nfrastack/db-backup/internal/storage"
 )
 
@@ -69,6 +70,8 @@ type azureBlobProps struct {
 }
 
 func (s *azureStorage) Delete(ctx context.Context, filePath string) error {
+	blob := s.blobName(filePath)
+	dst := s.account + "/" + s.container + "/" + blob
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
@@ -78,12 +81,17 @@ func (s *azureStorage) Delete(ctx context.Context, filePath string) error {
 			case <-time.After(time.Duration(500*(1<<uint(attempt-1))) * time.Millisecond):
 			}
 		}
-		resp, err := s.do(ctx, http.MethodDelete, s.blobURL(s.blobName(filePath)), nil, 0)
+		log.Trace("azure", "delete attempt",
+			"account", s.account, "container", s.container, "blob", blob, "attempt", attempt, "status", "trace")
+		resp, err := s.do(ctx, http.MethodDelete, s.blobURL(blob), nil, 0)
 		if err != nil {
 			if ctx.Err() != nil {
 				return err
 			}
 			lastErr = err
+			log.Debug("azure", "delete attempt failed, retrying",
+				"account", s.account, "container", s.container, "blob", blob,
+				"attempt", attempt, "error", err.Error(), "status", "debug")
 			continue
 		}
 		if resp.StatusCode == http.StatusAccepted || resp.StatusCode == http.StatusNoContent {
@@ -93,17 +101,22 @@ func (s *azureStorage) Delete(ctx context.Context, filePath string) error {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		resp.Body.Close()
 		if !isRetryableStatus(resp.StatusCode) {
-			return fmt.Errorf("azure: delete: %s: %s", resp.Status, strings.TrimSpace(string(b)))
+			return fmt.Errorf("azure: delete %s: %s: %s", dst, resp.Status, strings.TrimSpace(string(b)))
 		}
-		lastErr = fmt.Errorf("azure: delete: %s: %s", resp.Status, strings.TrimSpace(string(b)))
+		lastErr = fmt.Errorf("azure: delete %s: %s: %s", dst, resp.Status, strings.TrimSpace(string(b)))
+		log.Debug("azure", "delete attempt failed, retrying",
+			"account", s.account, "container", s.container, "blob", blob,
+			"attempt", attempt, "error", lastErr.Error(), "status", "debug")
 	}
 	if lastErr != nil {
 		return lastErr
 	}
-	return fmt.Errorf("azure: delete: failed after retries")
+	return fmt.Errorf("azure: delete %s: failed after retries", dst)
 }
 
 func (s *azureStorage) Download(ctx context.Context, filePath string) (io.ReadCloser, int64, error) {
+	blob := s.blobName(filePath)
+	dst := s.account + "/" + s.container + "/" + blob
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
@@ -113,12 +126,17 @@ func (s *azureStorage) Download(ctx context.Context, filePath string) (io.ReadCl
 			case <-time.After(time.Duration(500*(1<<uint(attempt-1))) * time.Millisecond):
 			}
 		}
-		resp, err := s.do(ctx, http.MethodGet, s.blobURL(s.blobName(filePath)), nil, 0)
+		log.Trace("azure", "download attempt",
+			"account", s.account, "container", s.container, "blob", blob, "attempt", attempt, "status", "trace")
+		resp, err := s.do(ctx, http.MethodGet, s.blobURL(blob), nil, 0)
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil, 0, err
 			}
 			lastErr = err
+			log.Debug("azure", "download attempt failed, retrying",
+				"account", s.account, "container", s.container, "blob", blob,
+				"attempt", attempt, "error", err.Error(), "status", "debug")
 			continue
 		}
 		if resp.StatusCode == http.StatusOK {
@@ -127,14 +145,17 @@ func (s *azureStorage) Download(ctx context.Context, filePath string) (io.ReadCl
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		resp.Body.Close()
 		if !isRetryableStatus(resp.StatusCode) {
-			return nil, 0, fmt.Errorf("azure: download: %s: %s", resp.Status, strings.TrimSpace(string(b)))
+			return nil, 0, fmt.Errorf("azure: download %s: %s: %s", dst, resp.Status, strings.TrimSpace(string(b)))
 		}
-		lastErr = fmt.Errorf("azure: download: %s: %s", resp.Status, strings.TrimSpace(string(b)))
+		lastErr = fmt.Errorf("azure: download %s: %s: %s", dst, resp.Status, strings.TrimSpace(string(b)))
+		log.Debug("azure", "download attempt failed, retrying",
+			"account", s.account, "container", s.container, "blob", blob,
+			"attempt", attempt, "error", lastErr.Error(), "status", "debug")
 	}
 	if lastErr != nil {
 		return nil, 0, lastErr
 	}
-	return nil, 0, fmt.Errorf("azure: download: failed after retries")
+	return nil, 0, fmt.Errorf("azure: download %s: failed after retries", dst)
 }
 
 func (s *azureStorage) List(ctx context.Context, prefix string) ([]storage.Entry, error) {
@@ -143,6 +164,7 @@ func (s *azureStorage) List(ctx context.Context, prefix string) ([]storage.Entry
 
 	var entries []storage.Entry
 	marker := ""
+	dst := s.account + "/" + s.container
 	for {
 		u := s.containerURL() + "?restype=container&comp=list&prefix=" + url.QueryEscape(searchPrefix)
 		if marker != "" {
@@ -158,11 +180,16 @@ func (s *azureStorage) List(ctx context.Context, prefix string) ([]storage.Entry
 				case <-time.After(time.Duration(500*(1<<uint(attempt-1))) * time.Millisecond):
 				}
 			}
+			log.Trace("azure", "list attempt",
+				"account", s.account, "container", s.container, "prefix", searchPrefix, "attempt", attempt, "status", "trace")
 			resp, lastErr = s.do(ctx, http.MethodGet, u, nil, 0)
 			if lastErr != nil {
 				if ctx.Err() != nil {
 					return nil, lastErr
 				}
+				log.Debug("azure", "list attempt failed, retrying",
+					"account", s.account, "container", s.container, "prefix", searchPrefix,
+					"attempt", attempt, "error", lastErr.Error(), "status", "debug")
 				continue
 			}
 			if resp.StatusCode == http.StatusOK {
@@ -171,11 +198,14 @@ func (s *azureStorage) List(ctx context.Context, prefix string) ([]storage.Entry
 			if !isRetryableStatus(resp.StatusCode) {
 				b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 				resp.Body.Close()
-				return nil, fmt.Errorf("azure: list: %s: %s", resp.Status, strings.TrimSpace(string(b)))
+				return nil, fmt.Errorf("azure: list %s: %s: %s", dst, resp.Status, strings.TrimSpace(string(b)))
 			}
 			b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 			resp.Body.Close()
-			lastErr = fmt.Errorf("azure: list: %s: %s", resp.Status, strings.TrimSpace(string(b)))
+			lastErr = fmt.Errorf("azure: list %s: %s: %s", dst, resp.Status, strings.TrimSpace(string(b)))
+			log.Debug("azure", "list attempt failed, retrying",
+				"account", s.account, "container", s.container, "prefix", searchPrefix,
+				"attempt", attempt, "error", lastErr.Error(), "status", "debug")
 		}
 		if lastErr != nil && resp == nil {
 			return nil, lastErr
@@ -184,7 +214,7 @@ func (s *azureStorage) List(ctx context.Context, prefix string) ([]storage.Entry
 			if lastErr != nil {
 				return nil, lastErr
 			}
-			return nil, fmt.Errorf("azure: list: failed after retries")
+			return nil, fmt.Errorf("azure: list %s: failed after retries", dst)
 		}
 		var result azureListBlobs
 		if err := xml.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -226,6 +256,9 @@ func (s *azureStorage) Upload(ctx context.Context, filePath string, r io.Reader)
 	}
 
 	if n <= azureSingleLimit {
+		dst := s.account + "/" + s.container + "/" + blob
+		log.Debug("azure", "uploading blob",
+			"account", s.account, "container", s.container, "blob", blob, "bytes", n, "status", "debug")
 		var lastErr error
 		for attempt := 0; attempt < 3; attempt++ {
 			if attempt > 0 {
@@ -235,32 +268,45 @@ func (s *azureStorage) Upload(ctx context.Context, filePath string, r io.Reader)
 				case <-time.After(time.Duration(500*(1<<uint(attempt-1))) * time.Millisecond):
 				}
 			}
-			if _, err := spool.Seek(0, io.SeekStart); err != nil {
-				return 0, fmt.Errorf("azure spool rewind: %w", err)
+			body, err := os.Open(spoolPath)
+			if err != nil {
+				return 0, fmt.Errorf("azure: upload %s: reopen spool: %w", dst, err)
 			}
-			resp, err := s.do(ctx, http.MethodPut, s.blobURL(blob), spool, n)
+			log.Trace("azure", "upload attempt",
+				"account", s.account, "container", s.container, "blob", blob, "attempt", attempt, "status", "trace")
+			resp, err := s.do(ctx, http.MethodPut, s.blobURL(blob), body, n)
+			_ = body.Close()
 			if err != nil {
 				if ctx.Err() != nil {
 					return 0, err
 				}
 				lastErr = err
+				log.Debug("azure", "upload attempt failed, retrying",
+					"account", s.account, "container", s.container, "blob", blob,
+					"attempt", attempt, "error", err.Error(), "status", "debug")
 				continue
 			}
 			if resp.StatusCode == http.StatusCreated {
 				resp.Body.Close()
+				log.Debug("azure", "upload complete",
+					"account", s.account, "container", s.container, "blob", blob,
+					"bytes", n, "attempts", attempt+1, "status", "debug")
 				return n, nil
 			}
 			b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 			resp.Body.Close()
 			if !isRetryableStatus(resp.StatusCode) {
-				return 0, fmt.Errorf("azure: upload: %s: %s", resp.Status, strings.TrimSpace(string(b)))
+				return 0, fmt.Errorf("azure: upload %s: %s: %s", dst, resp.Status, strings.TrimSpace(string(b)))
 			}
-			lastErr = fmt.Errorf("azure: upload: %s: %s", resp.Status, strings.TrimSpace(string(b)))
+			lastErr = fmt.Errorf("azure: upload %s: %s: %s", dst, resp.Status, strings.TrimSpace(string(b)))
+			log.Debug("azure", "upload attempt failed, retrying",
+				"account", s.account, "container", s.container, "blob", blob,
+				"attempt", attempt, "error", lastErr.Error(), "status", "debug")
 		}
 		if lastErr != nil {
 			return 0, lastErr
 		}
-		return 0, fmt.Errorf("azure: upload: failed after retries")
+		return 0, fmt.Errorf("azure: upload %s: failed after retries", dst)
 	}
 
 	return s.uploadBlockBlob(ctx, blob, spool, n)
@@ -328,11 +374,24 @@ func newAzureStorage(opts map[string]string) (storage.Storage, error) {
 		client = storage.TLSHTTPClient(opts)
 	}
 
+	endpoint := strings.TrimRight(strings.TrimSpace(opts["endpoint"]), "/")
+	if endpoint != "" {
+		if !strings.Contains(endpoint, "://") {
+			endpoint = "https://" + endpoint
+		}
+		if u, err := url.Parse(endpoint); err != nil || u.Host == "" {
+			return nil, fmt.Errorf("azure: invalid endpoint %q", opts["endpoint"])
+		}
+	}
+
+	log.Debug("azure", "backend initialised",
+		"account", account, "container", container, "endpoint", endpoint,
+		"tls_verify", opts["tls_verify"], "status", "debug")
 	return &azureStorage{
 		account:   account,
 		container: container,
 		prefix:    strings.TrimPrefix(opts["path"], "/"),
-		endpoint:  strings.TrimRight(opts["endpoint"], "/"),
+		endpoint:  endpoint,
 		key:       decoded,
 		client:    client,
 	}, nil
@@ -354,9 +413,6 @@ func (s *azureStorage) sign(req *http.Request, contentLength int64) {
 	}
 
 	contentType := req.Header.Get("Content-Type")
-	if contentType == "" {
-		contentType = ""
-	}
 
 	contentLengthStr := ""
 	if contentLength > 0 {
@@ -374,7 +430,7 @@ func (s *azureStorage) sign(req *http.Request, contentLength int64) {
 	}
 	sort.Strings(xms)
 
-	resource := "/" + s.account + req.URL.Path
+	resource := azureCanonicalResource(s.account, req.URL.Path, req.URL.Query())
 
 	stringToSign := req.Method + "\n" +
 		"\n" +
@@ -390,6 +446,9 @@ func (s *azureStorage) sign(req *http.Request, contentLength int64) {
 		"\n" +
 		strings.Join(xms, "\n") + "\n" +
 		resource
+	log.Trace("azure", "sharedkey string to sign",
+		"account", s.account, "method", req.Method, "resource", resource,
+		"string_to_sign", stringToSign, "status", "trace")
 
 	mac := hmac.New(sha256.New, s.key)
 	mac.Write([]byte(stringToSign))
@@ -397,9 +456,34 @@ func (s *azureStorage) sign(req *http.Request, contentLength int64) {
 	req.Header.Set("Authorization", "SharedKey "+s.account+":"+sig)
 }
 
+func azureCanonicalResource(account, requestPath string, query url.Values) string {
+	var sb strings.Builder
+	sb.WriteString("/" + account + requestPath)
+	lowered := make(map[string][]string, len(query))
+	var names []string
+	for k, vs := range query {
+		lk := strings.ToLower(k)
+		switch lk {
+		case "comp", "blockid", "restype":
+			if _, ok := lowered[lk]; !ok {
+				names = append(names, lk)
+			}
+			lowered[lk] = append(lowered[lk], vs...)
+		}
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		sb.WriteString("\n" + n + ":" + strings.Join(lowered[n], ","))
+	}
+	return sb.String()
+}
+
 func (s *azureStorage) uploadBlockBlob(ctx context.Context, blob string, spool *os.File, size int64) (int64, error) {
 	var blockIDs []string
 	blockIndex := 0
+	dst := s.account + "/" + s.container + "/" + blob
+	log.Debug("azure", "uploading blob in blocks",
+		"account", s.account, "container", s.container, "blob", blob, "bytes", size, "status", "debug")
 	buf := make([]byte, azureBlockSize)
 	for offset := int64(0); offset < size; {
 		if _, err := spool.Seek(offset, io.SeekStart); err != nil {
@@ -431,6 +515,9 @@ func (s *azureStorage) uploadBlockBlob(ctx context.Context, blob string, spool *
 					return 0, err
 				}
 				lastErr = err
+				log.Debug("azure", "block upload attempt failed, retrying",
+					"account", s.account, "container", s.container, "blob", blob,
+					"block", blockIndex, "attempt", attempt, "error", err.Error(), "status", "debug")
 				continue
 			}
 			io.Copy(io.Discard, resp.Body)
@@ -440,9 +527,12 @@ func (s *azureStorage) uploadBlockBlob(ctx context.Context, blob string, spool *
 				break
 			}
 			if !isRetryableStatus(resp.StatusCode) {
-				return 0, fmt.Errorf("azure: put block: %s", resp.Status)
+				return 0, fmt.Errorf("azure: put block %s: %s", dst, resp.Status)
 			}
-			lastErr = fmt.Errorf("azure: put block: %s", resp.Status)
+			lastErr = fmt.Errorf("azure: put block %s: %s", dst, resp.Status)
+			log.Debug("azure", "block upload attempt failed, retrying",
+				"account", s.account, "container", s.container, "blob", blob,
+				"block", blockIndex, "attempt", attempt, "error", lastErr.Error(), "status", "debug")
 		}
 		if lastErr != nil {
 			return 0, lastErr
@@ -477,6 +567,9 @@ func (s *azureStorage) uploadBlockBlob(ctx context.Context, blob string, spool *
 			if ctx.Err() != nil {
 				return 0, lastErr
 			}
+			log.Debug("azure", "block list commit attempt failed, retrying",
+				"account", s.account, "container", s.container, "blob", blob,
+				"attempt", attempt, "error", lastErr.Error(), "status", "debug")
 			continue
 		}
 		if resp.StatusCode == http.StatusCreated {
@@ -485,22 +578,28 @@ func (s *azureStorage) uploadBlockBlob(ctx context.Context, blob string, spool *
 		if !isRetryableStatus(resp.StatusCode) {
 			b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 			resp.Body.Close()
-			return 0, fmt.Errorf("azure: commit block list: %s: %s", resp.Status, strings.TrimSpace(string(b)))
+			return 0, fmt.Errorf("azure: commit block list %s: %s: %s", dst, resp.Status, strings.TrimSpace(string(b)))
 		}
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		resp.Body.Close()
-		lastErr = fmt.Errorf("azure: commit block list: %s: %s", resp.Status, strings.TrimSpace(string(b)))
+		lastErr = fmt.Errorf("azure: commit block list %s: %s: %s", dst, resp.Status, strings.TrimSpace(string(b)))
+		log.Debug("azure", "block list commit attempt failed, retrying",
+			"account", s.account, "container", s.container, "blob", blob,
+			"attempt", attempt, "error", lastErr.Error(), "status", "debug")
 	}
 	if lastErr != nil && resp == nil {
 		return 0, lastErr
 	}
 	if resp == nil {
-		return 0, fmt.Errorf("azure: commit block list: failed after retries")
+		return 0, fmt.Errorf("azure: commit block list %s: failed after retries", dst)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusCreated {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return 0, fmt.Errorf("azure: commit block list: %s: %s", resp.Status, strings.TrimSpace(string(b)))
+		return 0, fmt.Errorf("azure: commit block list %s: %s: %s", dst, resp.Status, strings.TrimSpace(string(b)))
 	}
+	log.Debug("azure", "block upload complete",
+		"account", s.account, "container", s.container, "blob", blob,
+		"bytes", size, "blocks", blockIndex, "status", "debug")
 	return size, nil
 }
