@@ -3,11 +3,18 @@
    ### Added
       - (postgres) additional trace output
       - add %dbs% filename tag to expand database names when ALL+split_db:false
+      - (storage/webdav) add additional debug and trace verbosity
+      - (storage/s3) add aditional debug and trace verbosity
+      - (storage/azure) add additional debug and trace verbosity
 
    ### Changed
       - change ALL database backups with split_db: false to be filename _all_
       - split_db revert to default true
       - (container) s3 tls configuration properly generates in config
+      - (storage/webdav) open new handle on each connection attempt
+      - (storage/azure) open new handle on each connection attempt
+      - (storage/s3) open new handle on each connection attempt
+      - (storage/s3) default to https if url is not passed
 
    ### Changed
       - update stats schema to 4
