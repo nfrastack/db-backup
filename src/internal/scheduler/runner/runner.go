@@ -547,7 +547,8 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 			"status", "complete", "step", "upload", "target", storagePath+"/"+filename, "bytes", n)
 	} else {
 		JLog(log.LevelDebug, job, "writing backup to storage",
-			"status", "debug", "step", "upload", "target", storagePath+"/"+filename)
+			"status", "debug", "step", "upload", "target", storagePath+"/"+filename,
+			"backend", storageBackend, "bucket", job.Storage.Bucket, "endpoint", storageEndpointHost(job.Storage))
 		cr := &countingReader{r: prog.reader(pr)}
 		var err error
 		n, err = st.Upload(ctx, filename, cr)
