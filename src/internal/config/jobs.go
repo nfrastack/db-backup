@@ -118,6 +118,7 @@ type JobConfig struct {
 	MaintenanceCfg       *MaintenanceConfig  `yaml:"-"`
 	RunID                string              `yaml:"-"`
 	unsetKeys            map[string]bool
+	splitDBSet           bool
 }
 
 type MaintenanceConfig struct {
@@ -332,6 +333,9 @@ func (j *JobConfig) UnmarshalYAML(value *yaml.Node) error {
 			unsets[key] = true
 			clone.Content[i+1] = &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!null", Value: "null"}
 			continue
+		}
+		if key == "split_db" {
+			r.splitDBSet = true
 		}
 		if key == "backup" || key == "storage" || key == "archive" {
 			clone.Content[i+1] = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}

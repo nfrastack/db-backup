@@ -623,7 +623,7 @@ dbbackup_generate_configuration() {
         local backup_location="$(_dbbackup_getv "${inst}" BACKUP_LOCATION "${d_storage}")"
         backup_location="${backup_location,,}"
         local cleanup_time="$(_dbbackup_getv "${inst}" CLEANUP_TIME "")"
-        local split_db="$(_dbbackup_getv "${inst}" SPLIT_DB FALSE)"
+        local split_db="$(_dbbackup_getv "${inst}" SPLIT_DB TRUE)"
         split_db="${split_db,,}"
         local create_latest="$(_dbbackup_getv "${inst}" CREATE_LATEST_SYMLINK FALSE)"
         create_latest="${create_latest,,}"
@@ -1134,9 +1134,10 @@ dbbackup_generate_configuration() {
             yq -i '.jobs[strenv(DBB_JNUM) | tonumber].maintenance = strenv(DBB_M)' "${CONFIG_FILE_PATH}"
         fi
 
+        # split_db defaults to true built-in - only an explicit false needs writing
         case "${split_db,,}" in
-            true | 1 | yes )
-                yq -i '.jobs[strenv(DBB_JNUM) | tonumber].split_db = true' "${CONFIG_FILE_PATH}"
+            false | 0 | no )
+                yq -i '.jobs[strenv(DBB_JNUM) | tonumber].split_db = false' "${CONFIG_FILE_PATH}"
             ;;
         esac
 

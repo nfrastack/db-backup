@@ -151,23 +151,26 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 		RunHooks(job, "pre", "backup", dbName, nil)
 	}
 
-	if job.SplitDB && job.Databases != nil && hasAllToken(job.Databases.Include) {
-		JLog(log.LevelDebug, job, "listing databases",
-			"status", "debug", "step", "list", "target", fmt.Sprintf("%s://%s:%d", job.Type, job.Host, port))
-		dbs, err := database.ListDatabases(job.Type, job.Host, port, job.User, pass, job.AuthSource, job.TLS)
-		if err != nil {
-			return LogFail(job, "backup failed", "list", err)
-		}
-		JLog(log.LevelDebug, job, "listed databases",
-			"status", "debug", "step", "list", "count", len(dbs))
-		dbs = expandAllInclude(dbs, job.Databases)
-		if len(job.Databases.Exclude) > 0 {
-			JLog(log.LevelInfo, job, "applied database exclusions",
-				"status", "skipped", "step", "list", "excluded", strings.Join(job.Databases.Exclude, ","))
-		}
-		if len(dbs) == 0 {
-			JLog(log.LevelWarn, job, "no databases left to back up after exclusions",
-				"status", "warn", "step", "list")
+	if job.SplitDB && job.Databases != nil && shouldSplitDatabases(job.Databases.Include) {
+		dbs := splitDatabaseList(job.Databases.Include)
+		if hasAllToken(job.Databases.Include) {
+			JLog(log.LevelDebug, job, "listing databases",
+				"status", "debug", "step", "list", "target", fmt.Sprintf("%s://%s:%d", job.Type, job.Host, port))
+			allDBs, err := database.ListDatabases(job.Type, job.Host, port, job.User, pass, job.AuthSource, job.TLS)
+			if err != nil {
+				return LogFail(job, "backup failed", "list", err)
+			}
+			JLog(log.LevelDebug, job, "listed databases",
+				"status", "debug", "step", "list", "count", len(allDBs))
+			dbs = expandAllInclude(allDBs, job.Databases)
+			if len(job.Databases.Exclude) > 0 {
+				JLog(log.LevelInfo, job, "applied database exclusions",
+					"status", "skipped", "step", "list", "excluded", strings.Join(job.Databases.Exclude, ","))
+			}
+			if len(dbs) == 0 {
+				JLog(log.LevelWarn, job, "no databases left to back up after exclusions",
+					"status", "warn", "step", "list")
+			}
 		}
 		JLog(log.LevelInfo, job, "splitting into per-database backups",
 			"status", "starting", "split", "true", "dbs", len(dbs))
@@ -186,7 +189,7 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 			}
 		}
 
-		if strings.HasPrefix(strings.ToLower(job.Type), "postgres") {
+		if hasAllToken(job.Databases.Include) && strings.HasPrefix(strings.ToLower(job.Type), "postgres") {
 			globJob := job
 			globJob.Databases = &config.DatabaseList{Include: []string{"__globals__"}}
 			globJob.SplitDB = false

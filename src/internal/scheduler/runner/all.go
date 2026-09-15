@@ -53,3 +53,18 @@ func hasAllToken(include []string) bool {
 	}
 	return false
 }
+
+func shouldSplitDatabases(include []string) bool {
+	return hasAllToken(include) || len(include) > 1
+}
+
+func splitDatabaseList(include []string) []string {
+	out := make([]string, 0, len(include))
+	for _, name := range include {
+		if strings.TrimSpace(name) == "" {
+			continue
+		}
+		out = append(out, name)
+	}
+	return out
+}

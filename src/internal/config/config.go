@@ -470,6 +470,7 @@ func StatsStatePath(stateDir string) string {
 	}
 	return filepath.Join(stateDir, "stats.json")
 }
+
 func (v *CheckNewVersionConfig) Validate() error {
 	if v == nil {
 		return nil
@@ -724,6 +725,10 @@ func (c *Config) resolveJob(job *JobConfig) {
 		} else if job.Databases == nil {
 			job.Databases = &DatabaseList{Include: []string{job.DatabaseRef}}
 		}
+	}
+
+	if !job.splitDBSet {
+		job.SplitDB = true
 	}
 
 	if job.Blackout != nil && len(*job.Blackout) > 0 {
