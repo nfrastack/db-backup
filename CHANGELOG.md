@@ -1,8 +1,9 @@
 ## 5.0.3b
 
    ### Added
-      - (postgres) additional trace output
+      - add additional version detail in dump bannner comments
       - add %dbs% filename tag to expand database names when ALL+split_db:false
+      - (postgres) additional trace output
       - (storage/webdav) add additional debug and trace verbosity
       - (storage/s3) add aditional debug and trace verbosity
       - (storage/azure) add additional debug and trace verbosity
