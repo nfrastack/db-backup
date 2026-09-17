@@ -52,8 +52,9 @@ func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
 		"host", d.host, "port", d.port, "server", d.serverVer,
 		"databases", strings.Join(dbNames, ","))
 
-	fmt.Fprintf(w, "// dbbackup MongoDB dump\n")
-	fmt.Fprintf(w, "// Host: %s  Server: %s\n//\n\n", d.host, d.serverVer)
+	fmt.Fprint(w, common.DumpBanner("//", "MongoDB",
+		fmt.Sprintf("Host: %s  Server: %s", d.host, d.serverVer)))
+	fmt.Fprintf(w, "//\n\n")
 
 	if len(dbNames) == 1 && strings.ToLower(dbNames[0]) == "all" {
 		databases, err := d.client.ListDatabaseNames(ctx, bson.D{})

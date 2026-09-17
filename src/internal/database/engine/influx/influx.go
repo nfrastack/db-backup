@@ -188,6 +188,8 @@ func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
 
 	var total dumpStats
 	bw := bufio.NewWriterSize(w, 1<<20)
+	fmt.Fprint(bw, common.DumpBanner("#", "InfluxDB",
+		fmt.Sprintf("Host: %s:%d", d.host, d.port)))
 	for _, db := range dbNames {
 		st, err := d.dumpDatabase(bw, db, "", "")
 		if err != nil {

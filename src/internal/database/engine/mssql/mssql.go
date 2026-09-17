@@ -80,8 +80,9 @@ func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
 	log.Debug("mssql", "backup start",
 		"host", d.host, "port", d.port,
 		"databases", strings.Join(dbNames, ","))
-	fmt.Fprintf(w, "-- dbbackup MSSQL dump\n")
-	fmt.Fprintf(w, "-- Host: %s:%d\n--\n\n", d.host, d.port)
+	fmt.Fprint(w, common.DumpBanner("--", "MSSQL",
+		fmt.Sprintf("Host: %s:%d", d.host, d.port)))
+	fmt.Fprintf(w, "--\n\n")
 
 	if len(dbNames) == 1 && strings.ToLower(dbNames[0]) == "all" {
 		var err error

@@ -108,8 +108,9 @@ func (d *Dumper) DumpGlobals(w io.Writer) error {
 	}
 	ctx := d.ctx
 
-	fmt.Fprintf(w, "-- dbbackup PostgreSQL globals dump\n")
-	fmt.Fprintf(w, "-- Host: %s  Server: %s\n--\n\n", d.host, d.serverVer)
+	fmt.Fprint(w, common.DumpBanner("--", "PostgreSQL globals",
+		fmt.Sprintf("Host: %s  Server: %s", d.host, d.serverVer)))
+	fmt.Fprintf(w, "--\n\n")
 
 	rows, err := d.conn.Query(ctx,
 		"SELECT rolname, rolsuper, rolinherit, rolcreaterole, rolcreatedb, rolcanlogin, rolreplication, rolconnlimit, rolvaliduntil FROM pg_roles WHERE rolname != 'postgres' ORDER BY rolname")
@@ -2007,10 +2008,10 @@ func (d *Dumper) writeFooter(w io.Writer) {
 }
 
 func (d *Dumper) writeHeader(w io.Writer, dbNames []string) {
-	fmt.Fprintf(w, `-- dbbackup PostgreSQL dump
--- Host: %s  Server: %s
---
-`, d.host, d.serverVer)
+	fmt.Fprint(w, common.DumpBanner("--", "PostgreSQL",
+		fmt.Sprintf("Host: %s  Server: %s", d.host, d.serverVer)))
+	fmt.Fprintf(w, `--
+`)
 	fmt.Fprintf(w, "SET statement_timeout = 0;\n")
 	fmt.Fprintf(w, "SET lock_timeout = 0;\n")
 	fmt.Fprintf(w, "SET idle_in_transaction_session_timeout = 0;\n")

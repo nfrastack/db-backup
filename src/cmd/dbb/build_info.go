@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	versionPkg "github.com/nfrastack/db-backup/internal/version"
 )
 
 var (
@@ -16,12 +18,6 @@ var (
 )
 
 var betaRe = regexp.MustCompile(`(b|rc)\d+$`)
-
-var (
-	commitHRe   = regexp.MustCompile(`(?i)-h([0-9a-f]{7,})$`)
-	devCommitRe = regexp.MustCompile(`(?i)^dev-([0-9a-f]{7,})(?:-dirty)?$`)
-	tagDevRe    = regexp.MustCompile(`(?i)-dev-([0-9a-f]{7,})(?:-dirty)?$`)
-)
 
 func bannerLine() string {
 	s := fmt.Sprintf("db-backup %s | build=%s mode=%s", Version, buildEdition, runtimeMode())
@@ -64,22 +60,5 @@ func resolveCommit(version string) string {
 	if buildCommit != "" {
 		return buildCommit
 	}
-	if i := strings.Index(version, "-g"); i >= 0 {
-		sha := version[i+2:]
-		sha = strings.TrimSuffix(sha, "-dirty")
-		if sha != "" {
-			return sha
-		}
-	}
-	trimmed := strings.TrimSuffix(version, "-dirty")
-	if m := commitHRe.FindStringSubmatch(trimmed); m != nil {
-		return m[1]
-	}
-	if m := devCommitRe.FindStringSubmatch(trimmed); m != nil {
-		return m[1]
-	}
-	if m := tagDevRe.FindStringSubmatch(trimmed); m != nil {
-		return m[1]
-	}
-	return ""
+	return versionPkg.ResolveCommit(version)
 }

@@ -862,12 +862,9 @@ func (d *Dumper) writeFooter(w io.Writer) {
 }
 
 func (d *Dumper) writeHeader(w io.Writer) {
-	detected := d.DetectedType()
-	fmt.Fprintf(w, `-- dbbackup MySQL/MariaDB dump
--- Host: %s  Server: %s
--- Detected: %s  Configured: %s
---
-`, d.host, d.serverVer, detected, d.configuredType)
+	detail := fmt.Sprintf("Host: %s  Server: %s  Detected: %s  Configured: %s",
+		d.host, d.serverVer, d.DetectedType(), d.configuredType)
+	fmt.Fprint(w, common.DumpBanner("--", "MySQL/MariaDB", detail))
 	fmt.Fprintf(w, "/*!40101 SET @OLD_CHARACTER_SET_CLIENT=@@CHARACTER_SET_CLIENT */;\n")
 	fmt.Fprintf(w, "/*!40101 SET @OLD_CHARACTER_SET_RESULTS=@@CHARACTER_SET_RESULTS */;\n")
 	fmt.Fprintf(w, "/*!40101 SET @OLD_COLLATION_CONNECTION=@@COLLATION_CONNECTION */;\n")

@@ -46,8 +46,9 @@ func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
 		"host", d.host, "port", d.port, "tls", d.tlsCfg != nil,
 		"auth", d.authMode())
 
-	fmt.Fprintf(w, "# dbbackup Redis dump\n")
-	fmt.Fprintf(w, "# Host: %s:%d\n#\n\n", d.host, d.port)
+	fmt.Fprint(w, common.DumpBanner("#", "Redis",
+		fmt.Sprintf("Host: %s:%d", d.host, d.port)))
+	fmt.Fprintf(w, "#\n\n")
 	var cursor uint64
 	var scanned, dumped, skipped int
 	var skippedKeys []string

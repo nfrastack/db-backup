@@ -39,7 +39,9 @@ func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
 		"host", d.host, "port", d.port, "scheme", d.scheme(),
 		"auth", d.authMode(),
 		"databases", strings.Join(dbNames, ","))
-	fmt.Fprintf(w, "// db-backup CouchDB dump\n// Host: %s:%d\n//\n\n", d.host, d.port)
+	fmt.Fprint(w, common.DumpBanner("//", "CouchDB",
+		fmt.Sprintf("Host: %s:%d", d.host, d.port)))
+	fmt.Fprintf(w, "//\n\n")
 
 	if len(dbNames) == 1 && strings.ToLower(dbNames[0]) == "all" {
 		names, err := d.listDatabases()
@@ -68,6 +70,7 @@ func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
 		"elapsed", time.Since(start).Round(time.Millisecond).String())
 	return nil
 }
+
 func NewDumper(host string, port int, user, pass string, tlsCfg ...*config.TLSConfig) *Dumper {
 	if port == 0 {
 		port = 5984

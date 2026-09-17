@@ -38,8 +38,9 @@ func (d *Dumper) Close() error {
 func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
 	start := time.Now()
 	log.Debug("sqlite", "backup start", "path", d.path)
-	fmt.Fprintf(w, "-- dbbackup SQLite dump\n")
-	fmt.Fprintf(w, "-- File: %s\n--\n\n", d.path)
+	fmt.Fprint(w, common.DumpBanner("--", "SQLite",
+		fmt.Sprintf("File: %s", d.path)))
+	fmt.Fprintf(w, "--\n\n")
 
 	tables, err := d.listTables()
 	if err != nil {
