@@ -20,6 +20,7 @@ func Spec() registry.EngineSpec {
 		DefaultPort: 3306,
 		New: func(o registry.Options) (registry.Engine, error) {
 			d := NewDumper(o.Host, o.Port, o.User, o.Pass, o.TLS)
+			d.SetConfiguredType(o.Type)
 			if o.HasObjects {
 				d.SetMysqlObjects(o.Objects)
 			}

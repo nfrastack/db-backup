@@ -8,6 +8,7 @@
       - (storage/azure) add additional debug and trace verbosity
 
    ### Changed
+      - (mysql|mariadb) further refine auto detection to solve dump variances/restores
       - change ALL database backups with split_db: false to be filename _all_
       - split_db revert to default true
       - (container) s3 tls configuration properly generates in config
@@ -15,8 +16,6 @@
       - (storage/azure) open new handle on each connection attempt
       - (storage/s3) open new handle on each connection attempt
       - (storage/s3) default to https if url is not passed
-
-   ### Changed
       - update stats schema to 4
       - (postgres) dump compatibility with `pg_dump` and emit CREATE TABLE|EXTENSION|GRANT|OWNER TO statements
       - (postgres) dump PARTITION OF with one COPY per partition to be compatible with `pg_dump`
