@@ -312,13 +312,14 @@ func (d *Dumper) dumpTable(w io.Writer, conn *sql.DB, tx *sql.Tx, dbName, table 
 	}
 
 	var rowScanner func(io.Writer) error
+	batchBytes := insertBatchBytes(conn, tx, ctx, dbName, table)
 	if tx != nil {
 		rowScanner = func(w io.Writer) error {
-			return d.streamRows(w, tx, dbName, table, insertCols)
+			return d.streamRows(w, tx, dbName, table, insertCols, batchBytes)
 		}
 	} else {
 		rowScanner = func(w io.Writer) error {
-			return d.streamRows(w, conn, dbName, table, insertCols)
+			return d.streamRows(w, conn, dbName, table, insertCols, batchBytes)
 		}
 	}
 
@@ -426,6 +427,21 @@ func (d *Dumper) insertableColumns(conn *sql.DB, tx *sql.Tx, dbName, table strin
 		return nil, fmt.Errorf("list columns %s.%s: %w", dbName, table, err)
 	}
 	return filterInsertableColumns(cols, extras, genExprs), nil
+}
+
+func insertBatchBytes(conn *sql.DB, tx *sql.Tx, ctx context.Context, dbName, table string) int {
+	var maxPacket uint64
+	if tx != nil {
+		_ = tx.QueryRowContext(ctx, "SELECT @@SESSION.max_allowed_packet").Scan(&maxPacket)
+	} else {
+		_ = conn.QueryRowContext(ctx, "SELECT @@SESSION.max_allowed_packet").Scan(&maxPacket)
+	}
+	if maxPacket > 0 && maxPacket < mysqlInsertBatchBytes {
+		log.Debug("mysql", "small max_allowed_packet, shrinking insert batches",
+			"database", dbName, "table", table, "max_allowed_packet", maxPacket)
+		return int(maxPacket / 4)
+	}
+	return mysqlInsertBatchBytes
 }
 
 func isBlobType(t string) bool {
@@ -744,7 +760,7 @@ func (d *Dumper) showCreate(conn *sql.DB, tx *sql.Tx, query string) (string, err
 
 const mysqlInsertBatchBytes = 1000000
 
-func (d *Dumper) streamRows(w io.Writer, q querier, dbName, table string, insertCols []string) error {
+func (d *Dumper) streamRows(w io.Writer, q querier, dbName, table string, insertCols []string, batchBytes int) error {
 	if len(insertCols) == 0 {
 		return nil
 	}
@@ -832,7 +848,7 @@ func (d *Dumper) streamRows(w io.Writer, q querier, dbName, table string, insert
 		sb.WriteString(")")
 
 		rowsInBatch++
-		if sb.Len() >= mysqlInsertBatchBytes {
+		if batchBytes > 0 && sb.Len() >= batchBytes {
 			flush()
 		}
 	}

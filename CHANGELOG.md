@@ -10,6 +10,8 @@
       - (container) support LOG_LEVEL=TRACE
 
    ### Changed
+      - (mysql) shrink insert batches on small max_allowed_packet
+      - (mysql) verify max_allowed_packet before dump
       - (mysql) split inserts into 1mb batches
       - (postgres) dump constraints not as indexes
       - (postgres) change order of foreign key creation
