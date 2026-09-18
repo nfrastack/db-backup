@@ -12,6 +12,8 @@
       - (container) support LOG_LEVEL=TRACE
 
    ### Changed
+      - (postgres) dump comments
+      - (postgres) restore issue with empty tables strange characters
       - (postgres) dump rules like pg_dump
       - (postgres) dump materialized views
       - (postgres) dump exclude auto generated columns
