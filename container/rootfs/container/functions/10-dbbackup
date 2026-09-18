@@ -1419,6 +1419,7 @@ _dbbackup_log_level() {
         error ) echo "error" ;;
         warn* ) echo "warn" ;;
         debug ) echo "debug" ;;
+        trace ) echo "trace" ;;
         * ) echo "info" ;;
     esac
 }

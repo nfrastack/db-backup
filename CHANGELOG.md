@@ -7,6 +7,7 @@
       - (storage/webdav) add additional debug and trace verbosity
       - (storage/s3) add aditional debug and trace verbosity
       - (storage/azure) add additional debug and trace verbosity
+      - (container) support LOG_LEVEL=TRACE
 
    ### Changed
       - (mysql|mariadb) further refine auto detection to solve dump variances/restores
