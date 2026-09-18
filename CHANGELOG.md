@@ -4,46 +4,41 @@
       - add additional version detail in dump bannner comments
       - add %dbs% filename tag to expand database names when ALL+split_db:false
       - add restore.create_db and cli create-db variable to control auto db creation
+      - (container) support undocumented trace log level
       - (postgres) additional trace output
       - (postgres) avoid server timeout with long operations
-      - (storage/webdav) add additional debug and trace verbosity
-      - (storage/s3) add aditional debug and trace verbosity
       - (storage/azure) add additional debug and trace verbosity
-      - (container) support LOG_LEVEL=TRACE
+      - (storage/s3) add aditional debug and trace verbosity
+      - (storage/webdav) add additional debug and trace verbosity
 
    ### Changed
-      - (postgres) dump comments
-      - (postgres) restore issue with empty tables strange characters
-      - (postgres) dump rules like pg_dump
-      - (postgres) dump materialized views
-      - (postgres) dump exclude auto generated columns
-      - (postgres) encode (multi)range values as text
-      - (postgres) encode (var)bit value as text
-      - (mysql) dump escape null bytes
-      - (mysql) shrink insert batches on small max_allowed_packet
-      - (mysql) verify max_allowed_packet before dump
-      - (mysql) split inserts into 1mb batches
-      - (mysql) restore setting session for incremental
-      - (postgres) dump constraints not as indexes
-      - (postgres) change order of foreign key creation
-      - (postgres) encode uuid and bytea arrays as text
-      - (postgres) restore failing with invalid input syntax for type jsonb values
-      - (postgres) restore truncation on json rows wider than 1MB
-      - (postgres) dump optimize json output routines
-      - (mysql|mariadb) refine auto detection to solve dump variances/restores
       - change ALL database backups with split_db: false to be filename _all_
       - split_db revert to default true
-      - (container) s3 tls configuration properly generates in config
-      - (storage/webdav) open new handle on each connection attempt
-      - (storage/azure) open new handle on each connection attempt
-      - (storage/s3) open new handle on each connection attempt
-      - (storage/s3) default to https if url is not passed
       - update stats schema to 4
-      - (postgres) dump compatibility with `pg_dump` and emit CREATE TABLE|EXTENSION|GRANT|OWNER TO statements
-      - (postgres) dump PARTITION OF with one COPY per partition to be compatible with `pg_dump`
-      - (postgres) dump largeobjects referenced by OID columns
-      - (postgres) restore compatibility with pg_restore --clean
+      - (container) s3 tls configuration properly generates in config
       - (influx) use http as default
+      - (mysql|mariadb) refine auto detection to solve dump and restore variances
+      - (mysql) dump escape null bytes
+      - (mysql) dump verify max_allowed_packet
+      - (mysql) restore setting session for incremental
+      - (mysql) restore shrink insert batches on small max_allowed_packet
+      - (mysql) restore split inserts into 1mb batches
+      - (postgres) pg_dump parity
+        - dump PARTITION OF with one COPY per partition
+        - dump comments, constraints, extensions, grants, materialized views, rules
+        - dump referenced largeobjects from oid columns
+        - dump skip auto generatied columns
+        - dump quoting rules for json data
+        - dump encode (var)bit, bytea, (multi)range, uuid as plain text
+      - (postgres) restore parity
+        - change order of foreign key creation
+        - compatibility with pg_restore --clean
+        - allow jsonb values properly
+        - create empty tables with strange dump characters
+        - truncation on json rows wider than 1mb
+      - (storage) fixes
+        - (azure/s3/webdav) open new handle on each connection attempt
+        - default to https if url is not passed
 
 
 ## 5.0.2 2026-09-12 <code at nfrastack dot com>
