@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -257,7 +258,15 @@ func (d *Dumper) dumpKey(ctx context.Context, w io.Writer, key string) error {
 		log.Trace("redis", "key vanished mid-scan", "key", key)
 		return nil
 	case "stream":
-		return fmt.Errorf("unsupported type %q", typ)
+		msgs, err := d.xRangeAll(ctx, key)
+		if err != nil {
+			return fmt.Errorf("xrange: %w", err)
+		}
+		groups, err := d.client.XInfoGroups(ctx, key).Result()
+		if err != nil {
+			return fmt.Errorf("xinfo groups: %w", err)
+		}
+		d.writeRestoreStream(w, qKey, msgs, groups, ttl)
 	default:
 
 		val, err := d.client.Get(ctx, key).Result()
@@ -297,12 +306,60 @@ func (d *Dumper) getKeyValue(ctx context.Context, key string) (string, error) {
 
 func (d *Dumper) writeRestoreCmd(w io.Writer, parts []string, ttl time.Duration) {
 	fmt.Fprintln(w, strings.Join(parts, " "))
+	writeKeyTTL(w, parts[1], ttl)
+}
+
+func writeKeyTTL(w io.Writer, qKey string, ttl time.Duration) {
 	switch ttlSec := int64(ttl.Seconds()); {
 	case ttlSec > 0:
-		fmt.Fprintf(w, "EXPIRE %s %d\n", parts[1], ttlSec)
+		fmt.Fprintf(w, "EXPIRE %s %d\n", qKey, ttlSec)
 	case ttl > 0:
-		fmt.Fprintf(w, "PEXPIREAT %s %d\n", parts[1], time.Now().Add(ttl).UnixMilli())
+		fmt.Fprintf(w, "PEXPIREAT %s %d\n", qKey, time.Now().Add(ttl).UnixMilli())
 	}
+}
+func (d *Dumper) writeRestoreStream(w io.Writer, qKey string, msgs []redis.XMessage, groups []redis.XInfoGroup, ttl time.Duration) {
+	for _, m := range msgs {
+		parts := make([]string, 0, len(m.Values)*2+3)
+		parts = append(parts, "XADD", qKey, QuoteRedis(m.ID))
+		keys := make([]string, 0, len(m.Values))
+		for k := range m.Values {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			sv, _ := m.Values[k].(string)
+			if sv == "" {
+				sv = fmt.Sprintf("%v", m.Values[k])
+			}
+			parts = append(parts, QuoteRedis(k), QuoteRedis(sv))
+		}
+		fmt.Fprintln(w, strings.Join(parts, " "))
+	}
+	for _, g := range groups {
+		fmt.Fprintf(w, "XGROUP CREATE %s %s %s MKSTREAM\n",
+			qKey, QuoteRedis(g.Name), QuoteRedis(g.LastDeliveredID))
+	}
+	writeKeyTTL(w, qKey, ttl)
+}
+
+func (d *Dumper) xRangeAll(ctx context.Context, key string) ([]redis.XMessage, error) {
+	var out []redis.XMessage
+	start := "-"
+	for {
+		msgs, err := d.client.XRangeN(ctx, key, start, "+", 1000).Result()
+		if err != nil {
+			return nil, err
+		}
+		if len(msgs) == 0 {
+			break
+		}
+		out = append(out, msgs...)
+		if len(msgs) < 1000 {
+			break
+		}
+		start = "(" + msgs[len(msgs)-1].ID
+	}
+	return out, nil
 }
 func (d *Dumper) writeRestoreHash(w io.Writer, qKey string, entries map[string]string, ttl time.Duration) {
 	if len(entries) == 0 {

@@ -42,6 +42,7 @@
         - truncation on json rows wider than 1mb
       - (redis) hard error on ALL
       - (redis) allow name: int for backup and restore
+      - (redis) dump streams
       - (storage) fixes
         - (azure/s3/webdav) open new handle on each connection attempt
         - (s3) default to https if url is not passed

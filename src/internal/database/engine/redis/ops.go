@@ -156,6 +156,26 @@ func restoreLine(ctx context.Context, rdb *redis.Client, parts []string) error {
 			members = append(members, redis.Z{Score: score, Member: args[i+1]})
 		}
 		return rdb.ZAdd(ctx, args[0], members...).Err()
+	case "XADD":
+		if len(args) < 4 || len(args)%2 != 0 {
+			return fmt.Errorf("XADD needs key, id and field/value pairs")
+		}
+		vals := make(map[string]any, (len(args)-2)/2)
+		for i := 2; i+1 < len(args); i += 2 {
+			vals[args[i]] = args[i+1]
+		}
+		return rdb.XAdd(ctx, &redis.XAddArgs{Stream: args[0], ID: args[1], Values: vals}).Err()
+	case "XGROUP":
+		if len(args) < 4 || !strings.EqualFold(args[0], "CREATE") {
+			return fmt.Errorf("XGROUP only supports CREATE key group id [MKSTREAM]")
+		}
+		if len(args) > 5 || (len(args) == 5 && !strings.EqualFold(args[4], "MKSTREAM")) {
+			return fmt.Errorf("XGROUP CREATE supports only MKSTREAM, got %q", args[4:])
+		}
+		if len(args) == 5 {
+			return rdb.XGroupCreateMkStream(ctx, args[1], args[2], args[3]).Err()
+		}
+		return rdb.XGroupCreate(ctx, args[1], args[2], args[3]).Err()
 	case "EXPIRE":
 		if len(args) != 2 {
 			return fmt.Errorf("EXPIRE needs key and seconds")
