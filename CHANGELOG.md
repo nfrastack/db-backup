@@ -16,6 +16,7 @@
       - (mysql) shrink insert batches on small max_allowed_packet
       - (mysql) verify max_allowed_packet before dump
       - (mysql) split inserts into 1mb batches
+      - (mysql) restore setting session for incremental
       - (postgres) dump constraints not as indexes
       - (postgres) change order of foreign key creation
       - (postgres) encode uuid and bytea arrays as text

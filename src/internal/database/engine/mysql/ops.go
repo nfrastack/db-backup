@@ -97,6 +97,10 @@ func Restore(r io.Reader, host string, port int, user, pass, dbName string, tlsC
 		return fmt.Errorf("ping: %w", err)
 	}
 
+	if _, err := db.Exec("SET SESSION BINLOG_FORMAT='ROW'"); err != nil {
+		log.Debug("mysql", "row binlogging unavailable", "error", err.Error())
+	}
+
 	if firstDB != "" && common.CreateDBOnRestore {
 		if _, err := db.Exec("CREATE DATABASE IF NOT EXISTS `" + firstDB + "`"); err != nil {
 			return fmt.Errorf("create db: %w", err)
