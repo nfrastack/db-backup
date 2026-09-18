@@ -641,6 +641,9 @@ func (d *Dumper) dumpTable(w io.Writer, dbName, table string) ([]string, error) 
 	if owner, err := d.ownerOf(schema, tableName); err == nil && owner != "" {
 		fmt.Fprintf(w, "ALTER TABLE %s.%s OWNER TO %s;\n\n",
 			quotePGIdent(schema), quotePGIdent(tableName), quotePGIdent(owner))
+	} else if err != nil {
+		log.Trace("postgres", "owner unavailable", "database", dbName,
+			"table", schema+"."+tableName, "error", err.Error())
 	}
 
 	schemaOnly := d.SchemaOnly
@@ -723,6 +726,9 @@ func (d *Dumper) dumpPartitions(w io.Writer, dbName, schema, table string, schem
 		if owner, err := d.ownerOf(pschema, pname); err == nil && owner != "" {
 			fmt.Fprintf(w, "ALTER TABLE %s.%s OWNER TO %s;\n",
 				quotePGIdent(pschema), quotePGIdent(pname), quotePGIdent(owner))
+		} else if err != nil {
+			log.Trace("postgres", "owner unavailable", "database", dbName,
+				"table", pschema+"."+pname, "error", err.Error())
 		}
 		fmt.Fprintf(w, "\n")
 		if schemaOnly {
@@ -761,10 +767,14 @@ func (d *Dumper) dumpViews(w io.Writer, dbName string) error {
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return err
+		return fmt.Errorf("read views: %w", err)
 	}
 
-	extMembers, _ := d.extensionMembers()
+	extMembers, extErr := d.extensionMembers()
+	if extErr != nil {
+		log.Trace("postgres", "extension members unavailable", "database", dbName,
+			"error", extErr.Error())
+	}
 
 	for _, v := range views {
 		schema, name, def := v.schema, v.name, v.def
@@ -781,6 +791,9 @@ func (d *Dumper) dumpViews(w io.Writer, dbName string) error {
 		if owner, err := d.ownerOf(schema, name); err == nil && owner != "" {
 			fmt.Fprintf(w, "ALTER VIEW %s.%s OWNER TO %s;\n",
 				quotePGIdent(schema), quotePGIdent(name), quotePGIdent(owner))
+		} else if err != nil {
+			log.Trace("postgres", "owner unavailable", "database", dbName,
+				"view", schema+"."+name, "error", err.Error())
 		}
 		fmt.Fprintf(w, "\n")
 	}
@@ -1290,10 +1303,14 @@ func (d *Dumper) listTables(dbName string) ([]string, error) {
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read tables: %w", err)
 	}
 
-	extMembers, _ := d.extensionMembers()
+	extMembers, extErr := d.extensionMembers()
+	if extErr != nil {
+		log.Trace("postgres", "extension members unavailable", "database", dbName,
+			"error", extErr.Error())
+	}
 
 	var tables []string
 	for _, r := range refs {
@@ -1325,7 +1342,10 @@ func (d *Dumper) extensionMembers() (map[string]bool, error) {
 		}
 		out[schema+"."+name] = true
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return out, fmt.Errorf("read extension members: %w", err)
+	}
+	return out, nil
 }
 
 type pgSchemaInfo struct {
@@ -1917,7 +1937,11 @@ func (d *Dumper) dumpACLs(w io.Writer, dbName string, tables []string) error {
 			views = append(views, v)
 		}
 		viewRows.Close()
-		extMembers, _ := d.extensionMembers()
+		extMembers, extErr := d.extensionMembers()
+		if extErr != nil {
+			log.Trace("postgres", "extension members unavailable", "database", dbName,
+				"error", extErr.Error())
+		}
 		for _, v := range views {
 			if extMembers[v.schema+"."+v.name] {
 				continue
