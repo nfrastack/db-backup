@@ -1568,6 +1568,9 @@ func (d *Dumper) getCreateTable(schema, table string) (string, error) {
 	if pk, err := d.getPrimaryKey(schema, table); err == nil && pk != "" {
 		sb.WriteString("\n" + pk)
 	}
+	if uqSQL, err := d.getUniqueConstraints(schema, table); err == nil && uqSQL != "" {
+		sb.WriteString("\n" + uqSQL)
+	}
 	if idxSQL, err := d.getIndexes(schema, table); err == nil {
 		sb.WriteString("\n" + idxSQL)
 	}
@@ -1611,7 +1614,9 @@ func (d *Dumper) getIndexes(schema, table string) (string, error) {
 			"FROM pg_catalog.pg_index i "+
 			"JOIN pg_catalog.pg_class c ON c.oid = i.indrelid "+
 			"JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "+
-			"WHERE n.nspname = $1 AND c.relname = $2 AND i.indisprimary = false",
+			"WHERE n.nspname = $1 AND c.relname = $2 AND i.indisprimary = false "+
+			"AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_constraint uc "+
+			"  WHERE uc.conindid = i.indexrelid AND uc.contype = 'u')",
 		schema, table)
 	if err != nil {
 		return "", err
@@ -1659,6 +1664,33 @@ func (d *Dumper) getPrimaryKey(schema, table string) (string, error) {
 	}
 	return fmt.Sprintf("ALTER TABLE %s.%s ADD CONSTRAINT %s %s;",
 		quotePGIdent(schema), quotePGIdent(table), quotePGIdent(conname), def), nil
+}
+
+func (d *Dumper) getUniqueConstraints(schema, table string) (string, error) {
+	rows, err := d.conn.Query(d.ctxOrBg(),
+		"SELECT c.conname, pg_get_constraintdef(c.oid) "+
+			"FROM pg_catalog.pg_constraint c "+
+			"JOIN pg_catalog.pg_class t ON t.oid = c.conrelid "+
+			"JOIN pg_catalog.pg_namespace n ON n.oid = t.relnamespace "+
+			"WHERE n.nspname = $1 AND t.relname = $2 AND c.contype = 'u' "+
+			"ORDER BY c.conname", schema, table)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	var sb strings.Builder
+	for rows.Next() {
+		var conname, def string
+		if err := rows.Scan(&conname, &def); err != nil {
+			return "", err
+		}
+		if def == "" {
+			continue
+		}
+		fmt.Fprintf(&sb, "ALTER TABLE %s.%s ADD CONSTRAINT %s %s;\n",
+			quotePGIdent(schema), quotePGIdent(table), quotePGIdent(conname), def)
+	}
+	return sb.String(), rows.Err()
 }
 
 func (d *Dumper) isPartitioned(schema, table string) bool {
