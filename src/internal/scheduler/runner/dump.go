@@ -6,6 +6,7 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -20,6 +21,21 @@ func applyConnectivity(d connectivitySetter, cfg *config.ConnectivityConfig) {
 	if d != nil {
 		d.SetConnectivity(cfg)
 	}
+}
+
+type stageError struct {
+	stage string
+	err   error
+}
+
+func (e *stageError) Error() string { return e.err.Error() }
+func (e *stageError) Unwrap() error { return e.err }
+
+func withStage(err error, stage string) error {
+	if err == nil {
+		return nil
+	}
+	return &stageError{stage: stage, err: err}
 }
 
 func dumpTo(ctx context.Context, w io.Writer, job config.JobConfig, port int, pass, dbName string, tableFilter *config.TableFilter, globalSchemaOnly bool, tlsCfg *config.TLSConfig, onTable func(db, table string)) error {
@@ -44,7 +60,7 @@ func dumpTo(ctx context.Context, w io.Writer, job config.JobConfig, port int, pa
 	}
 	dumper, err := database.New(opts)
 	if err != nil {
-		return err
+		return withStage(err, "dump")
 	}
 	applyConnectivity(dumper, job.Connectivity)
 	if tf, ok := dumper.(interface {
@@ -63,18 +79,18 @@ func dumpTo(ctx context.Context, w io.Writer, job config.JobConfig, port int, pa
 	if strings.Contains(dbName, "__globals__") {
 		if pg, ok := dumper.(interface{ DumpGlobals(io.Writer) error }); ok {
 			if err := openWithContext(dumper, ctx); err != nil {
-				return fmt.Errorf("connect: %w", err)
+				return withStage(fmt.Errorf("connect: %w", err), "connect")
 			}
 			defer dumper.Close()
 			if err := pg.DumpGlobals(w); err != nil {
-				return fmt.Errorf("dump globals: %w", err)
+				return withStage(fmt.Errorf("dump globals: %w", err), "dump")
 			}
 			return nil
 		}
 	}
 
 	if err := openWithContext(dumper, ctx); err != nil {
-		return fmt.Errorf("connect: %w", err)
+		return withStage(fmt.Errorf("connect: %w", err), "connect")
 	}
 	defer dumper.Close()
 	names := strings.Split(dbName, ",")
@@ -82,10 +98,19 @@ func dumpTo(ctx context.Context, w io.Writer, job config.JobConfig, port int, pa
 		names = append([]string{}, job.Databases.Include...)
 	}
 	if err := dumper.Dump(w, names); err != nil {
-		return fmt.Errorf("dump: %w", err)
+		return withStage(fmt.Errorf("dump: %w", err), "dump")
 	}
 	return nil
 }
+
+func errorStage(err error) string {
+	var se *stageError
+	if errors.As(err, &se) {
+		return se.stage
+	}
+	return "upload"
+}
+
 func openWithContext(d database.Engine, ctx context.Context) error {
 	type ctxOpener interface {
 		OpenContext(context.Context) error

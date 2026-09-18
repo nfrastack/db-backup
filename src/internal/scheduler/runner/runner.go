@@ -454,14 +454,14 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 	go func() {
 		encWriter, err := enc.Encrypt(pw)
 		if err != nil {
-			pw.CloseWithError(fmt.Errorf("encrypt: %w", err))
+			pw.CloseWithError(withStage(fmt.Errorf("encrypt: %w", err), "encrypt"))
 			return
 		}
 		encMW := io.MultiWriter(encWriter, encHasher)
 
 		compWriter, err := comp.Compress(encMW, job.Compression.Level, compOpts)
 		if err != nil {
-			pw.CloseWithError(fmt.Errorf("compress: %w", err))
+			pw.CloseWithError(withStage(fmt.Errorf("compress: %w", err), "compress"))
 			return
 		}
 		rawCounter := &countingWriter{}
@@ -501,14 +501,14 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 				Objects:    job.Databases.ResolveMysqlObjects(),
 				HasObjects: job.Databases != nil,
 			}); err != nil {
-				pw.CloseWithError(fmt.Errorf("incremental %s: %w", strat, err))
+				pw.CloseWithError(withStage(fmt.Errorf("incremental %s: %w", strat, err), "dump"))
 				return
 			}
 		}
 		tDumpEnd := time.Now()
 
 		if err := compWriter.Close(); err != nil {
-			pw.CloseWithError(fmt.Errorf("compress close: %w", err))
+			pw.CloseWithError(withStage(fmt.Errorf("compress close: %w", err), "compress"))
 			return
 		}
 		tCompEnd := time.Now()
@@ -518,7 +518,7 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 		}
 
 		if err := encWriter.Close(); err != nil {
-			pw.CloseWithError(fmt.Errorf("encrypt close: %w", err))
+			pw.CloseWithError(withStage(fmt.Errorf("encrypt close: %w", err), "encrypt"))
 			return
 		}
 		tEncEnd := time.Now()
@@ -560,10 +560,10 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 			prog.finish()
 			select {
 			case <-timingCh:
-			case <-time.After(2 * time.Second):
 			case <-ctx.Done():
+			default:
 			}
-			return LogFail(job, "backup failed", "upload", err)
+			return LogFail(job, "backup failed", errorStage(err), err)
 		}
 	}
 	uploadTime := time.Since(uploadStart)
