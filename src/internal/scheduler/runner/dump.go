@@ -79,7 +79,7 @@ func dumpTo(ctx context.Context, w io.Writer, job config.JobConfig, port int, pa
 	if strings.Contains(dbName, "__globals__") {
 		if pg, ok := dumper.(interface{ DumpGlobals(io.Writer) error }); ok {
 			if err := openWithContext(dumper, ctx); err != nil {
-				return withStage(fmt.Errorf("connect: %w", err), "connect")
+				return withStage(err, "connect")
 			}
 			defer dumper.Close()
 			if err := pg.DumpGlobals(w); err != nil {
@@ -90,7 +90,7 @@ func dumpTo(ctx context.Context, w io.Writer, job config.JobConfig, port int, pa
 	}
 
 	if err := openWithContext(dumper, ctx); err != nil {
-		return withStage(fmt.Errorf("connect: %w", err), "connect")
+		return withStage(err, "connect")
 	}
 	defer dumper.Close()
 	names := strings.Split(dbName, ",")
