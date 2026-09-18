@@ -541,8 +541,18 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 	var n int64
 	if dryRun.Load() {
 		cr := &countingReader{r: prog.reader(pr)}
-		_, _ = io.Copy(io.Discard, cr)
+		_, copyErr := io.Copy(io.Discard, cr)
 		n = cr.n
+		if copyErr != nil {
+			pr.Close()
+			prog.finish()
+			select {
+			case <-timingCh:
+			case <-ctx.Done():
+			default:
+			}
+			return LogFail(job, "backup failed", errorStage(copyErr), copyErr)
+		}
 		JLog(log.LevelInfo, job, "dry-run: skipped upload",
 			"status", "complete", "step", "upload", "target", storagePath+"/"+filename, "bytes", n)
 	} else {
