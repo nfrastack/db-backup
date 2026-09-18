@@ -1266,7 +1266,6 @@ func (d *Dumper) listDatabases() ([]string, error) {
 }
 
 func (d *Dumper) listTables(dbName string) ([]string, error) {
-	var tables []string
 	rows, err := d.conn.Query(d.ctxOrBg(),
 		"SELECT t.table_schema, t.table_name FROM information_schema.tables t "+
 			"WHERE t.table_schema NOT IN ('pg_catalog', 'information_schema') "+
@@ -1279,13 +1278,26 @@ func (d *Dumper) listTables(dbName string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list tables: %w", err)
 	}
-	defer rows.Close()
+	type tableRef struct{ schema, name string }
+	var refs []tableRef
+	for rows.Next() {
+		var r tableRef
+		if err := rows.Scan(&r.schema, &r.name); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan table row: %w", err)
+		}
+		refs = append(refs, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 
 	extMembers, _ := d.extensionMembers()
 
-	for rows.Next() {
-		var schema, table string
-		rows.Scan(&schema, &table)
+	var tables []string
+	for _, r := range refs {
+		schema, table := r.schema, r.name
 		if extMembers[schema+"."+table] {
 			log.Trace("postgres", "skipped extension member", "database", dbName,
 				"table", schema+"."+table)
@@ -1293,7 +1305,7 @@ func (d *Dumper) listTables(dbName string) ([]string, error) {
 		}
 		tables = append(tables, schema+"."+table)
 	}
-	return tables, rows.Err()
+	return tables, nil
 }
 
 func (d *Dumper) extensionMembers() (map[string]bool, error) {
