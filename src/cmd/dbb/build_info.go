@@ -46,6 +46,10 @@ func resolveChannel(version string) string {
 		strings.HasPrefix(lower, "dev_") || lower == "dev" {
 		return "edge"
 	}
+	if strings.HasPrefix(lower, "develop-") || strings.HasPrefix(lower, "develop+") ||
+		strings.HasPrefix(lower, "develop_") {
+		return "edge"
+	}
 	if strings.Contains(version, "-g") || strings.Contains(version, "-dev") ||
 		strings.Contains(version, "+") {
 		return "edge"
