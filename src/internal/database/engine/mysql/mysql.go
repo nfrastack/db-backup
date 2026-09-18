@@ -442,6 +442,9 @@ func insertBatchBytes(conn *sql.DB, tx *sql.Tx, ctx context.Context, dbName, tab
 			"database", dbName, "table", table, "max_allowed_packet", maxPacket)
 		return int(maxPacket / 4)
 	}
+	log.Trace("mysql", "probed max_allowed_packet",
+		"database", dbName, "table", table, "max_allowed_packet", maxPacket,
+		"batch_bytes", mysqlInsertBatchBytes)
 	return mysqlInsertBatchBytes
 }
 
