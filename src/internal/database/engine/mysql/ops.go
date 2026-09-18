@@ -147,6 +147,13 @@ func Restore(r io.Reader, host string, port int, user, pass, dbName string, tlsC
 		data = reDefiner.ReplaceAll(data, []byte(""))
 	}
 
+	if len(targets) == 1 && targets[0] != "" {
+		reUseTarget := regexp.MustCompile("(?i)USE\\s+`" + regexp.QuoteMeta(targets[0]) + "`\\s*;")
+		if !reUseTarget.Match(data) {
+			data = append([]byte("USE `"+targets[0]+"`;\n"), data...)
+		}
+	}
+
 	for _, s := range splitSQLStatements(string(data)) {
 		if _, err := db.Exec(s); err != nil {
 			return fmt.Errorf("exec: %w", err)

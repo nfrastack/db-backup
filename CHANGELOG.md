@@ -22,6 +22,7 @@
         - dump escape null bytes
         - dump verify max_allowed_packet
       - (mysql) restore parity
+        - add explicit USE statements if missing
         - enforce binlog session for incremental/differential
         - split inserts into 1mb batches
         - strip DEFINER and own by restoring user
