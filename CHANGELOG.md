@@ -12,6 +12,7 @@
       - (container) support LOG_LEVEL=TRACE
 
    ### Changed
+      - (postgres) dump materialized views
       - (postgres) dump exclude auto generated columns
       - (postgres) encode (multi)range values as text
       - (postgres) encode (var)bit value as text

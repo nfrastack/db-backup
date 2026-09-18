@@ -562,6 +562,10 @@ func (d *Dumper) dumpDatabase(w io.Writer, dbName string) error {
 	if err := d.dumpViews(w, dbName); err != nil {
 		return err
 	}
+	matviewRefreshes, err := d.dumpMatviews(w, dbName)
+	if err != nil {
+		return err
+	}
 	if err := d.dumpFunctions(w, dbName); err != nil {
 		return err
 	}
@@ -580,6 +584,12 @@ func (d *Dumper) dumpDatabase(w io.Writer, dbName string) error {
 	}
 	if err := d.dumpACLs(w, dbName, postTables); err != nil {
 		return err
+	}
+	if len(matviewRefreshes) > 0 {
+		fmt.Fprintf(w, "\n-- Materialized view data\n")
+		for _, r := range matviewRefreshes {
+			fmt.Fprint(w, r)
+		}
 	}
 	log.Debug("postgres", "database done",
 		"database", dbName, "tables", len(tables),
@@ -1235,6 +1245,56 @@ func (d *Dumper) dumpViews(w io.Writer, dbName string) error {
 		fmt.Fprintf(w, "\n")
 	}
 	return nil
+}
+
+func (d *Dumper) dumpMatviews(w io.Writer, dbName string) ([]string, error) {
+	rows, err := d.conn.Query(d.ctxOrBg(),
+		"SELECT schemaname, matviewname, matviewowner, definition, ispopulated "+
+			"FROM pg_catalog.pg_matviews "+
+			"WHERE schemaname NOT IN ('pg_catalog', 'information_schema') "+
+			"ORDER BY schemaname, matviewname")
+	if err != nil {
+		return nil, fmt.Errorf("query matviews: %w", err)
+	}
+	type matviewRef struct {
+		schema, name, owner, def string
+		populated                bool
+	}
+	var matviews []matviewRef
+	for rows.Next() {
+		var m matviewRef
+		if err := rows.Scan(&m.schema, &m.name, &m.owner, &m.def, &m.populated); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan matview row: %w", err)
+		}
+		matviews = append(matviews, m)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read matviews: %w", err)
+	}
+
+	var refreshes []string
+	for _, m := range matviews {
+		if m.def == "" {
+			continue
+		}
+		qt := quotePGIdent(m.schema) + "." + quotePGIdent(m.name)
+		fmt.Fprintf(w, "\n-- Materialized view: %s.%s\n", m.schema, m.name)
+		fmt.Fprintf(w, "DROP MATERIALIZED VIEW IF EXISTS %s CASCADE;\n", qt)
+		def := strings.TrimSuffix(strings.TrimSpace(m.def), ";")
+		fmt.Fprintf(w, "CREATE MATERIALIZED VIEW %s AS\n%s\nWITH NO DATA;\n", qt, def)
+		if m.owner != "" {
+			fmt.Fprintf(w, "ALTER MATERIALIZED VIEW %s OWNER TO %s;\n", qt, quotePGIdent(m.owner))
+		}
+		log.Trace("postgres", "matview dumped", "database", dbName,
+			"matview", m.schema+"."+m.name)
+		if m.populated {
+			refreshes = append(refreshes, fmt.Sprintf("REFRESH MATERIALIZED VIEW %s;\n", qt))
+		}
+	}
+	log.Debug("postgres", "matviews done", "database", dbName, "count", len(matviews))
+	return refreshes, nil
 }
 
 func encodeCopyArrayRaw(rv reflect.Value, jsonCtx bool) string {
