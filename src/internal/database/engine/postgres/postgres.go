@@ -1907,7 +1907,6 @@ func (d *Dumper) dumpACLs(w io.Writer, dbName string, tables []string) error {
 		"SELECT table_schema, table_name FROM information_schema.views "+
 			"WHERE table_schema NOT IN ('pg_catalog', 'information_schema')")
 	if err == nil {
-		extMembers, _ := d.extensionMembers()
 		type viewRef struct{ schema, name string }
 		var views []viewRef
 		for viewRows.Next() {
@@ -1915,13 +1914,14 @@ func (d *Dumper) dumpACLs(w io.Writer, dbName string, tables []string) error {
 			if err := viewRows.Scan(&v.schema, &v.name); err != nil {
 				break
 			}
-			if extMembers[v.schema+"."+v.name] {
-				continue
-			}
 			views = append(views, v)
 		}
 		viewRows.Close()
+		extMembers, _ := d.extensionMembers()
 		for _, v := range views {
+			if extMembers[v.schema+"."+v.name] {
+				continue
+			}
 			grantRelation("VIEW", v.schema, v.name)
 		}
 	}
