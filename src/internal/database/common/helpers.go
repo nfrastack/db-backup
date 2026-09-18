@@ -6,6 +6,8 @@ package common
 
 import "strings"
 
+var CreateDBOnRestore = true
+
 func ConnDB(dbName, fallback string) string {
 	first := strings.Split(dbName, ",")[0]
 	first = strings.TrimSpace(first)
@@ -37,6 +39,7 @@ func DBNamesList(dbName string) []string {
 func EscapePGLit(s string) string {
 	return strings.ReplaceAll(s, "'", "''")
 }
+
 func FirstDBName(dbName string) string {
 	name := strings.Split(dbName, ",")[0]
 	name = strings.TrimSpace(name)
@@ -92,6 +95,7 @@ func SplitSQL(data string) []string {
 	}
 	return stmts
 }
+
 func UnquoteRedisArg(s string) string {
 	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
 		s = s[1 : len(s)-1]

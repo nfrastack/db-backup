@@ -192,26 +192,33 @@ func Restore(r io.Reader, host string, port int, user, pass, dbName string, tlsC
 	}
 
 	ctx := context.Background()
+	if common.CreateDBOnRestore && firstDB != "postgres" && firstDB != "template1" && firstDB != "template0" {
+		bootConn, err := pgx.Connect(ctx, ConnStr(user, pass, host, port, "postgres", tlsCfg))
+		if err != nil {
+			return fmt.Errorf("connect: %w", err)
+		}
+		guardSession(ctx, bootConn)
+		var exists bool
+		if err := bootConn.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname=$1)", firstDB).Scan(&exists); err != nil {
+			bootConn.Close(ctx)
+			return fmt.Errorf("check database: %w", err)
+		}
+		if !exists {
+			if _, err := bootConn.Exec(ctx, "CREATE DATABASE "+quotePGIdent(firstDB)); err != nil {
+				bootConn.Close(ctx)
+				return fmt.Errorf("create db: %w", err)
+			}
+			log.Info("postgres", "database created", "database", firstDB)
+		}
+		bootConn.Close(ctx)
+	}
+
 	conn, err := pgx.Connect(ctx, ConnStr(user, pass, host, port, firstDB, tlsCfg))
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)
 	}
 	defer conn.Close(ctx)
 	guardSession(ctx, conn)
-
-	if firstDB != "postgres" && firstDB != "template1" && firstDB != "template0" {
-		bootstrap := ConnStr(user, pass, host, port, "postgres", tlsCfg)
-		if bootConn, err := pgx.Connect(ctx, bootstrap); err == nil {
-			guardSession(ctx, bootConn)
-			var exists bool
-			bootConn.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname=$1)", firstDB).Scan(&exists)
-			if !exists {
-				sanitized := strings.ReplaceAll(firstDB, "'", "''")
-				bootConn.Exec(ctx, "CREATE DATABASE "+sanitized)
-			}
-			bootConn.Close(ctx)
-		}
-	}
 
 	return pgRestoreStream(ctx, conn, r)
 }

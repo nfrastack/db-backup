@@ -95,10 +95,9 @@ type RestoreConfig struct {
 	Connection string `yaml:"connection"`
 	StorageRef string `yaml:"storage"`
 	ProfileRef string `yaml:"profile,omitempty"`
-
 	Identity   string `yaml:"identity,omitempty"`
 	Passphrase string `yaml:"passphrase,omitempty"`
-
+	CreateDB *bool `yaml:"create_db,omitempty"`
 	Type       string         `yaml:"-"`
 	Host       string         `yaml:"-"`
 	Port       int            `yaml:"-"`

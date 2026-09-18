@@ -21,6 +21,7 @@ import (
 
 	"github.com/nfrastack/db-backup/internal/config"
 	"github.com/nfrastack/db-backup/internal/database"
+	"github.com/nfrastack/db-backup/internal/database/common"
 	"github.com/nfrastack/db-backup/internal/database/registry"
 	"github.com/nfrastack/db-backup/internal/license"
 	"github.com/nfrastack/db-backup/internal/log"
@@ -72,6 +73,7 @@ func cmdRestore(args []string) int {
 	storagePath := fs.String("storage-path", config.StoragePath(), "Storage path/prefix (filesystem)")
 	storageProfile := fs.String("storage-profile", "", "Storage profile (resolved from -c <config>)")
 	restoreProfile := fs.String("profile", "", "Restore profile (resolved from -c <config>, profiles.restore)")
+	createDB := fs.Bool("create-db", true, "Create the target database if it does not exist")
 	compressType := fs.String("compress", "", "Compression type (auto-detect from filename if empty)")
 	encryptionType := fs.String("encryption", "auto", "Encryption type (auto|age|gpg|openssl) - auto detects from magic bytes or the sidecar")
 	agePass := fs.String("age-passphrase", "", "Age passphrase for decryption")
@@ -84,6 +86,8 @@ func cmdRestore(args []string) int {
 
 	log.Info("startup", bannerLine(),
 		"host", runner.Hostname())
+
+	common.CreateDBOnRestore = *createDB
 
 	explicitFlags := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { explicitFlags[f.Name] = true })
@@ -121,6 +125,9 @@ func cmdRestore(args []string) int {
 				fmt.Fprintf(os.Stderr, "  Community restores support AGE encryption and filesystem/S3/webDAV storage only\n")
 				fmt.Fprintf(os.Stderr, "  Pass --type/--host/--name/--file on the command line to skip the restore profile\n")
 				return 1
+			}
+			if !explicitFlags["create-db"] && r.CreateDB != nil {
+				common.CreateDBOnRestore = *r.CreateDB
 			}
 		}
 		if r != nil {

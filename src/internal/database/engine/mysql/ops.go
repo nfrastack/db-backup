@@ -13,6 +13,7 @@ import (
 
 	"github.com/nfrastack/db-backup/internal/config"
 	"github.com/nfrastack/db-backup/internal/database/common"
+	"github.com/nfrastack/db-backup/internal/log"
 )
 
 func ListDatabases(host string, port int, user, pass string, tlsCfg *config.TLSConfig) ([]string, error) {
@@ -96,10 +97,11 @@ func Restore(r io.Reader, host string, port int, user, pass, dbName string, tlsC
 		return fmt.Errorf("ping: %w", err)
 	}
 
-	if firstDB != "" {
+	if firstDB != "" && common.CreateDBOnRestore {
 		if _, err := db.Exec("CREATE DATABASE IF NOT EXISTS `" + firstDB + "`"); err != nil {
 			return fmt.Errorf("create db: %w", err)
 		}
+		log.Info("mysql", "database created", "database", firstDB)
 	}
 
 	data, err := io.ReadAll(r)

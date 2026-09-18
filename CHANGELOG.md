@@ -3,6 +3,7 @@
    ### Added
       - add additional version detail in dump bannner comments
       - add %dbs% filename tag to expand database names when ALL+split_db:false
+      - add restore.create_db and cli create-db variable to control auto db creation
       - (postgres) additional trace output
       - (postgres) avoid server timeout with long operations
       - (storage/webdav) add additional debug and trace verbosity
