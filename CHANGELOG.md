@@ -12,6 +12,9 @@
       - (container) support LOG_LEVEL=TRACE
 
    ### Changed
+      - (postgres) dump exclude auto generated columns
+      - (postgres) encode (multi)range values as text
+      - (postgres) encode (var)bit value as text
       - (mysql) dump escape null bytes
       - (mysql) shrink insert batches on small max_allowed_packet
       - (mysql) verify max_allowed_packet before dump

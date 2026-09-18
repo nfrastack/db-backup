@@ -82,8 +82,33 @@ func (d *Dumper) Close() error {
 }
 
 func (d *Dumper) copyData(w io.Writer, dbName, schema, table string) error {
-	rows, err := d.conn.Query(d.ctxOrBg(),
-		"SELECT * FROM "+quotePGIdent(schema)+"."+quotePGIdent(table))
+	generated := map[string]bool{}
+	var orderedCols []string
+	if crows, err := d.conn.Query(d.ctxOrBg(),
+		"SELECT a.attname, (a.attgenerated != '') AS isgen FROM pg_catalog.pg_attribute a "+
+			"JOIN pg_catalog.pg_class c ON c.oid = a.attrelid "+
+			"JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "+
+			"WHERE n.nspname = $1 AND c.relname = $2 AND a.attnum > 0 AND NOT a.attisdropped "+
+			"ORDER BY a.attnum", schema, table); err == nil {
+		for crows.Next() {
+			var name string
+			var isgen bool
+			if err := crows.Scan(&name, &isgen); err != nil {
+				break
+			}
+			if isgen {
+				generated[name] = true
+			} else {
+				orderedCols = append(orderedCols, quotePGIdent(name))
+			}
+		}
+		crows.Close()
+	}
+	query := "SELECT * FROM " + quotePGIdent(schema) + "." + quotePGIdent(table)
+	if len(generated) > 0 && len(orderedCols) > 0 {
+		query = "SELECT " + strings.Join(orderedCols, ", ") + " FROM " + quotePGIdent(schema) + "." + quotePGIdent(table)
+	}
+	rows, err := d.conn.Query(d.ctxOrBg(), query, pgx.QueryResultFormats{pgx.TextFormatCode})
 	if err != nil {
 		return fmt.Errorf("select %s.%s: %w", schema, table, err)
 	}
@@ -93,6 +118,22 @@ func (d *Dumper) copyData(w io.Writer, dbName, schema, table string) error {
 	colNames := make([]string, len(fields))
 	for i, f := range fields {
 		colNames[i] = string(f.Name)
+	}
+
+	// Columns whose server text form is authoritative: decoded Go values
+	// would not round-trip (ranges, multiranges), so pass the raw bytes
+	// through with COPY escaping, same as the JSON fast path.
+	rawOK := make([]bool, len(fields))
+	for i, f := range fields {
+		switch f.DataTypeOID {
+		case pgOIDOIDJSON, pgOIDOIDJSONB, pgOIDOIDJSONArray, pgOIDOIDJSONBArray:
+			rawOK[i] = true
+		default:
+			if dt, ok := d.conn.TypeMap().TypeForOID(f.DataTypeOID); ok &&
+				strings.HasSuffix(dt.Name, "range") {
+				rawOK[i] = true
+			}
+		}
 	}
 
 	quotedCols := make([]string, len(colNames))
@@ -139,8 +180,7 @@ func (d *Dumper) copyData(w io.Writer, dbName, schema, table string) error {
 				line[i] = "\\N"
 				continue
 			}
-			if haveRaw && isText && (oid == pgOIDOIDJSON || oid == pgOIDOIDJSONB ||
-				oid == pgOIDOIDJSONArray || oid == pgOIDOIDJSONBArray) {
+			if haveRaw && isText && i < len(rawOK) && rawOK[i] {
 				line[i] = escapePgCopy(string(rawVal))
 				continue
 			}
@@ -1428,6 +1468,23 @@ func encodeCopyValue(val any, oid uint32) (string, bool) {
 			return "\\N", false
 		}
 		return formatCopyNumeric(v), false
+	case pgtype.Bits:
+		if !v.Valid {
+			return "\\N", false
+		}
+		var sb strings.Builder
+		for i := int32(0); i < v.Len; i++ {
+			var b byte
+			if int(i/8) < len(v.Bytes) {
+				b = v.Bytes[i/8]
+			}
+			if b&(1<<(7-(i%8))) != 0 {
+				sb.WriteByte('1')
+			} else {
+				sb.WriteByte('0')
+			}
+		}
+		return sb.String(), false
 	case fmt.Stringer:
 		return v.String(), false
 	}
