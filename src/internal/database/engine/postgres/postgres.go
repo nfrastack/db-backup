@@ -576,6 +576,12 @@ func (d *Dumper) dumpDatabase(w io.Writer, dbName string) error {
 	if err := d.dumpRowSecurity(w, dbName, postTables); err != nil {
 		return err
 	}
+	if err := d.dumpRules(w, dbName, postTables); err != nil {
+		return err
+	}
+	if err := d.dumpComments(w, dbName); err != nil {
+		return err
+	}
 	if err := d.dumpBlobs(w, dbName, postTables); err != nil {
 		return err
 	}
@@ -1144,6 +1150,107 @@ func (d *Dumper) dumpRowSecurity(w io.Writer, dbName string, tables []string) er
 		rows.Close()
 	}
 	log.Debug("postgres", "row security done", "database", dbName,
+		"count", count, "elapsed", time.Since(start).Round(time.Millisecond).String())
+	return nil
+}
+
+func (d *Dumper) dumpRules(w io.Writer, dbName string, tables []string) error {
+	start := time.Now()
+	count := 0
+	for _, t := range tables {
+		parts := strings.SplitN(t, ".", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		schema, table := parts[0], parts[1]
+		rows, err := d.conn.Query(d.ctxOrBg(),
+			"SELECT r.rulename, pg_get_ruledef(r.oid) "+
+				"FROM pg_catalog.pg_rewrite r "+
+				"JOIN pg_catalog.pg_class c ON c.oid = r.ev_class "+
+				"JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "+
+				"WHERE n.nspname = $1 AND c.relname = $2 AND r.rulename <> '_RETURN' "+
+				"ORDER BY r.rulename", schema, table)
+		if err != nil {
+			log.Trace("postgres", "rules unavailable", "database", dbName,
+				"table", t, "error", err.Error())
+			continue
+		}
+		for rows.Next() {
+			var name, def string
+			if err := rows.Scan(&name, &def); err != nil {
+				break
+			}
+			if def == "" {
+				continue
+			}
+			count++
+			log.Trace("postgres", "rule dumped", "database", dbName,
+				"table", t, "rule", name)
+			fmt.Fprintf(w, "\n-- Rule: %s (on %s.%s)\n", name, schema, table)
+			fmt.Fprintf(w, "DROP RULE IF EXISTS %s ON %s.%s;\n",
+				quotePGIdent(name), quotePGIdent(schema), quotePGIdent(table))
+			fmt.Fprintf(w, "%s;\n", strings.TrimSuffix(strings.TrimSpace(def), ";"))
+		}
+		rows.Close()
+	}
+	log.Debug("postgres", "rules done", "database", dbName,
+		"count", count, "elapsed", time.Since(start).Round(time.Millisecond).String())
+	return nil
+}
+
+func (d *Dumper) dumpComments(w io.Writer, dbName string) error {
+	start := time.Now()
+	rows, err := d.conn.Query(d.ctxOrBg(),
+		"SELECT n.nspname, c.relname, c.relkind, d.objsubid, a.attname, d.description "+
+			"FROM pg_catalog.pg_description d "+
+			"JOIN pg_catalog.pg_class c ON c.oid = d.objoid "+
+			"JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "+
+			"LEFT JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid AND a.attnum = d.objsubid "+
+			"WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') "+
+			"AND c.relkind IN ('r', 'p', 'v', 'm', 'S', 'i') "+
+			"ORDER BY n.nspname, c.relname, d.objsubid")
+	if err != nil {
+		log.Trace("postgres", "comments unavailable", "database", dbName,
+			"error", err.Error())
+		return nil
+	}
+	extMembers, extErr := d.extensionMembers()
+	if extErr != nil {
+		log.Trace("postgres", "extension members unavailable", "database", dbName,
+			"error", extErr.Error())
+	}
+	kindKw := map[string]string{
+		"r": "TABLE", "p": "TABLE", "v": "VIEW", "m": "MATERIALIZED VIEW",
+		"S": "SEQUENCE", "i": "INDEX",
+	}
+	count := 0
+	for rows.Next() {
+		var schema, rel, kind, desc string
+		var subid int32
+		var col *string
+		if err := rows.Scan(&schema, &rel, &kind, &subid, &col, &desc); err != nil {
+			break
+		}
+		if extMembers[schema+"."+rel] {
+			continue
+		}
+		kw, ok := kindKw[kind]
+		if !ok {
+			continue
+		}
+		count++
+		if subid == 0 {
+			fmt.Fprintf(w, "\n-- Comment: %s %s.%s\n", kw, schema, rel)
+			fmt.Fprintf(w, "COMMENT ON %s %s.%s IS '%s';\n", kw,
+				quotePGIdent(schema), quotePGIdent(rel), escapePGLiteral(desc))
+		} else if col != nil {
+			fmt.Fprintf(w, "\n-- Comment: column %s.%s.%s\n", schema, rel, *col)
+			fmt.Fprintf(w, "COMMENT ON COLUMN %s.%s.%s IS '%s';\n",
+				quotePGIdent(schema), quotePGIdent(rel), quotePGIdent(*col), escapePGLiteral(desc))
+		}
+	}
+	rows.Close()
+	log.Debug("postgres", "comments done", "database", dbName,
 		"count", count, "elapsed", time.Since(start).Round(time.Millisecond).String())
 	return nil
 }
