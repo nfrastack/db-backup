@@ -749,15 +749,25 @@ func (d *Dumper) dumpViews(w io.Writer, dbName string) error {
 	if err != nil {
 		return fmt.Errorf("query views: %w", err)
 	}
-	defer rows.Close()
+	type viewRef struct{ schema, name, def string }
+	var views []viewRef
+	for rows.Next() {
+		var v viewRef
+		if err := rows.Scan(&v.schema, &v.name, &v.def); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan view row: %w", err)
+		}
+		views = append(views, v)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
 
 	extMembers, _ := d.extensionMembers()
 
-	for rows.Next() {
-		var schema, name, def string
-		if err := rows.Scan(&schema, &name, &def); err != nil {
-			return fmt.Errorf("scan view row: %w", err)
-		}
+	for _, v := range views {
+		schema, name, def := v.schema, v.name, v.def
 		if def == "" {
 			continue
 		}
@@ -774,7 +784,7 @@ func (d *Dumper) dumpViews(w io.Writer, dbName string) error {
 		}
 		fmt.Fprintf(w, "\n")
 	}
-	return rows.Err()
+	return nil
 }
 
 func escapePGLiteral(s string) string {
