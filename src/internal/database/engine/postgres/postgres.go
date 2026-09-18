@@ -787,7 +787,9 @@ func (d *Dumper) dumpViews(w io.Writer, dbName string) error {
 			continue
 		}
 		fmt.Fprintf(w, "\n-- View: %s.%s\n", schema, name)
-		fmt.Fprintf(w, "CREATE OR REPLACE VIEW %s.%s AS\n%s;\n", schema, name, def)
+		def = strings.TrimSuffix(strings.TrimSpace(def), ";")
+		fmt.Fprintf(w, "CREATE OR REPLACE VIEW %s.%s AS\n%s;\n",
+			quotePGIdent(schema), quotePGIdent(name), def)
 		if owner, err := d.ownerOf(schema, name); err == nil && owner != "" {
 			fmt.Fprintf(w, "ALTER VIEW %s.%s OWNER TO %s;\n",
 				quotePGIdent(schema), quotePGIdent(name), quotePGIdent(owner))
