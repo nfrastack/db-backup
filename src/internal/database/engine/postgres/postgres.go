@@ -1110,6 +1110,26 @@ func encodeCopyArrayRaw(rv reflect.Value, jsonCtx bool) string {
 			ev = er.Elem().Interface()
 			er = reflect.ValueOf(ev)
 		}
+		if er.Kind() == reflect.Array && er.Len() == 16 && er.Type().Elem().Kind() == reflect.Uint8 {
+			var b [16]byte
+			reflect.Copy(reflect.ValueOf(&b).Elem(), er)
+			s := encodeCopyUUID(b[:])
+			if needsArrayQuoting(s, ev) {
+				elems[i] = quoteArrayElement(s)
+			} else {
+				elems[i] = s
+			}
+			continue
+		}
+		if er.Kind() == reflect.Slice && er.Type().Elem().Kind() == reflect.Uint8 {
+			s := `\x` + hex.EncodeToString(er.Bytes())
+			if needsArrayQuoting(s, ev) {
+				elems[i] = quoteArrayElement(s)
+			} else {
+				elems[i] = s
+			}
+			continue
+		}
 		if er.Kind() == reflect.Slice || er.Kind() == reflect.Array {
 			elems[i] = quoteArrayElement(encodeCopyArrayRaw(er, jsonCtx))
 			continue

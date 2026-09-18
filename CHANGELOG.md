@@ -10,6 +10,7 @@
       - (container) support LOG_LEVEL=TRACE
 
    ### Changed
+      - (postgres) encode uuid and bytea arrays as text
       - (postgres) restore failing with invalid input syntax for type jsonb values
       - (postgres) restore truncation on json rows wider than 1MB
       - (postgres) dump optimize json output routines
