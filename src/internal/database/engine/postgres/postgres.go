@@ -41,11 +41,134 @@ type Dumper struct {
 	SchemaOnly bool
 }
 
+func (d *Dumper) aclGrants(query, schema string, args ...any) ([]pgGrant, error) {
+	rows, err := d.conn.Query(d.ctxOrBg(), query, append([]any{schema}, args...)...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []pgGrant
+	for rows.Next() {
+		var g pgGrant
+		if err := rows.Scan(&g.grantee, &g.priv, &g.grantable); err != nil {
+			return nil, err
+		}
+		out = append(out, g)
+	}
+	return out, rows.Err()
+}
+
+func (d *Dumper) cloneForDB(db string) *Dumper {
+	return &Dumper{
+		host:       d.host,
+		port:       d.port,
+		user:       d.user,
+		pass:       d.pass,
+		dbname:     db,
+		tlsCfg:     d.tlsCfg,
+		connCfg:    d.connCfg,
+		ctx:        d.ctxOrBg(),
+		Tables:     d.Tables,
+		SchemaOnly: d.SchemaOnly,
+		serverVer:  d.serverVer,
+	}
+}
+
 func (d *Dumper) Close() error {
 	if d.conn != nil {
 		return d.conn.Close(context.Background())
 	}
 	return nil
+}
+
+func (d *Dumper) copyData(w io.Writer, dbName, schema, table string) error {
+	rows, err := d.conn.Query(d.ctxOrBg(),
+		"SELECT * FROM "+quotePGIdent(schema)+"."+quotePGIdent(table))
+	if err != nil {
+		return fmt.Errorf("select %s.%s: %w", schema, table, err)
+	}
+	defer rows.Close()
+
+	fields := rows.FieldDescriptions()
+	colNames := make([]string, len(fields))
+	for i, f := range fields {
+		colNames[i] = string(f.Name)
+	}
+
+	quotedCols := make([]string, len(colNames))
+	for i, c := range colNames {
+		quotedCols[i] = quotePGIdent(c)
+	}
+	fmt.Fprintf(w, "COPY %s.%s (%s) FROM stdin;\n", quotePGIdent(schema), quotePGIdent(table), strings.Join(quotedCols, ", "))
+
+	fallbackCols := map[string]bool{}
+	defer func() {
+		if len(fallbackCols) > 0 {
+			names := make([]string, 0, len(fallbackCols))
+			for n := range fallbackCols {
+				names = append(names, n)
+			}
+			sort.Strings(names)
+			log.Trace("postgres", "generic COPY formatting", "database", dbName,
+				"table", schema+"."+table, "columns", strings.Join(names, ","))
+		}
+	}()
+
+	var rowCount int
+	for rows.Next() {
+		raw := rows.RawValues()
+		values, err := rows.Values()
+		if err != nil {
+			return fmt.Errorf("scan: %w", err)
+		}
+
+		line := make([]string, len(values))
+		for i, val := range values {
+			var oid uint32
+			isText := true
+			if i < len(fields) {
+				oid = fields[i].DataTypeOID
+				isText = fields[i].Format == 0
+			}
+			var rawVal []byte
+			haveRaw := i < len(raw)
+			if haveRaw {
+				rawVal = raw[i]
+			}
+			if haveRaw && rawVal == nil {
+				line[i] = "\\N"
+				continue
+			}
+			if haveRaw && isText && (oid == pgOIDOIDJSON || oid == pgOIDOIDJSONB ||
+				oid == pgOIDOIDJSONArray || oid == pgOIDOIDJSONBArray) {
+				line[i] = escapePgCopy(string(rawVal))
+				continue
+			}
+			enc, fallback := encodeCopyValue(val, oid)
+			if fallback {
+				fallbackCols[colNames[i]] = true
+			}
+			line[i] = escapePgCopy(enc)
+		}
+		fmt.Fprintf(w, "%s\n", strings.Join(line, "\t"))
+		rowCount++
+	}
+
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	fmt.Fprintf(w, "\\.\n\n")
+	log.Debug("postgres", "table data done", "database", dbName,
+		"table", schema+"."+table, "rows", rowCount)
+	return nil
+}
+
+func (d *Dumper) ctxOrBg() context.Context {
+	if d.ctx != nil {
+		return d.ctx
+	}
+	return context.Background()
 }
 
 func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
@@ -86,20 +209,414 @@ func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
 	return nil
 }
 
-func (d *Dumper) cloneForDB(db string) *Dumper {
-	return &Dumper{
-		host:       d.host,
-		port:       d.port,
-		user:       d.user,
-		pass:       d.pass,
-		dbname:     db,
-		tlsCfg:     d.tlsCfg,
-		connCfg:    d.connCfg,
-		ctx:        d.ctxOrBg(),
-		Tables:     d.Tables,
-		SchemaOnly: d.SchemaOnly,
-		serverVer:  d.serverVer,
+func (d *Dumper) dumpACLs(w io.Writer, dbName string, tables []string) error {
+	wroteHeader := false
+	grantCount := 0
+	header := func() {
+		if !wroteHeader {
+			fmt.Fprintf(w, "\n-- Post-data ACLs (permissions)\n")
+			wroteHeader = true
+		}
 	}
+
+	grantRelation := func(kind, schema, name string) {
+		grants, err := d.relationGrants(schema, name)
+		if err != nil {
+			log.Trace("postgres", "grants unavailable", "database", dbName,
+				"object", kind+" "+schema+"."+name, "error", err.Error())
+			return
+		}
+		if len(grants) == 0 {
+			log.Trace("postgres", "no explicit grants", "database", dbName,
+				"object", kind+" "+schema+"."+name)
+			return
+		}
+		grantCount += len(grants)
+		log.Trace("postgres", "grants dumped", "database", dbName,
+			"object", kind+" "+schema+"."+name, "grants", len(grants))
+		header()
+		fmt.Fprintf(w, "\n-- ACL: %s %s.%s\n", kind, schema, name)
+		fmt.Fprint(w, formatGrants(
+			"TABLE "+quotePGIdent(schema)+"."+quotePGIdent(name), grants))
+	}
+
+	for _, t := range tables {
+		parts := strings.SplitN(t, ".", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		grantRelation("TABLE", parts[0], parts[1])
+	}
+
+	viewRows, err := d.conn.Query(d.ctxOrBg(),
+		"SELECT table_schema, table_name FROM information_schema.views "+
+			"WHERE table_schema NOT IN ('pg_catalog', 'information_schema')")
+	if err == nil {
+		type viewRef struct{ schema, name string }
+		var views []viewRef
+		for viewRows.Next() {
+			var v viewRef
+			if err := viewRows.Scan(&v.schema, &v.name); err != nil {
+				break
+			}
+			views = append(views, v)
+		}
+		viewRows.Close()
+		extMembers, extErr := d.extensionMembers()
+		if extErr != nil {
+			log.Trace("postgres", "extension members unavailable", "database", dbName,
+				"error", extErr.Error())
+		}
+		for _, v := range views {
+			if extMembers[v.schema+"."+v.name] {
+				continue
+			}
+			grantRelation("VIEW", v.schema, v.name)
+		}
+	}
+
+	funcRows, err := d.conn.Query(d.ctxOrBg(),
+		"SELECT n.nspname, p.proname, pg_get_function_identity_arguments(p.oid), "+
+			"pg_get_userbyid(p.proowner), p.proacl FROM pg_catalog.pg_proc p "+
+			"JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace "+
+			"WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') "+
+			"AND p.prokind IN ('f', 'p') "+
+			"AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = p.oid AND dd.deptype = 'e') "+
+			"ORDER BY n.nspname, p.proname")
+	if err != nil {
+		return nil
+	}
+	type funcRef struct{ schema, name, args, owner, acl string }
+	var funcs []funcRef
+	for funcRows.Next() {
+		var f funcRef
+		var aclVal sql.NullString
+		if err := funcRows.Scan(&f.schema, &f.name, &f.args, &f.owner, &aclVal); err != nil {
+			continue
+		}
+		if aclVal.Valid {
+			f.acl = aclVal.String
+		}
+		funcs = append(funcs, f)
+	}
+	funcRows.Close()
+	if err := funcRows.Err(); err != nil {
+		return err
+	}
+	for _, f := range funcs {
+		schema, name, args, owner := f.schema, f.name, f.args, f.owner
+		ident := quotePGIdent(schema) + "." + quotePGIdent(name) + "(" + args + ")"
+		emitted := false
+		if owner != "" {
+			header()
+			if !emitted {
+				fmt.Fprintf(w, "\n-- ACL: FUNCTION %s.%s(%s)\n", schema, name, args)
+				emitted = true
+			}
+			fmt.Fprintf(w, "ALTER FUNCTION %s OWNER TO %s;\n", ident, quotePGIdent(owner))
+		}
+		if f.acl != "" && f.acl != "{}" {
+			grants, err := d.funcGrants(schema, name, args)
+			if err != nil {
+				log.Trace("postgres", "grants unavailable", "database", dbName,
+					"object", "FUNCTION "+schema+"."+name, "error", err.Error())
+			} else if len(grants) > 0 {
+				grantCount += len(grants)
+				log.Trace("postgres", "grants dumped", "database", dbName,
+					"object", "FUNCTION "+schema+"."+name, "grants", len(grants))
+				header()
+				if !emitted {
+					fmt.Fprintf(w, "\n-- ACL: FUNCTION %s.%s(%s)\n", schema, name, args)
+				}
+				fmt.Fprint(w, formatGrants("FUNCTION "+ident, grants))
+			}
+		}
+	}
+	log.Debug("postgres", "ACLs done", "database", dbName, "grants", grantCount)
+	return nil
+}
+
+func (d *Dumper) dumpAll(w io.Writer) error {
+	dbs, err := d.listDatabases()
+	if err != nil {
+		return err
+	}
+	for _, db := range dbs {
+		if isPgSystemDB(db) {
+			continue
+		}
+		nd := d.cloneForDB(db)
+		if err := nd.OpenContext(d.ctxOrBg()); err != nil {
+			return fmt.Errorf("connect %s: %w", db, err)
+		}
+		if err := nd.dumpDatabase(w, db); err != nil {
+			nd.Close()
+			return err
+		}
+		nd.Close()
+	}
+	return nil
+}
+
+func (d *Dumper) dumpBlobs(w io.Writer, dbName string, tables []string) error {
+	if d.SchemaOnly {
+		return nil
+	}
+	start := time.Now()
+	loCols := map[string][]string{}
+	for _, t := range tables {
+		parts := strings.SplitN(t, ".", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		cols, err := d.loColumns(parts[0], parts[1])
+		if err != nil {
+			log.Trace("postgres", "lo columns unavailable", "database", dbName,
+				"table", t, "error", err.Error())
+			continue
+		}
+		if len(cols) > 0 {
+			loCols[t] = cols
+		}
+	}
+	if len(loCols) == 0 {
+		return nil
+	}
+
+	oids := map[uint32]bool{}
+	var ordered []uint32
+	for t, cols := range loCols {
+		parts := strings.SplitN(t, ".", 2)
+		for _, c := range cols {
+			rows, err := d.conn.Query(d.ctxOrBg(),
+				"SELECT DISTINCT "+quotePGIdent(c)+" FROM "+
+					quotePGIdent(parts[0])+"."+quotePGIdent(parts[1])+
+					" WHERE "+quotePGIdent(c)+" IS NOT NULL")
+			if err != nil {
+				log.Trace("postgres", "lo oids unreadable", "database", dbName,
+					"table", t, "column", c, "error", err.Error())
+				continue
+			}
+			for rows.Next() {
+				var oid uint32
+				if err := rows.Scan(&oid); err != nil {
+					continue
+				}
+				if !oids[oid] {
+					oids[oid] = true
+					ordered = append(ordered, oid)
+				}
+			}
+			rows.Close()
+		}
+	}
+	if len(ordered) == 0 {
+		return nil
+	}
+
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i] < ordered[j] })
+	fmt.Fprintf(w, "\n-- Large objects\n")
+	for _, oid := range ordered {
+		fmt.Fprintf(w, "DO $$BEGIN IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_largeobject_metadata WHERE oid = %d) THEN PERFORM pg_catalog.lo_create(%d); END IF; END$$;\n", oid, oid)
+		fmt.Fprintf(w, "DELETE FROM pg_catalog.pg_largeobject WHERE loid = %d;\n", oid)
+	}
+	idList := make([]string, len(ordered))
+	for i, oid := range ordered {
+		idList[i] = strconv.FormatUint(uint64(oid), 10)
+	}
+	fmt.Fprintf(w, "COPY pg_catalog.pg_largeobject (loid, pageno, data) FROM stdin;\n")
+	rows, err := d.conn.Query(d.ctxOrBg(),
+		"SELECT loid, pageno, data FROM pg_catalog.pg_largeobject WHERE loid IN ("+
+			strings.Join(idList, ", ")+") ORDER BY loid, pageno")
+	if err != nil {
+		return fmt.Errorf("read large objects: %w", err)
+	}
+	pages := 0
+	for rows.Next() {
+		var loid, pageno uint32
+		var data []byte
+		if err := rows.Scan(&loid, &pageno, &data); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan large object: %w", err)
+		}
+		fmt.Fprintf(w, "%d\t%d\t\\\\x%s\n", loid, pageno, hex.EncodeToString(data))
+		pages++
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	fmt.Fprintf(w, "\\.\n\n")
+	log.Debug("postgres", "large objects done", "database", dbName,
+		"objects", len(ordered), "pages", pages,
+		"elapsed", time.Since(start).Round(time.Millisecond).String())
+	return nil
+}
+
+func (d *Dumper) dumpDatabase(w io.Writer, dbName string) error {
+	dbStart := time.Now()
+	fmt.Fprintf(w, "\n-- Database: %s\n", dbName)
+
+	tables, err := d.listTables(dbName)
+	if err != nil {
+		return err
+	}
+	log.Debug("postgres", "dumping database",
+		"database", dbName, "tables", len(tables))
+
+	var included []string
+	for _, table := range tables {
+		if d.Tables != nil {
+			ok, _ := d.Tables.Apply(table)
+			if !ok {
+				if _, bare, cut := strings.Cut(table, "."); cut {
+					ok, _ = d.Tables.Apply(bare)
+				}
+			}
+			if !ok {
+				log.Trace("postgres", "table excluded by filter", "database", dbName, "table", table)
+				continue
+			}
+		}
+		included = append(included, table)
+	}
+
+	if err := d.dumpDrops(w, dbName, included); err != nil {
+		return err
+	}
+
+	if err := d.dumpSchemas(w, dbName, included); err != nil {
+		return err
+	}
+	if err := d.dumpExtensions(w, dbName); err != nil {
+		return err
+	}
+	if err := d.dumpTypes(w, dbName); err != nil {
+		return err
+	}
+
+	if err := d.dumpSequences(w, dbName); err != nil {
+		return err
+	}
+
+	postTables := append([]string{}, included...)
+	for _, table := range included {
+		common.TraceTable(d.ctxOrBg(), dbName, table)
+		partitionNames, err := d.dumpTable(w, dbName, table)
+		if err != nil {
+			return err
+		}
+		postTables = append(postTables, partitionNames...)
+	}
+
+	if err := d.dumpViews(w, dbName); err != nil {
+		return err
+	}
+	if err := d.dumpFunctions(w, dbName); err != nil {
+		return err
+	}
+
+	if err := d.dumpTriggers(w, dbName, postTables); err != nil {
+		return err
+	}
+	if err := d.dumpBlobs(w, dbName, postTables); err != nil {
+		return err
+	}
+	if err := d.dumpSequenceValues(w, dbName); err != nil {
+		return err
+	}
+	if err := d.dumpACLs(w, dbName, postTables); err != nil {
+		return err
+	}
+	log.Debug("postgres", "database done",
+		"database", dbName, "tables", len(tables),
+		"elapsed", time.Since(dbStart).Round(time.Millisecond).String())
+	return nil
+}
+
+func (d *Dumper) dumpDrops(w io.Writer, dbName string, included []string) error {
+	fmt.Fprintf(w, "\n-- Drops (re-restore safety)\n")
+	for _, t := range included {
+		parts := strings.SplitN(t, ".", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		log.Trace("postgres", "table dropped", "database", dbName, "table", t)
+		fmt.Fprintf(w, "DROP TABLE IF EXISTS %s.%s CASCADE;\n",
+			quotePGIdent(parts[0]), quotePGIdent(parts[1]))
+	}
+	if seqs, err := d.listUserSequences(); err == nil {
+		for _, s := range seqs {
+			fmt.Fprintf(w, "DROP SEQUENCE IF EXISTS %s.%s CASCADE;\n",
+				quotePGIdent(s[0]), quotePGIdent(s[1]))
+		}
+	} else {
+		log.Trace("postgres", "sequence drops unavailable", "database", dbName, "error", err.Error())
+	}
+	if types, err := d.listUserTypes(); err == nil {
+		for _, t := range types {
+			kw := "TYPE"
+			if t.kind == "d" {
+				kw = "DOMAIN"
+			}
+			fmt.Fprintf(w, "DROP %s IF EXISTS %s.%s CASCADE;\n", kw,
+				quotePGIdent(t.schema), quotePGIdent(t.name))
+		}
+	} else {
+		log.Trace("postgres", "type drops unavailable", "database", dbName, "error", err.Error())
+	}
+	return nil
+}
+
+func (d *Dumper) dumpExtensions(w io.Writer, dbName string) error {
+	rows, err := d.conn.Query(d.ctxOrBg(),
+		"SELECT e.extname, n.nspname FROM pg_catalog.pg_extension e "+
+			"JOIN pg_catalog.pg_namespace n ON n.oid = e.extnamespace ORDER BY e.extname")
+	if err != nil {
+		return fmt.Errorf("list extensions: %w", err)
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var ext, schema string
+		if err := rows.Scan(&ext, &schema); err != nil {
+			return fmt.Errorf("scan extension row: %w", err)
+		}
+		names = append(names, ext)
+		fmt.Fprintf(w, "\n-- Extension: %s\n", ext)
+		fmt.Fprintf(w, "CREATE EXTENSION IF NOT EXISTS %s WITH SCHEMA %s;\n",
+			quotePGIdent(ext), quotePGIdent(schema))
+		log.Trace("postgres", "extension dumped", "database", dbName, "extension", ext, "schema", schema)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	log.Debug("postgres", "extensions done", "database", dbName,
+		"count", len(names), "extensions", strings.Join(names, ","))
+	return nil
+}
+
+func (d *Dumper) dumpFunctions(w io.Writer, dbName string) error {
+	rows, err := d.conn.Query(d.ctxOrBg(),
+		"SELECT proname, pg_get_functiondef(oid) FROM pg_proc "+
+			"WHERE pronamespace NOT IN ('pg_catalog'::regnamespace, 'information_schema'::regnamespace) "+
+			"AND prokind IN ('f', 'p') "+
+			"AND NOT EXISTS (SELECT 1 FROM pg_depend dd WHERE dd.objid = pg_proc.oid AND dd.deptype = 'e')")
+	if err != nil {
+		return fmt.Errorf("query functions: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var name, def string
+		if err := rows.Scan(&name, &def); err != nil {
+			return fmt.Errorf("scan function row: %w", err)
+		}
+		def = strings.TrimSuffix(strings.TrimSpace(def), ";") + ";"
+		log.Trace("postgres", "function dumped", "database", dbName, "function", name)
+		fmt.Fprintf(w, "\n-- Function: %s\n%s\n\n", name, def)
+	}
+	return rows.Err()
 }
 
 func (d *Dumper) DumpGlobals(w io.Writer) error {
@@ -190,352 +707,113 @@ func (d *Dumper) DumpGlobals(w io.Writer) error {
 	return rows.Err()
 }
 
-func NewDumper(host string, port int, user, pass, dbname string, tlsCfg ...*config.TLSConfig) *Dumper {
-	if port == 0 {
-		port = 5432
+func (d *Dumper) dumpPartitions(w io.Writer, dbName, schema, table string, schemaOnly bool, depth int) ([]string, error) {
+	if depth > 8 {
+		return nil, fmt.Errorf("partition nesting too deep at %s.%s", schema, table)
 	}
-	d := &Dumper{
-		host:   host,
-		port:   port,
-		user:   user,
-		pass:   pass,
-		dbname: dbname,
-	}
-	if len(tlsCfg) > 0 && tlsCfg[0] != nil {
-		d.tlsCfg = tlsCfg[0]
-	}
-	return d
-}
-
-func (d *Dumper) Open() error {
-	return d.OpenContext(context.Background())
-}
-
-func (d *Dumper) OpenContext(ctx context.Context) error {
-	d.ctx = ctx
-	log.Debug("postgres", "connect start",
-		"host", d.host, "port", d.port, "user", d.user,
-		"tls", d.tlsCfg != nil)
-	probe := func() error { return common.TCPDial(d.host, d.port) }
-	connect := func() error {
-		connStr := ConnStr(d.user, d.pass, d.host, d.port, d.dbname, d.tlsCfg)
-		var err error
-		connectCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		defer cancel()
-		d.conn, err = pgx.Connect(connectCtx, connStr)
-		if err != nil {
-			return fmt.Errorf("connect: %w", err)
-		}
-		return nil
-	}
-	ping := func() error {
-		var ver string
-		if err := d.conn.QueryRow(ctx, "SELECT VERSION()").Scan(&ver); err != nil {
-			return fmt.Errorf("ping: %w", err)
-		}
-		d.serverVer = ver
-		log.Debug("postgres", "connected",
-			"host", d.host, "port", d.port, "server", ver)
-		return nil
-	}
-	return common.WithConnectivity(ctx, "postgres", d.connCfg, probe, connect, ping)
-}
-
-func (d *Dumper) SetConnectivity(cfg *config.ConnectivityConfig) {
-	if cfg != nil {
-		d.connCfg = cfg
-	}
-}
-
-func (d *Dumper) SetTableFilter(f *config.TableFilter, schemaOnly bool) {
-	d.Tables = f
-	d.SchemaOnly = schemaOnly
-}
-
-func (d *Dumper) copyData(w io.Writer, dbName, schema, table string) error {
 	rows, err := d.conn.Query(d.ctxOrBg(),
-		"SELECT * FROM "+quotePGIdent(schema)+"."+quotePGIdent(table))
-	if err != nil {
-		return fmt.Errorf("select %s.%s: %w", schema, table, err)
-	}
-	defer rows.Close()
-
-	fields := rows.FieldDescriptions()
-	colNames := make([]string, len(fields))
-	for i, f := range fields {
-		colNames[i] = string(f.Name)
-	}
-
-	quotedCols := make([]string, len(colNames))
-	for i, c := range colNames {
-		quotedCols[i] = quotePGIdent(c)
-	}
-	fmt.Fprintf(w, "COPY %s.%s (%s) FROM stdin;\n", quotePGIdent(schema), quotePGIdent(table), strings.Join(quotedCols, ", "))
-
-	fallbackCols := map[string]bool{}
-	defer func() {
-		if len(fallbackCols) > 0 {
-			names := make([]string, 0, len(fallbackCols))
-			for n := range fallbackCols {
-				names = append(names, n)
-			}
-			sort.Strings(names)
-			log.Trace("postgres", "generic COPY formatting", "database", dbName,
-				"table", schema+"."+table, "columns", strings.Join(names, ","))
-		}
-	}()
-
-	var rowCount int
-	for rows.Next() {
-		values, err := rows.Values()
-		if err != nil {
-			return fmt.Errorf("scan: %w", err)
-		}
-
-		line := make([]string, len(values))
-		for i, val := range values {
-			var oid uint32
-			if i < len(fields) {
-				oid = fields[i].DataTypeOID
-			}
-			enc, fallback := encodeCopyValue(val, oid)
-			if fallback {
-				fallbackCols[colNames[i]] = true
-			}
-			line[i] = enc
-		}
-		fmt.Fprintf(w, "%s\n", strings.Join(line, "\t"))
-		rowCount++
-	}
-
-	if err := rows.Err(); err != nil {
-		return err
-	}
-
-	fmt.Fprintf(w, "\\.\n\n")
-	log.Debug("postgres", "table data done", "database", dbName,
-		"table", schema+"."+table, "rows", rowCount)
-	return nil
-}
-func (d *Dumper) ctxOrBg() context.Context {
-	if d.ctx != nil {
-		return d.ctx
-	}
-	return context.Background()
-}
-
-func (d *Dumper) dumpAll(w io.Writer) error {
-	dbs, err := d.listDatabases()
-	if err != nil {
-		return err
-	}
-	for _, db := range dbs {
-		if isPgSystemDB(db) {
-			continue
-		}
-		nd := d.cloneForDB(db)
-		if err := nd.OpenContext(d.ctxOrBg()); err != nil {
-			return fmt.Errorf("connect %s: %w", db, err)
-		}
-		if err := nd.dumpDatabase(w, db); err != nil {
-			nd.Close()
-			return err
-		}
-		nd.Close()
-	}
-	return nil
-}
-
-func (d *Dumper) dumpDatabase(w io.Writer, dbName string) error {
-	dbStart := time.Now()
-	fmt.Fprintf(w, "\n-- Database: %s\n", dbName)
-
-	tables, err := d.listTables(dbName)
-	if err != nil {
-		return err
-	}
-	log.Debug("postgres", "dumping database",
-		"database", dbName, "tables", len(tables))
-
-	var included []string
-	for _, table := range tables {
-		if d.Tables != nil {
-			ok, _ := d.Tables.Apply(table)
-			if !ok {
-				if _, bare, cut := strings.Cut(table, "."); cut {
-					ok, _ = d.Tables.Apply(bare)
-				}
-			}
-			if !ok {
-				log.Trace("postgres", "table excluded by filter", "database", dbName, "table", table)
-				continue
-			}
-		}
-		included = append(included, table)
-	}
-
-	if err := d.dumpDrops(w, dbName, included); err != nil {
-		return err
-	}
-
-	if err := d.dumpSchemas(w, dbName, included); err != nil {
-		return err
-	}
-	if err := d.dumpExtensions(w, dbName); err != nil {
-		return err
-	}
-	if err := d.dumpTypes(w, dbName); err != nil {
-		return err
-	}
-
-	if err := d.dumpSequences(w, dbName); err != nil {
-		return err
-	}
-
-	postTables := append([]string{}, included...)
-	for _, table := range included {
-		common.TraceTable(d.ctxOrBg(), dbName, table)
-		partitionNames, err := d.dumpTable(w, dbName, table)
-		if err != nil {
-			return err
-		}
-		postTables = append(postTables, partitionNames...)
-	}
-
-	if err := d.dumpViews(w, dbName); err != nil {
-		return err
-	}
-	if err := d.dumpFunctions(w, dbName); err != nil {
-		return err
-	}
-
-	if err := d.dumpTriggers(w, dbName, postTables); err != nil {
-		return err
-	}
-	if err := d.dumpBlobs(w, dbName, postTables); err != nil {
-		return err
-	}
-	if err := d.dumpSequenceValues(w, dbName); err != nil {
-		return err
-	}
-	if err := d.dumpACLs(w, dbName, postTables); err != nil {
-		return err
-	}
-	log.Debug("postgres", "database done",
-		"database", dbName, "tables", len(tables),
-		"elapsed", time.Since(dbStart).Round(time.Millisecond).String())
-	return nil
-}
-
-func (d *Dumper) dumpFunctions(w io.Writer, dbName string) error {
-	rows, err := d.conn.Query(d.ctxOrBg(),
-		"SELECT proname, pg_get_functiondef(oid) FROM pg_proc "+
-			"WHERE pronamespace NOT IN ('pg_catalog'::regnamespace, 'information_schema'::regnamespace) "+
-			"AND prokind IN ('f', 'p') "+
-			"AND NOT EXISTS (SELECT 1 FROM pg_depend dd WHERE dd.objid = pg_proc.oid AND dd.deptype = 'e')")
-	if err != nil {
-		return fmt.Errorf("query functions: %w", err)
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var name, def string
-		if err := rows.Scan(&name, &def); err != nil {
-			return fmt.Errorf("scan function row: %w", err)
-		}
-		def = strings.TrimSuffix(strings.TrimSpace(def), ";") + ";"
-		log.Trace("postgres", "function dumped", "database", dbName, "function", name)
-		fmt.Fprintf(w, "\n-- Function: %s\n%s\n\n", name, def)
-	}
-	return rows.Err()
-}
-
-func (d *Dumper) listUserSequences() ([][3]string, error) {
-	rows, err := d.conn.Query(d.ctxOrBg(),
-		"SELECT n.nspname, c.relname, pg_get_userbyid(c.relowner) "+
+		"SELECT n.nspname, c.relname, pg_get_expr(c.relpartbound, c.oid) "+
 			"FROM pg_catalog.pg_class c "+
 			"JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "+
-			"WHERE c.relkind = 'S' "+
-			"AND n.nspname NOT IN ('pg_catalog', 'information_schema') "+
-			"AND n.nspname NOT LIKE 'pg\\_%' "+
-			"AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = c.oid AND dd.deptype = 'e') "+
-			"ORDER BY n.nspname, c.relname")
+			"JOIN pg_catalog.pg_inherits i ON i.inhrelid = c.oid "+
+			"JOIN pg_catalog.pg_class p ON p.oid = i.inhparent "+
+			"JOIN pg_catalog.pg_namespace pn ON pn.oid = p.relnamespace "+
+			"WHERE pn.nspname = $1 AND p.relname = $2 ORDER BY c.relname", schema, table)
 	if err != nil {
-		return nil, fmt.Errorf("list sequences: %w", err)
+		return nil, fmt.Errorf("list partitions: %w", err)
 	}
-	defer rows.Close()
-	var out [][3]string
+	type partRef struct{ schema, name, bound string }
+	var parts []partRef
 	for rows.Next() {
-		var s [3]string
-		if err := rows.Scan(&s[0], &s[1], &s[2]); err != nil {
-			return nil, fmt.Errorf("scan sequence row: %w", err)
+		var p partRef
+		if err := rows.Scan(&p.schema, &p.name, &p.bound); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan partition row: %w", err)
 		}
-		out = append(out, s)
+		parts = append(parts, p)
 	}
-	return out, rows.Err()
-}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 
-func (d *Dumper) dumpDrops(w io.Writer, dbName string, included []string) error {
-	fmt.Fprintf(w, "\n-- Drops (re-restore safety)\n")
-	for _, t := range included {
-		parts := strings.SplitN(t, ".", 2)
-		if len(parts) != 2 {
+	var dumped []string
+	for _, p := range parts {
+		pschema, pname, bound := p.schema, p.name, p.bound
+		qualified := pschema + "." + pname
+		dumped = append(dumped, qualified)
+		common.TraceTable(d.ctxOrBg(), dbName, qualified)
+		log.Trace("postgres", "partition dumped", "database", dbName,
+			"table", qualified, "parent", schema+"."+table)
+		fmt.Fprintf(w, "\n-- Partition: %s (of %s.%s)\n", qualified, schema, table)
+		fmt.Fprintf(w, "CREATE TABLE %s PARTITION OF %s.%s %s;\n",
+			quotePGIdent(pschema)+"."+quotePGIdent(pname),
+			quotePGIdent(schema), quotePGIdent(table), bound)
+		if owner, err := d.ownerOf(pschema, pname); err == nil && owner != "" {
+			fmt.Fprintf(w, "ALTER TABLE %s.%s OWNER TO %s;\n",
+				quotePGIdent(pschema), quotePGIdent(pname), quotePGIdent(owner))
+		} else if err != nil {
+			log.Trace("postgres", "owner unavailable", "database", dbName,
+				"table", pschema+"."+pname, "error", err.Error())
+		}
+		fmt.Fprintf(w, "\n")
+		if schemaOnly {
 			continue
 		}
-		log.Trace("postgres", "table dropped", "database", dbName, "table", t)
-		fmt.Fprintf(w, "DROP TABLE IF EXISTS %s.%s CASCADE;\n",
-			quotePGIdent(parts[0]), quotePGIdent(parts[1]))
-	}
-	if seqs, err := d.listUserSequences(); err == nil {
-		for _, s := range seqs {
-			fmt.Fprintf(w, "DROP SEQUENCE IF EXISTS %s.%s CASCADE;\n",
-				quotePGIdent(s[0]), quotePGIdent(s[1]))
+		if err := d.copyData(w, dbName, pschema, pname); err != nil {
+			return dumped, err
 		}
-	} else {
-		log.Trace("postgres", "sequence drops unavailable", "database", dbName, "error", err.Error())
-	}
-	if types, err := d.listUserTypes(); err == nil {
-		for _, t := range types {
-			kw := "TYPE"
-			if t.kind == "d" {
-				kw = "DOMAIN"
+		if d.isPartitioned(pschema, pname) {
+			nested, err := d.dumpPartitions(w, dbName, pschema, pname, schemaOnly, depth+1)
+			if err != nil {
+				return dumped, err
 			}
-			fmt.Fprintf(w, "DROP %s IF EXISTS %s.%s CASCADE;\n", kw,
-				quotePGIdent(t.schema), quotePGIdent(t.name))
+			dumped = append(dumped, nested...)
+		}
+	}
+	return dumped, nil
+}
+
+func (d *Dumper) dumpSchemas(w io.Writer, dbName string, included []string) error {
+	schemas, err := d.listSchemas()
+	if err != nil {
+		return err
+	}
+	needed := map[string]bool{}
+	if d.Tables == nil {
+		for _, s := range schemas {
+			needed[s.name] = true
 		}
 	} else {
-		log.Trace("postgres", "type drops unavailable", "database", dbName, "error", err.Error())
+		for _, t := range included {
+			if parts := strings.SplitN(t, ".", 2); len(parts) == 2 {
+				needed[parts[0]] = true
+			}
+		}
+	}
+	for _, s := range schemas {
+		if !needed[s.name] {
+			log.Trace("postgres", "schema skipped by filter", "database", dbName, "schema", s.name)
+			continue
+		}
+		log.Trace("postgres", "schema dumped", "database", dbName, "schema", s.name, "owner", s.owner)
+		fmt.Fprintf(w, "\n-- Schema: %s\n", s.name)
+		fmt.Fprintf(w, "CREATE SCHEMA IF NOT EXISTS %s;\n", quotePGIdent(s.name))
+		if s.owner != "" {
+			fmt.Fprintf(w, "ALTER SCHEMA %s OWNER TO %s;\n",
+				quotePGIdent(s.name), quotePGIdent(s.owner))
+		}
+		if grants, err := d.schemaGrants(s.name); err != nil {
+			log.Trace("postgres", "schema grants unavailable", "database", dbName,
+				"schema", s.name, "error", err.Error())
+		} else if len(grants) > 0 {
+			fmt.Fprint(w, formatGrants("SCHEMA "+quotePGIdent(s.name), grants))
+		}
 	}
 	return nil
 }
 
 type userTypeRef struct{ schema, name, kind string }
-
-func (d *Dumper) listUserTypes() ([]userTypeRef, error) {
-	rows, err := d.conn.Query(d.ctxOrBg(),
-		"SELECT n.nspname, t.typname, t.typtype "+
-			"FROM pg_catalog.pg_type t "+
-			"JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace "+
-			"WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') "+
-			"AND n.nspname NOT LIKE 'pg\\_%' "+
-			"AND t.typtype IN ('e', 'c', 'd', 'r', 'm') "+
-			"AND (t.typrelid = 0 OR (SELECT c.relkind FROM pg_catalog.pg_class c WHERE c.oid = t.typrelid) = 'c') "+
-			"AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = t.oid AND dd.deptype = 'e') "+
-			"ORDER BY t.oid")
-	if err != nil {
-		return nil, fmt.Errorf("list types: %w", err)
-	}
-	defer rows.Close()
-	var out []userTypeRef
-	for rows.Next() {
-		var r userTypeRef
-		if err := rows.Scan(&r.schema, &r.name, &r.kind); err != nil {
-			return nil, fmt.Errorf("scan type row: %w", err)
-		}
-		out = append(out, r)
-	}
-	return out, rows.Err()
-}
 
 func (d *Dumper) dumpSequences(w io.Writer, dbName string) error {
 	start := time.Now()
@@ -672,80 +950,93 @@ func (d *Dumper) dumpTable(w io.Writer, dbName, table string) ([]string, error) 
 	return nil, nil
 }
 
-func (d *Dumper) isPartitioned(schema, table string) bool {
-	var kind string
-	err := d.conn.QueryRow(d.ctxOrBg(),
-		"SELECT c.relkind FROM pg_catalog.pg_class c "+
-			"JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "+
-			"WHERE n.nspname = $1 AND c.relname = $2", schema, table).Scan(&kind)
-	return err == nil && kind == "p"
-}
-
-func (d *Dumper) dumpPartitions(w io.Writer, dbName, schema, table string, schemaOnly bool, depth int) ([]string, error) {
-	if depth > 8 {
-		return nil, fmt.Errorf("partition nesting too deep at %s.%s", schema, table)
-	}
-	rows, err := d.conn.Query(d.ctxOrBg(),
-		"SELECT n.nspname, c.relname, pg_get_expr(c.relpartbound, c.oid) "+
-			"FROM pg_catalog.pg_class c "+
-			"JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "+
-			"JOIN pg_catalog.pg_inherits i ON i.inhrelid = c.oid "+
-			"JOIN pg_catalog.pg_class p ON p.oid = i.inhparent "+
-			"JOIN pg_catalog.pg_namespace pn ON pn.oid = p.relnamespace "+
-			"WHERE pn.nspname = $1 AND p.relname = $2 ORDER BY c.relname", schema, table)
-	if err != nil {
-		return nil, fmt.Errorf("list partitions: %w", err)
-	}
-	type partRef struct{ schema, name, bound string }
-	var parts []partRef
-	for rows.Next() {
-		var p partRef
-		if err := rows.Scan(&p.schema, &p.name, &p.bound); err != nil {
-			rows.Close()
-			return nil, fmt.Errorf("scan partition row: %w", err)
-		}
-		parts = append(parts, p)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-
-	var dumped []string
-	for _, p := range parts {
-		pschema, pname, bound := p.schema, p.name, p.bound
-		qualified := pschema + "." + pname
-		dumped = append(dumped, qualified)
-		common.TraceTable(d.ctxOrBg(), dbName, qualified)
-		log.Trace("postgres", "partition dumped", "database", dbName,
-			"table", qualified, "parent", schema+"."+table)
-		fmt.Fprintf(w, "\n-- Partition: %s (of %s.%s)\n", qualified, schema, table)
-		fmt.Fprintf(w, "CREATE TABLE %s PARTITION OF %s.%s %s;\n",
-			quotePGIdent(pschema)+"."+quotePGIdent(pname),
-			quotePGIdent(schema), quotePGIdent(table), bound)
-		if owner, err := d.ownerOf(pschema, pname); err == nil && owner != "" {
-			fmt.Fprintf(w, "ALTER TABLE %s.%s OWNER TO %s;\n",
-				quotePGIdent(pschema), quotePGIdent(pname), quotePGIdent(owner))
-		} else if err != nil {
-			log.Trace("postgres", "owner unavailable", "database", dbName,
-				"table", pschema+"."+pname, "error", err.Error())
-		}
-		fmt.Fprintf(w, "\n")
-		if schemaOnly {
+func (d *Dumper) dumpTriggers(w io.Writer, dbName string, tables []string) error {
+	start := time.Now()
+	count := 0
+	for _, t := range tables {
+		parts := strings.SplitN(t, ".", 2)
+		if len(parts) != 2 {
 			continue
 		}
-		if err := d.copyData(w, dbName, pschema, pname); err != nil {
-			return dumped, err
+		schema, table := parts[0], parts[1]
+		rows, err := d.conn.Query(d.ctxOrBg(),
+			"SELECT tg.tgname, pg_get_triggerdef(tg.oid) "+
+				"FROM pg_catalog.pg_trigger tg "+
+				"JOIN pg_catalog.pg_class c ON c.oid = tg.tgrelid "+
+				"JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "+
+				"WHERE n.nspname = $1 AND c.relname = $2 AND NOT tg.tgisinternal "+
+				"ORDER BY tg.tgname", schema, table)
+		if err != nil {
+			log.Trace("postgres", "triggers unavailable", "database", dbName,
+				"table", t, "error", err.Error())
+			continue
 		}
-		if d.isPartitioned(pschema, pname) {
-			nested, err := d.dumpPartitions(w, dbName, pschema, pname, schemaOnly, depth+1)
-			if err != nil {
-				return dumped, err
+		for rows.Next() {
+			var name, def string
+			if err := rows.Scan(&name, &def); err != nil {
+				break
 			}
-			dumped = append(dumped, nested...)
+			if def == "" {
+				continue
+			}
+			count++
+			log.Trace("postgres", "trigger dumped", "database", dbName,
+				"table", t, "trigger", name)
+			fmt.Fprintf(w, "\n-- Trigger: %s (on %s.%s)\n", name, schema, table)
+			fmt.Fprintf(w, "DROP TRIGGER IF EXISTS %s ON %s.%s;\n",
+				quotePGIdent(name), quotePGIdent(schema), quotePGIdent(table))
+			fmt.Fprintf(w, "%s;\n", strings.TrimSuffix(strings.TrimSpace(def), ";"))
+		}
+		rows.Close()
+	}
+	log.Debug("postgres", "triggers done", "database", dbName,
+		"count", count, "elapsed", time.Since(start).Round(time.Millisecond).String())
+	return nil
+}
+
+func (d *Dumper) dumpTypes(w io.Writer, dbName string) error {
+	start := time.Now()
+	refs, err := d.listUserTypes()
+	if err != nil {
+		return err
+	}
+
+	count := 0
+	for _, r := range refs {
+		schema, name, kind := r.schema, r.name, r.kind
+		owner, _ := d.typeOwner(schema, name)
+		def, err := d.typeDef(schema, name, kind)
+		if err != nil {
+			log.Trace("postgres", "type skipped", "database", dbName,
+				"type", schema+"."+name, "error", err.Error())
+			continue
+		}
+		if def == "" {
+			continue
+		}
+		count++
+		log.Trace("postgres", "type dumped", "database", dbName,
+			"type", schema+"."+name, "kind", kind)
+		fmt.Fprintf(w, "\n-- Type: %s.%s\n%s\n", schema, name, def)
+		if owner != "" {
+			kw := "TYPE"
+			if kind == "d" {
+				kw = "DOMAIN"
+			}
+			fmt.Fprintf(w, "ALTER %s %s.%s OWNER TO %s;\n", kw,
+				quotePGIdent(schema), quotePGIdent(name), quotePGIdent(owner))
+		}
+		if grants, err := d.typeGrants(schema, name); err != nil {
+			log.Trace("postgres", "grants unavailable", "database", dbName,
+				"object", "TYPE "+schema+"."+name, "error", err.Error())
+		} else if len(grants) > 0 {
+			fmt.Fprint(w, formatGrants(
+				"TYPE "+quotePGIdent(schema)+"."+quotePGIdent(name), grants))
 		}
 	}
-	return dumped, nil
+	log.Debug("postgres", "types done", "database", dbName, "count", count,
+		"elapsed", time.Since(start).Round(time.Millisecond).String())
+	return nil
 }
 
 func (d *Dumper) dumpViews(w io.Writer, dbName string) error {
@@ -802,119 +1093,7 @@ func (d *Dumper) dumpViews(w io.Writer, dbName string) error {
 	return nil
 }
 
-func escapePGLiteral(s string) string {
-	return strings.ReplaceAll(s, "'", "''")
-}
-
-const (
-	pgOIDOIDBytea = 17
-	pgOIDOIDJSON  = 114
-	pgOIDOIDUUID  = 2950
-	pgOIDOIDJSONB = 3802
-)
-
-func encodeCopyValue(val any, oid uint32) (string, bool) {
-	if oid == pgOIDOIDJSON || oid == pgOIDOIDJSONB {
-		if val == nil {
-			return "\\N", false
-		}
-		if s, ok := val.(string); ok {
-			return escapePgCopy(s), false
-		}
-		if b, ok := val.([]byte); ok {
-			return escapePgCopy(string(b)), false
-		}
-		if raw, err := json.Marshal(val); err == nil {
-			return escapePgCopy(string(raw)), false
-		}
-		return escapePgCopy(fmt.Sprintf("%v", val)), true
-	}
-	if oid == pgOIDOIDUUID {
-		if val == nil {
-			return "\\N", false
-		}
-		if s, ok := val.(string); ok {
-			return escapePgCopy(s), false
-		}
-		if b, ok := val.([]byte); ok && len(b) == 16 {
-			return encodeCopyUUID(b), false
-		}
-		rv := reflect.ValueOf(val)
-		if (rv.Kind() == reflect.Array || rv.Kind() == reflect.Slice) && rv.Len() == 16 {
-			if k := rv.Type().Elem().Kind(); k == reflect.Uint8 {
-				b := make([]byte, 16)
-				reflect.Copy(reflect.ValueOf(b), rv)
-				return encodeCopyUUID(b), false
-			}
-		}
-	}
-	switch v := val.(type) {
-	case nil:
-		return "\\N", false
-	case string:
-		return escapePgCopy(v), false
-	case []byte:
-		if oid == pgOIDOIDJSON || oid == pgOIDOIDJSONB {
-			return escapePgCopy(string(v)), false
-		}
-		return "\\\\x" + hex.EncodeToString(v), false
-	case bool:
-		if v {
-			return "t", false
-		}
-		return "f", false
-	case int16:
-		return strconv.FormatInt(int64(v), 10), false
-	case int32:
-		return strconv.FormatInt(int64(v), 10), false
-	case int64:
-		return strconv.FormatInt(v, 10), false
-	case uint16:
-		return strconv.FormatUint(uint64(v), 10), false
-	case uint32:
-		return strconv.FormatUint(uint64(v), 10), false
-	case uint64:
-		return strconv.FormatUint(v, 10), false
-	case float32:
-		return strconv.FormatFloat(float64(v), 'g', -1, 32), false
-	case float64:
-		return strconv.FormatFloat(v, 'g', -1, 64), false
-	case time.Time:
-		return v.Format("2006-01-02 15:04:05.999999-07"), false
-	case pgtype.Interval:
-		if !v.Valid {
-			return "\\N", false
-		}
-		return encodeCopyInterval(v), false
-	case pgtype.Numeric:
-		if !v.Valid {
-			return "\\N", false
-		}
-		return formatCopyNumeric(v), false
-	case fmt.Stringer:
-		return escapePgCopy(v.String()), false
-	}
-	rv := reflect.ValueOf(val)
-	switch rv.Kind() {
-	case reflect.Slice, reflect.Array:
-		return encodeCopyArray(rv), false
-	case reflect.Map:
-		return encodeCopyHstore(rv), false
-	case reflect.Ptr:
-		if rv.IsNil() {
-			return "\\N", false
-		}
-		return encodeCopyValue(rv.Elem().Interface(), oid)
-	}
-	return escapePgCopy(fmt.Sprintf("%v", val)), true
-}
-
-func encodeCopyUUID(b []byte) string {
-	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
-		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
-}
-
-func encodeCopyArray(rv reflect.Value) string {
+func encodeCopyArrayRaw(rv reflect.Value, jsonCtx bool) string {
 	elems := make([]string, rv.Len())
 	for i := range elems {
 		ev := rv.Index(i).Interface()
@@ -923,17 +1102,35 @@ func encodeCopyArray(rv reflect.Value) string {
 			continue
 		}
 		er := reflect.ValueOf(ev)
-		if er.Kind() == reflect.Ptr && er.IsNil() {
-			elems[i] = "NULL"
-			continue
+		if er.Kind() == reflect.Ptr {
+			if er.IsNil() {
+				elems[i] = "NULL"
+				continue
+			}
+			ev = er.Elem().Interface()
+			er = reflect.ValueOf(ev)
 		}
 		if er.Kind() == reflect.Slice || er.Kind() == reflect.Array {
-			elems[i] = encodeCopyArray(er)
+			elems[i] = quoteArrayElement(encodeCopyArrayRaw(er, jsonCtx))
 			continue
 		}
-		s, _ := encodeCopyValue(ev, 0)
+		var s string
+		switch er.Kind() {
+		case reflect.Map:
+			if jsonCtx {
+				if raw, err := json.Marshal(ev); err == nil {
+					s = string(raw)
+				} else {
+					s = fmt.Sprintf("%v", ev)
+				}
+			} else {
+				s = encodeCopyHstoreRaw(er)
+			}
+		default:
+			s, _ = encodeCopyValue(ev, 0)
+		}
 		if needsArrayQuoting(s, ev) {
-			elems[i] = `"` + strings.ReplaceAll(s, `"`, `\\"`) + `"`
+			elems[i] = quoteArrayElement(s)
 		} else {
 			elems[i] = s
 		}
@@ -941,17 +1138,7 @@ func encodeCopyArray(rv reflect.Value) string {
 	return "{" + strings.Join(elems, ",") + "}"
 }
 
-func needsArrayQuoting(s string, ev any) bool {
-	if _, ok := ev.(string); ok {
-		return true
-	}
-	if s == "" || s == "NULL" {
-		return true
-	}
-	return strings.ContainsAny(s, "{},\"\\ \t\n\r")
-}
-
-func encodeCopyHstore(rv reflect.Value) string {
+func encodeCopyHstoreRaw(rv reflect.Value) string {
 	pairs := make([]string, 0, rv.Len())
 	iter := rv.MapRange()
 	for iter.Next() {
@@ -974,8 +1161,17 @@ func encodeCopyHstore(rv reflect.Value) string {
 			strings.ReplaceAll(s, `"`, `\"`)+`"`)
 	}
 	sort.Strings(pairs)
-	return escapePgCopy(strings.Join(pairs, ", "))
+	return strings.Join(pairs, ", ")
 }
+
+const (
+	pgOIDOIDBytea      = 17
+	pgOIDOIDJSON       = 114
+	pgOIDOIDUUID       = 2950
+	pgOIDOIDJSONB      = 3802
+	pgOIDOIDJSONArray  = 199
+	pgOIDOIDJSONBArray = 3807
+)
 
 func encodeCopyInterval(v pgtype.Interval) string {
 	var parts []string
@@ -1012,6 +1208,155 @@ func encodeCopyInterval(v pgtype.Interval) string {
 	return strings.Join(parts, " ")
 }
 
+func encodeCopyUUID(b []byte) string {
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+func encodeCopyValue(val any, oid uint32) (string, bool) {
+	if oid == pgOIDOIDJSON || oid == pgOIDOIDJSONB {
+		if val == nil {
+			return "\\N", false
+		}
+		if s, ok := val.(string); ok {
+			raw, _ := json.Marshal(s)
+			return string(raw), false
+		}
+		if b, ok := val.([]byte); ok {
+			return string(b), false
+		}
+		if raw, err := json.Marshal(val); err == nil {
+			return string(raw), false
+		}
+		return fmt.Sprintf("%v", val), true
+	}
+	if oid == pgOIDOIDJSONArray || oid == pgOIDOIDJSONBArray {
+		if val == nil {
+			return "\\N", false
+		}
+		if rv := reflect.ValueOf(val); rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array {
+			return encodeCopyArrayRaw(rv, true), false
+		}
+		if raw, err := json.Marshal(val); err == nil {
+			return string(raw), true
+		}
+		return fmt.Sprintf("%v", val), true
+	}
+	if oid == pgOIDOIDUUID {
+		if val == nil {
+			return "\\N", false
+		}
+		if s, ok := val.(string); ok {
+			return s, false
+		}
+		if b, ok := val.([]byte); ok && len(b) == 16 {
+			return encodeCopyUUID(b), false
+		}
+		rv := reflect.ValueOf(val)
+		if (rv.Kind() == reflect.Array || rv.Kind() == reflect.Slice) && rv.Len() == 16 {
+			if k := rv.Type().Elem().Kind(); k == reflect.Uint8 {
+				b := make([]byte, 16)
+				reflect.Copy(reflect.ValueOf(b), rv)
+				return encodeCopyUUID(b), false
+			}
+		}
+	}
+	switch v := val.(type) {
+	case nil:
+		return "\\N", false
+	case string:
+		return v, false
+	case []byte:
+		if oid == pgOIDOIDJSON || oid == pgOIDOIDJSONB {
+			return string(v), false
+		}
+		return "\\x" + hex.EncodeToString(v), false
+	case bool:
+		if v {
+			return "t", false
+		}
+		return "f", false
+	case int16:
+		return strconv.FormatInt(int64(v), 10), false
+	case int32:
+		return strconv.FormatInt(int64(v), 10), false
+	case int64:
+		return strconv.FormatInt(v, 10), false
+	case uint16:
+		return strconv.FormatUint(uint64(v), 10), false
+	case uint32:
+		return strconv.FormatUint(uint64(v), 10), false
+	case uint64:
+		return strconv.FormatUint(v, 10), false
+	case float32:
+		return strconv.FormatFloat(float64(v), 'g', -1, 32), false
+	case float64:
+		return strconv.FormatFloat(v, 'g', -1, 64), false
+	case time.Time:
+		return v.Format("2006-01-02 15:04:05.999999-07"), false
+	case pgtype.Interval:
+		if !v.Valid {
+			return "\\N", false
+		}
+		return encodeCopyInterval(v), false
+	case pgtype.Numeric:
+		if !v.Valid {
+			return "\\N", false
+		}
+		return formatCopyNumeric(v), false
+	case fmt.Stringer:
+		return v.String(), false
+	}
+	rv := reflect.ValueOf(val)
+	switch rv.Kind() {
+	case reflect.Slice, reflect.Array:
+		return encodeCopyArrayRaw(rv, false), false
+	case reflect.Map:
+		return encodeCopyHstoreRaw(rv), false
+	case reflect.Ptr:
+		if rv.IsNil() {
+			return "\\N", false
+		}
+		return encodeCopyValue(rv.Elem().Interface(), oid)
+	}
+	return fmt.Sprintf("%v", val), true
+}
+
+func escapePgCopy(s string) string {
+	s = strings.ReplaceAll(s, "\\", "\\\\")
+	s = strings.ReplaceAll(s, "\t", "\\t")
+	s = strings.ReplaceAll(s, "\n", "\\n")
+	s = strings.ReplaceAll(s, "\r", "\\r")
+	return s
+}
+
+func escapePGLiteral(s string) string {
+	return strings.ReplaceAll(s, "'", "''")
+}
+
+func (d *Dumper) extensionMembers() (map[string]bool, error) {
+	out := map[string]bool{}
+	rows, err := d.conn.Query(d.ctxOrBg(),
+		"SELECT n.nspname, c.relname FROM pg_catalog.pg_class c "+
+			"JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "+
+			"JOIN pg_catalog.pg_depend dd ON dd.objid = c.oid AND dd.deptype = 'e'")
+	if err != nil {
+		return out, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var schema, name string
+		if err := rows.Scan(&schema, &name); err != nil {
+			return out, err
+		}
+		out[schema+"."+name] = true
+	}
+	if err := rows.Err(); err != nil {
+		return out, fmt.Errorf("read extension members: %w", err)
+	}
+	return out, nil
+}
+
 func formatCopyNumeric(v pgtype.Numeric) string {
 	if v.NaN {
 		return "NaN"
@@ -1044,18 +1389,45 @@ func formatCopyNumeric(v pgtype.Numeric) string {
 	return out
 }
 
-func plural(n int32) string {
-	if n == 1 || n == -1 {
-		return ""
+func formatGrants(target string, grants []pgGrant) string {
+	type key struct {
+		grantee   string
+		grantable bool
 	}
-	return "s"
+	var order []key
+	privs := map[key][]string{}
+	for _, g := range grants {
+		k := key{g.grantee, g.grantable}
+		if _, ok := privs[k]; !ok {
+			order = append(order, k)
+		}
+		privs[k] = append(privs[k], g.priv)
+	}
+	var sb strings.Builder
+	for _, k := range order {
+		to := k.grantee
+		if to != "PUBLIC" {
+			to = quotePGIdent(to)
+		}
+		line := fmt.Sprintf("GRANT %s ON %s TO %s",
+			strings.Join(privs[k], ", "), target, to)
+		if k.grantable {
+			line += " WITH GRANT OPTION"
+		}
+		sb.WriteString(line + ";\n")
+	}
+	return sb.String()
 }
-func escapePgCopy(s string) string {
-	s = strings.ReplaceAll(s, "\\", "\\\\")
-	s = strings.ReplaceAll(s, "\t", "\\t")
-	s = strings.ReplaceAll(s, "\n", "\\n")
-	s = strings.ReplaceAll(s, "\r", "\\r")
-	return s
+
+func (d *Dumper) funcGrants(schema, name, args string) ([]pgGrant, error) {
+	return d.aclGrants(
+		"SELECT CASE WHEN x.grantee = 0 THEN 'PUBLIC' ELSE x.grantee::regrole::text END, "+
+			"x.privilege_type, x.is_grantable "+
+			"FROM pg_catalog.pg_proc p "+
+			"JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace "+
+			"CROSS JOIN LATERAL aclexplode(p.proacl) x "+
+			"WHERE n.nspname = $1 AND p.proname = $2 "+
+			"AND pg_get_function_identity_arguments(p.oid) = $3 ORDER BY 1, 2", schema, name, args)
 }
 
 func (d *Dumper) getCheckConstraints(schema, table string) (string, error) {
@@ -1084,6 +1456,7 @@ func (d *Dumper) getCheckConstraints(schema, table string) (string, error) {
 	}
 	return sb.String(), rows.Err()
 }
+
 func (d *Dumper) getCreateTable(schema, table string) (string, error) {
 	rows, err := d.conn.Query(d.ctxOrBg(),
 		"SELECT a.attname, "+
@@ -1232,6 +1605,7 @@ func (d *Dumper) getPartitionInfo(schema, table string) (string, error) {
 		schema, table).Scan(&partSQL)
 	return partSQL, err
 }
+
 func (d *Dumper) getPrimaryKey(schema, table string) (string, error) {
 	var conname, def string
 	err := d.conn.QueryRow(d.ctxOrBg(),
@@ -1249,6 +1623,15 @@ func (d *Dumper) getPrimaryKey(schema, table string) (string, error) {
 	}
 	return fmt.Sprintf("ALTER TABLE %s.%s ADD CONSTRAINT %s %s;",
 		quotePGIdent(schema), quotePGIdent(table), quotePGIdent(conname), def), nil
+}
+
+func (d *Dumper) isPartitioned(schema, table string) bool {
+	var kind string
+	err := d.conn.QueryRow(d.ctxOrBg(),
+		"SELECT c.relkind FROM pg_catalog.pg_class c "+
+			"JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "+
+			"WHERE n.nspname = $1 AND c.relname = $2", schema, table).Scan(&kind)
+	return err == nil && kind == "p"
 }
 
 func isPgSystemDB(name string) bool {
@@ -1278,6 +1661,26 @@ func (d *Dumper) listDatabases() ([]string, error) {
 		dbs = append(dbs, db)
 	}
 	return dbs, rows.Err()
+}
+
+func (d *Dumper) listSchemas() ([]pgSchemaInfo, error) {
+	rows, err := d.conn.Query(d.ctxOrBg(),
+		"SELECT n.nspname, pg_get_userbyid(n.nspowner) FROM pg_catalog.pg_namespace n "+
+			"WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') "+
+			"AND n.nspname NOT LIKE 'pg\\_%' ORDER BY n.nspname")
+	if err != nil {
+		return nil, fmt.Errorf("list schemas: %w", err)
+	}
+	defer rows.Close()
+	var out []pgSchemaInfo
+	for rows.Next() {
+		var s pgSchemaInfo
+		if err := rows.Scan(&s.name, &s.owner); err != nil {
+			return nil, fmt.Errorf("scan schema row: %w", err)
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
 }
 
 func (d *Dumper) listTables(dbName string) ([]string, error) {
@@ -1327,119 +1730,143 @@ func (d *Dumper) listTables(dbName string) ([]string, error) {
 	return tables, nil
 }
 
-func (d *Dumper) extensionMembers() (map[string]bool, error) {
-	out := map[string]bool{}
-	rows, err := d.conn.Query(d.ctxOrBg(),
-		"SELECT n.nspname, c.relname FROM pg_catalog.pg_class c "+
-			"JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "+
-			"JOIN pg_catalog.pg_depend dd ON dd.objid = c.oid AND dd.deptype = 'e'")
-	if err != nil {
-		return out, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var schema, name string
-		if err := rows.Scan(&schema, &name); err != nil {
-			return out, err
-		}
-		out[schema+"."+name] = true
-	}
-	if err := rows.Err(); err != nil {
-		return out, fmt.Errorf("read extension members: %w", err)
-	}
-	return out, nil
-}
-
 type pgSchemaInfo struct {
 	name  string
 	owner string
 }
 
-func (d *Dumper) listSchemas() ([]pgSchemaInfo, error) {
+func (d *Dumper) listUserSequences() ([][3]string, error) {
 	rows, err := d.conn.Query(d.ctxOrBg(),
-		"SELECT n.nspname, pg_get_userbyid(n.nspowner) FROM pg_catalog.pg_namespace n "+
-			"WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') "+
-			"AND n.nspname NOT LIKE 'pg\\_%' ORDER BY n.nspname")
+		"SELECT n.nspname, c.relname, pg_get_userbyid(c.relowner) "+
+			"FROM pg_catalog.pg_class c "+
+			"JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "+
+			"WHERE c.relkind = 'S' "+
+			"AND n.nspname NOT IN ('pg_catalog', 'information_schema') "+
+			"AND n.nspname NOT LIKE 'pg\\_%' "+
+			"AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = c.oid AND dd.deptype = 'e') "+
+			"ORDER BY n.nspname, c.relname")
 	if err != nil {
-		return nil, fmt.Errorf("list schemas: %w", err)
+		return nil, fmt.Errorf("list sequences: %w", err)
 	}
 	defer rows.Close()
-	var out []pgSchemaInfo
+	var out [][3]string
 	for rows.Next() {
-		var s pgSchemaInfo
-		if err := rows.Scan(&s.name, &s.owner); err != nil {
-			return nil, fmt.Errorf("scan schema row: %w", err)
+		var s [3]string
+		if err := rows.Scan(&s[0], &s[1], &s[2]); err != nil {
+			return nil, fmt.Errorf("scan sequence row: %w", err)
 		}
 		out = append(out, s)
 	}
 	return out, rows.Err()
 }
 
-func (d *Dumper) dumpSchemas(w io.Writer, dbName string, included []string) error {
-	schemas, err := d.listSchemas()
-	if err != nil {
-		return err
-	}
-	needed := map[string]bool{}
-	if d.Tables == nil {
-		for _, s := range schemas {
-			needed[s.name] = true
-		}
-	} else {
-		for _, t := range included {
-			if parts := strings.SplitN(t, ".", 2); len(parts) == 2 {
-				needed[parts[0]] = true
-			}
-		}
-	}
-	for _, s := range schemas {
-		if !needed[s.name] {
-			log.Trace("postgres", "schema skipped by filter", "database", dbName, "schema", s.name)
-			continue
-		}
-		log.Trace("postgres", "schema dumped", "database", dbName, "schema", s.name, "owner", s.owner)
-		fmt.Fprintf(w, "\n-- Schema: %s\n", s.name)
-		fmt.Fprintf(w, "CREATE SCHEMA IF NOT EXISTS %s;\n", quotePGIdent(s.name))
-		if s.owner != "" {
-			fmt.Fprintf(w, "ALTER SCHEMA %s OWNER TO %s;\n",
-				quotePGIdent(s.name), quotePGIdent(s.owner))
-		}
-		if grants, err := d.schemaGrants(s.name); err != nil {
-			log.Trace("postgres", "schema grants unavailable", "database", dbName,
-				"schema", s.name, "error", err.Error())
-		} else if len(grants) > 0 {
-			fmt.Fprint(w, formatGrants("SCHEMA "+quotePGIdent(s.name), grants))
-		}
-	}
-	return nil
-}
-
-func (d *Dumper) dumpExtensions(w io.Writer, dbName string) error {
+func (d *Dumper) listUserTypes() ([]userTypeRef, error) {
 	rows, err := d.conn.Query(d.ctxOrBg(),
-		"SELECT e.extname, n.nspname FROM pg_catalog.pg_extension e "+
-			"JOIN pg_catalog.pg_namespace n ON n.oid = e.extnamespace ORDER BY e.extname")
+		"SELECT n.nspname, t.typname, t.typtype "+
+			"FROM pg_catalog.pg_type t "+
+			"JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace "+
+			"WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') "+
+			"AND n.nspname NOT LIKE 'pg\\_%' "+
+			"AND t.typtype IN ('e', 'c', 'd', 'r', 'm') "+
+			"AND (t.typrelid = 0 OR (SELECT c.relkind FROM pg_catalog.pg_class c WHERE c.oid = t.typrelid) = 'c') "+
+			"AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = t.oid AND dd.deptype = 'e') "+
+			"ORDER BY t.oid")
 	if err != nil {
-		return fmt.Errorf("list extensions: %w", err)
+		return nil, fmt.Errorf("list types: %w", err)
 	}
 	defer rows.Close()
-	var names []string
+	var out []userTypeRef
 	for rows.Next() {
-		var ext, schema string
-		if err := rows.Scan(&ext, &schema); err != nil {
-			return fmt.Errorf("scan extension row: %w", err)
+		var r userTypeRef
+		if err := rows.Scan(&r.schema, &r.name, &r.kind); err != nil {
+			return nil, fmt.Errorf("scan type row: %w", err)
 		}
-		names = append(names, ext)
-		fmt.Fprintf(w, "\n-- Extension: %s\n", ext)
-		fmt.Fprintf(w, "CREATE EXTENSION IF NOT EXISTS %s WITH SCHEMA %s;\n",
-			quotePGIdent(ext), quotePGIdent(schema))
-		log.Trace("postgres", "extension dumped", "database", dbName, "extension", ext, "schema", schema)
+		out = append(out, r)
 	}
-	if err := rows.Err(); err != nil {
-		return err
+	return out, rows.Err()
+}
+
+func (d *Dumper) loColumns(schema, table string) ([]string, error) {
+	rows, err := d.conn.Query(d.ctxOrBg(),
+		"SELECT a.attname FROM pg_catalog.pg_attribute a "+
+			"JOIN pg_catalog.pg_class c ON c.oid = a.attrelid "+
+			"JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "+
+			"WHERE n.nspname = $1 AND c.relname = $2 AND a.attnum > 0 AND NOT a.attisdropped "+
+			"AND a.atttypid = 'oid'::regtype ORDER BY a.attnum", schema, table)
+	if err != nil {
+		return nil, err
 	}
-	log.Debug("postgres", "extensions done", "database", dbName,
-		"count", len(names), "extensions", strings.Join(names, ","))
-	return nil
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var c string
+		if err := rows.Scan(&c); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+func needsArrayQuoting(s string, ev any) bool {
+	if _, ok := ev.(string); ok {
+		return true
+	}
+	if s == "" || s == "NULL" {
+		return true
+	}
+	return strings.ContainsAny(s, "{},\"\\ \t\n\r")
+}
+
+func NewDumper(host string, port int, user, pass, dbname string, tlsCfg ...*config.TLSConfig) *Dumper {
+	if port == 0 {
+		port = 5432
+	}
+	d := &Dumper{
+		host:   host,
+		port:   port,
+		user:   user,
+		pass:   pass,
+		dbname: dbname,
+	}
+	if len(tlsCfg) > 0 && tlsCfg[0] != nil {
+		d.tlsCfg = tlsCfg[0]
+	}
+	return d
+}
+
+func (d *Dumper) Open() error {
+	return d.OpenContext(context.Background())
+}
+
+func (d *Dumper) OpenContext(ctx context.Context) error {
+	d.ctx = ctx
+	log.Debug("postgres", "connect start",
+		"host", d.host, "port", d.port, "user", d.user,
+		"tls", d.tlsCfg != nil)
+	probe := func() error { return common.TCPDial(d.host, d.port) }
+	connect := func() error {
+		connStr := ConnStr(d.user, d.pass, d.host, d.port, d.dbname, d.tlsCfg)
+		var err error
+		connectCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		d.conn, err = pgx.Connect(connectCtx, connStr)
+		if err != nil {
+			return fmt.Errorf("connect: %w", err)
+		}
+		return nil
+	}
+	ping := func() error {
+		var ver string
+		if err := d.conn.QueryRow(ctx, "SELECT VERSION()").Scan(&ver); err != nil {
+			return fmt.Errorf("ping: %w", err)
+		}
+		d.serverVer = ver
+		log.Debug("postgres", "connected",
+			"host", d.host, "port", d.port, "server", ver)
+		return nil
+	}
+	return common.WithConnectivity(ctx, "postgres", d.connCfg, probe, connect, ping)
 }
 
 func (d *Dumper) ownerOf(schema, name string) (string, error) {
@@ -1451,58 +1878,80 @@ func (d *Dumper) ownerOf(schema, name string) (string, error) {
 	return owner, err
 }
 
-func (d *Dumper) dumpTypes(w io.Writer, dbName string) error {
-	start := time.Now()
-	refs, err := d.listUserTypes()
-	if err != nil {
-		return err
-	}
-
-	count := 0
-	for _, r := range refs {
-		schema, name, kind := r.schema, r.name, r.kind
-		owner, _ := d.typeOwner(schema, name)
-		def, err := d.typeDef(schema, name, kind)
-		if err != nil {
-			log.Trace("postgres", "type skipped", "database", dbName,
-				"type", schema+"."+name, "error", err.Error())
-			continue
-		}
-		if def == "" {
-			continue
-		}
-		count++
-		log.Trace("postgres", "type dumped", "database", dbName,
-			"type", schema+"."+name, "kind", kind)
-		fmt.Fprintf(w, "\n-- Type: %s.%s\n%s\n", schema, name, def)
-		if owner != "" {
-			kw := "TYPE"
-			if kind == "d" {
-				kw = "DOMAIN"
-			}
-			fmt.Fprintf(w, "ALTER %s %s.%s OWNER TO %s;\n", kw,
-				quotePGIdent(schema), quotePGIdent(name), quotePGIdent(owner))
-		}
-		if grants, err := d.typeGrants(schema, name); err != nil {
-			log.Trace("postgres", "grants unavailable", "database", dbName,
-				"object", "TYPE "+schema+"."+name, "error", err.Error())
-		} else if len(grants) > 0 {
-			fmt.Fprint(w, formatGrants(
-				"TYPE "+quotePGIdent(schema)+"."+quotePGIdent(name), grants))
-		}
-	}
-	log.Debug("postgres", "types done", "database", dbName, "count", count,
-		"elapsed", time.Since(start).Round(time.Millisecond).String())
-	return nil
+type pgGrant struct {
+	grantee   string
+	priv      string
+	grantable bool
 }
 
-func (d *Dumper) typeOwner(schema, name string) (string, error) {
-	var owner string
-	err := d.conn.QueryRow(d.ctxOrBg(),
-		"SELECT pg_get_userbyid(t.typowner) FROM pg_catalog.pg_type t "+
-			"JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace "+
-			"WHERE n.nspname = $1 AND t.typname = $2", schema, name).Scan(&owner)
-	return owner, err
+func pgTypeName(base string, charMaxLen, numPrec, numScale *int) string {
+	switch {
+	case base == "character varying" && charMaxLen != nil:
+		return fmt.Sprintf("character varying(%d)", *charMaxLen)
+	case base == "character" && charMaxLen != nil:
+		return fmt.Sprintf("character(%d)", *charMaxLen)
+	case base == "numeric" && numPrec != nil && numScale != nil:
+		return fmt.Sprintf("numeric(%d,%d)", *numPrec, *numScale)
+	case base == "numeric" && numPrec != nil:
+		return fmt.Sprintf("numeric(%d)", *numPrec)
+	default:
+		return base
+	}
+}
+
+func plural(n int32) string {
+	if n == 1 || n == -1 {
+		return ""
+	}
+	return "s"
+}
+
+func quoteArrayElement(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `"`, `\"`)
+	return `"` + s + `"`
+}
+
+func quotePGIdent(s string) string {
+	return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
+}
+
+func quoteQualifiedPGIdent(qualified string) string {
+	parts := strings.Split(qualified, ".")
+	for i, p := range parts {
+		parts[i] = quotePGIdent(p)
+	}
+	return strings.Join(parts, ".")
+}
+
+func (d *Dumper) relationGrants(schema, name string) ([]pgGrant, error) {
+	return d.aclGrants(
+		"SELECT CASE WHEN x.grantee = 0 THEN 'PUBLIC' ELSE x.grantee::regrole::text END, "+
+			"x.privilege_type, x.is_grantable "+
+			"FROM pg_catalog.pg_class c "+
+			"JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "+
+			"CROSS JOIN LATERAL aclexplode(c.relacl) x "+
+			"WHERE n.nspname = $1 AND c.relname = $2 ORDER BY 1, 2", schema, name)
+}
+
+func (d *Dumper) schemaGrants(schema string) ([]pgGrant, error) {
+	return d.aclGrants(
+		"SELECT CASE WHEN x.grantee = 0 THEN 'PUBLIC' ELSE x.grantee::regrole::text END, "+
+			"x.privilege_type, x.is_grantable "+
+			"FROM pg_catalog.pg_namespace n "+
+			"CROSS JOIN LATERAL aclexplode(n.nspacl) x "+
+			"WHERE n.nspname = $1 ORDER BY 1, 2", schema)
+}
+
+func (d *Dumper) SetConnectivity(cfg *config.ConnectivityConfig) {
+	if cfg != nil {
+		d.connCfg = cfg
+	}
+}
+
+func (d *Dumper) SetTableFilter(f *config.TableFilter, schemaOnly bool) {
+	d.Tables = f
+	d.SchemaOnly = schemaOnly
 }
 
 func (d *Dumper) typeDef(schema, name, kind string) (string, error) {
@@ -1653,402 +2102,13 @@ func (d *Dumper) typeGrants(schema, name string) ([]pgGrant, error) {
 			"WHERE n.nspname = $1 AND t.typname = $2 ORDER BY 1, 2", schema, name)
 }
 
-type pgGrant struct {
-	grantee   string
-	priv      string
-	grantable bool
-}
-
-func (d *Dumper) relationGrants(schema, name string) ([]pgGrant, error) {
-	return d.aclGrants(
-		"SELECT CASE WHEN x.grantee = 0 THEN 'PUBLIC' ELSE x.grantee::regrole::text END, "+
-			"x.privilege_type, x.is_grantable "+
-			"FROM pg_catalog.pg_class c "+
-			"JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "+
-			"CROSS JOIN LATERAL aclexplode(c.relacl) x "+
-			"WHERE n.nspname = $1 AND c.relname = $2 ORDER BY 1, 2", schema, name)
-}
-
-func (d *Dumper) schemaGrants(schema string) ([]pgGrant, error) {
-	return d.aclGrants(
-		"SELECT CASE WHEN x.grantee = 0 THEN 'PUBLIC' ELSE x.grantee::regrole::text END, "+
-			"x.privilege_type, x.is_grantable "+
-			"FROM pg_catalog.pg_namespace n "+
-			"CROSS JOIN LATERAL aclexplode(n.nspacl) x "+
-			"WHERE n.nspname = $1 ORDER BY 1, 2", schema)
-}
-
-func (d *Dumper) aclGrants(query, schema string, args ...any) ([]pgGrant, error) {
-	rows, err := d.conn.Query(d.ctxOrBg(), query, append([]any{schema}, args...)...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []pgGrant
-	for rows.Next() {
-		var g pgGrant
-		if err := rows.Scan(&g.grantee, &g.priv, &g.grantable); err != nil {
-			return nil, err
-		}
-		out = append(out, g)
-	}
-	return out, rows.Err()
-}
-
-func formatGrants(target string, grants []pgGrant) string {
-	type key struct {
-		grantee   string
-		grantable bool
-	}
-	var order []key
-	privs := map[key][]string{}
-	for _, g := range grants {
-		k := key{g.grantee, g.grantable}
-		if _, ok := privs[k]; !ok {
-			order = append(order, k)
-		}
-		privs[k] = append(privs[k], g.priv)
-	}
-	var sb strings.Builder
-	for _, k := range order {
-		to := k.grantee
-		if to != "PUBLIC" {
-			to = quotePGIdent(to)
-		}
-		line := fmt.Sprintf("GRANT %s ON %s TO %s",
-			strings.Join(privs[k], ", "), target, to)
-		if k.grantable {
-			line += " WITH GRANT OPTION"
-		}
-		sb.WriteString(line + ";\n")
-	}
-	return sb.String()
-}
-
-func (d *Dumper) dumpTriggers(w io.Writer, dbName string, tables []string) error {
-	start := time.Now()
-	count := 0
-	for _, t := range tables {
-		parts := strings.SplitN(t, ".", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		schema, table := parts[0], parts[1]
-		rows, err := d.conn.Query(d.ctxOrBg(),
-			"SELECT tg.tgname, pg_get_triggerdef(tg.oid) "+
-				"FROM pg_catalog.pg_trigger tg "+
-				"JOIN pg_catalog.pg_class c ON c.oid = tg.tgrelid "+
-				"JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "+
-				"WHERE n.nspname = $1 AND c.relname = $2 AND NOT tg.tgisinternal "+
-				"ORDER BY tg.tgname", schema, table)
-		if err != nil {
-			log.Trace("postgres", "triggers unavailable", "database", dbName,
-				"table", t, "error", err.Error())
-			continue
-		}
-		for rows.Next() {
-			var name, def string
-			if err := rows.Scan(&name, &def); err != nil {
-				break
-			}
-			if def == "" {
-				continue
-			}
-			count++
-			log.Trace("postgres", "trigger dumped", "database", dbName,
-				"table", t, "trigger", name)
-			fmt.Fprintf(w, "\n-- Trigger: %s (on %s.%s)\n", name, schema, table)
-			fmt.Fprintf(w, "DROP TRIGGER IF EXISTS %s ON %s.%s;\n",
-				quotePGIdent(name), quotePGIdent(schema), quotePGIdent(table))
-			fmt.Fprintf(w, "%s;\n", strings.TrimSuffix(strings.TrimSpace(def), ";"))
-		}
-		rows.Close()
-	}
-	log.Debug("postgres", "triggers done", "database", dbName,
-		"count", count, "elapsed", time.Since(start).Round(time.Millisecond).String())
-	return nil
-}
-
-func (d *Dumper) dumpBlobs(w io.Writer, dbName string, tables []string) error {
-	if d.SchemaOnly {
-		return nil
-	}
-	start := time.Now()
-	loCols := map[string][]string{}
-	for _, t := range tables {
-		parts := strings.SplitN(t, ".", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		cols, err := d.loColumns(parts[0], parts[1])
-		if err != nil {
-			log.Trace("postgres", "lo columns unavailable", "database", dbName,
-				"table", t, "error", err.Error())
-			continue
-		}
-		if len(cols) > 0 {
-			loCols[t] = cols
-		}
-	}
-	if len(loCols) == 0 {
-		return nil
-	}
-
-	oids := map[uint32]bool{}
-	var ordered []uint32
-	for t, cols := range loCols {
-		parts := strings.SplitN(t, ".", 2)
-		for _, c := range cols {
-			rows, err := d.conn.Query(d.ctxOrBg(),
-				"SELECT DISTINCT "+quotePGIdent(c)+" FROM "+
-					quotePGIdent(parts[0])+"."+quotePGIdent(parts[1])+
-					" WHERE "+quotePGIdent(c)+" IS NOT NULL")
-			if err != nil {
-				log.Trace("postgres", "lo oids unreadable", "database", dbName,
-					"table", t, "column", c, "error", err.Error())
-				continue
-			}
-			for rows.Next() {
-				var oid uint32
-				if err := rows.Scan(&oid); err != nil {
-					continue
-				}
-				if !oids[oid] {
-					oids[oid] = true
-					ordered = append(ordered, oid)
-				}
-			}
-			rows.Close()
-		}
-	}
-	if len(ordered) == 0 {
-		return nil
-	}
-
-	sort.Slice(ordered, func(i, j int) bool { return ordered[i] < ordered[j] })
-	fmt.Fprintf(w, "\n-- Large objects\n")
-	for _, oid := range ordered {
-		fmt.Fprintf(w, "DO $$BEGIN IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_largeobject_metadata WHERE oid = %d) THEN PERFORM pg_catalog.lo_create(%d); END IF; END$$;\n", oid, oid)
-		fmt.Fprintf(w, "DELETE FROM pg_catalog.pg_largeobject WHERE loid = %d;\n", oid)
-	}
-	idList := make([]string, len(ordered))
-	for i, oid := range ordered {
-		idList[i] = strconv.FormatUint(uint64(oid), 10)
-	}
-	fmt.Fprintf(w, "COPY pg_catalog.pg_largeobject (loid, pageno, data) FROM stdin;\n")
-	rows, err := d.conn.Query(d.ctxOrBg(),
-		"SELECT loid, pageno, data FROM pg_catalog.pg_largeobject WHERE loid IN ("+
-			strings.Join(idList, ", ")+") ORDER BY loid, pageno")
-	if err != nil {
-		return fmt.Errorf("read large objects: %w", err)
-	}
-	pages := 0
-	for rows.Next() {
-		var loid, pageno uint32
-		var data []byte
-		if err := rows.Scan(&loid, &pageno, &data); err != nil {
-			rows.Close()
-			return fmt.Errorf("scan large object: %w", err)
-		}
-		fmt.Fprintf(w, "%d\t%d\t\\\\x%s\n", loid, pageno, hex.EncodeToString(data))
-		pages++
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	fmt.Fprintf(w, "\\.\n\n")
-	log.Debug("postgres", "large objects done", "database", dbName,
-		"objects", len(ordered), "pages", pages,
-		"elapsed", time.Since(start).Round(time.Millisecond).String())
-	return nil
-}
-
-func (d *Dumper) loColumns(schema, table string) ([]string, error) {
-	rows, err := d.conn.Query(d.ctxOrBg(),
-		"SELECT a.attname FROM pg_catalog.pg_attribute a "+
-			"JOIN pg_catalog.pg_class c ON c.oid = a.attrelid "+
-			"JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "+
-			"WHERE n.nspname = $1 AND c.relname = $2 AND a.attnum > 0 AND NOT a.attisdropped "+
-			"AND a.atttypid = 'oid'::regtype ORDER BY a.attnum", schema, table)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []string
-	for rows.Next() {
-		var c string
-		if err := rows.Scan(&c); err != nil {
-			return nil, err
-		}
-		out = append(out, c)
-	}
-	return out, rows.Err()
-}
-
-func (d *Dumper) dumpACLs(w io.Writer, dbName string, tables []string) error {
-	wroteHeader := false
-	grantCount := 0
-	header := func() {
-		if !wroteHeader {
-			fmt.Fprintf(w, "\n-- Post-data ACLs (permissions)\n")
-			wroteHeader = true
-		}
-	}
-
-	grantRelation := func(kind, schema, name string) {
-		grants, err := d.relationGrants(schema, name)
-		if err != nil {
-			log.Trace("postgres", "grants unavailable", "database", dbName,
-				"object", kind+" "+schema+"."+name, "error", err.Error())
-			return
-		}
-		if len(grants) == 0 {
-			log.Trace("postgres", "no explicit grants", "database", dbName,
-				"object", kind+" "+schema+"."+name)
-			return
-		}
-		grantCount += len(grants)
-		log.Trace("postgres", "grants dumped", "database", dbName,
-			"object", kind+" "+schema+"."+name, "grants", len(grants))
-		header()
-		fmt.Fprintf(w, "\n-- ACL: %s %s.%s\n", kind, schema, name)
-		fmt.Fprint(w, formatGrants(
-			"TABLE "+quotePGIdent(schema)+"."+quotePGIdent(name), grants))
-	}
-
-	for _, t := range tables {
-		parts := strings.SplitN(t, ".", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		grantRelation("TABLE", parts[0], parts[1])
-	}
-
-	viewRows, err := d.conn.Query(d.ctxOrBg(),
-		"SELECT table_schema, table_name FROM information_schema.views "+
-			"WHERE table_schema NOT IN ('pg_catalog', 'information_schema')")
-	if err == nil {
-		type viewRef struct{ schema, name string }
-		var views []viewRef
-		for viewRows.Next() {
-			var v viewRef
-			if err := viewRows.Scan(&v.schema, &v.name); err != nil {
-				break
-			}
-			views = append(views, v)
-		}
-		viewRows.Close()
-		extMembers, extErr := d.extensionMembers()
-		if extErr != nil {
-			log.Trace("postgres", "extension members unavailable", "database", dbName,
-				"error", extErr.Error())
-		}
-		for _, v := range views {
-			if extMembers[v.schema+"."+v.name] {
-				continue
-			}
-			grantRelation("VIEW", v.schema, v.name)
-		}
-	}
-
-	funcRows, err := d.conn.Query(d.ctxOrBg(),
-		"SELECT n.nspname, p.proname, pg_get_function_identity_arguments(p.oid), "+
-			"pg_get_userbyid(p.proowner), p.proacl FROM pg_catalog.pg_proc p "+
-			"JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace "+
-			"WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') "+
-			"AND p.prokind IN ('f', 'p') "+
-			"AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = p.oid AND dd.deptype = 'e') "+
-			"ORDER BY n.nspname, p.proname")
-	if err != nil {
-		return nil
-	}
-	type funcRef struct{ schema, name, args, owner, acl string }
-	var funcs []funcRef
-	for funcRows.Next() {
-		var f funcRef
-		var aclVal sql.NullString
-		if err := funcRows.Scan(&f.schema, &f.name, &f.args, &f.owner, &aclVal); err != nil {
-			continue
-		}
-		if aclVal.Valid {
-			f.acl = aclVal.String
-		}
-		funcs = append(funcs, f)
-	}
-	funcRows.Close()
-	if err := funcRows.Err(); err != nil {
-		return err
-	}
-	for _, f := range funcs {
-		schema, name, args, owner := f.schema, f.name, f.args, f.owner
-		ident := quotePGIdent(schema) + "." + quotePGIdent(name) + "(" + args + ")"
-		emitted := false
-		if owner != "" {
-			header()
-			if !emitted {
-				fmt.Fprintf(w, "\n-- ACL: FUNCTION %s.%s(%s)\n", schema, name, args)
-				emitted = true
-			}
-			fmt.Fprintf(w, "ALTER FUNCTION %s OWNER TO %s;\n", ident, quotePGIdent(owner))
-		}
-		if f.acl != "" && f.acl != "{}" {
-			grants, err := d.funcGrants(schema, name, args)
-			if err != nil {
-				log.Trace("postgres", "grants unavailable", "database", dbName,
-					"object", "FUNCTION "+schema+"."+name, "error", err.Error())
-			} else if len(grants) > 0 {
-				grantCount += len(grants)
-				log.Trace("postgres", "grants dumped", "database", dbName,
-					"object", "FUNCTION "+schema+"."+name, "grants", len(grants))
-				header()
-				if !emitted {
-					fmt.Fprintf(w, "\n-- ACL: FUNCTION %s.%s(%s)\n", schema, name, args)
-				}
-				fmt.Fprint(w, formatGrants("FUNCTION "+ident, grants))
-			}
-		}
-	}
-	log.Debug("postgres", "ACLs done", "database", dbName, "grants", grantCount)
-	return nil
-}
-
-func (d *Dumper) funcGrants(schema, name, args string) ([]pgGrant, error) {
-	return d.aclGrants(
-		"SELECT CASE WHEN x.grantee = 0 THEN 'PUBLIC' ELSE x.grantee::regrole::text END, "+
-			"x.privilege_type, x.is_grantable "+
-			"FROM pg_catalog.pg_proc p "+
-			"JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace "+
-			"CROSS JOIN LATERAL aclexplode(p.proacl) x "+
-			"WHERE n.nspname = $1 AND p.proname = $2 "+
-			"AND pg_get_function_identity_arguments(p.oid) = $3 ORDER BY 1, 2", schema, name, args)
-}
-
-func pgTypeName(base string, charMaxLen, numPrec, numScale *int) string {
-	switch {
-	case base == "character varying" && charMaxLen != nil:
-		return fmt.Sprintf("character varying(%d)", *charMaxLen)
-	case base == "character" && charMaxLen != nil:
-		return fmt.Sprintf("character(%d)", *charMaxLen)
-	case base == "numeric" && numPrec != nil && numScale != nil:
-		return fmt.Sprintf("numeric(%d,%d)", *numPrec, *numScale)
-	case base == "numeric" && numPrec != nil:
-		return fmt.Sprintf("numeric(%d)", *numPrec)
-	default:
-		return base
-	}
-}
-
-func quotePGIdent(s string) string {
-	return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
-}
-
-func quoteQualifiedPGIdent(qualified string) string {
-	parts := strings.Split(qualified, ".")
-	for i, p := range parts {
-		parts[i] = quotePGIdent(p)
-	}
-	return strings.Join(parts, ".")
+func (d *Dumper) typeOwner(schema, name string) (string, error) {
+	var owner string
+	err := d.conn.QueryRow(d.ctxOrBg(),
+		"SELECT pg_get_userbyid(t.typowner) FROM pg_catalog.pg_type t "+
+			"JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace "+
+			"WHERE n.nspname = $1 AND t.typname = $2", schema, name).Scan(&owner)
+	return owner, err
 }
 
 func (d *Dumper) writeFooter(w io.Writer) {

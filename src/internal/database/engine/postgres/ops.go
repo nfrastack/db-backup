@@ -63,28 +63,6 @@ func execStmtGroup(ctx context.Context, conn *pgx.Conn, stmt *strings.Builder) e
 	return nil
 }
 
-func splitStatements(src string) []string {
-	var out []string
-	var cur strings.Builder
-	var tag string
-	flush := func() {
-		if s := strings.TrimSpace(cur.String()); s != "" {
-			out = append(out, s)
-		}
-		cur.Reset()
-	}
-	for _, line := range strings.Split(src, "\n") {
-		cur.WriteString(line)
-		cur.WriteByte('\n')
-		tag = updateDollarTag(line, tag)
-		if tag == "" && strings.HasSuffix(strings.TrimSpace(line), ";") {
-			flush()
-		}
-	}
-	flush()
-	return out
-}
-
 func ListDatabases(host string, port int, user, pass string, tlsCfg *config.TLSConfig) ([]string, error) {
 	ctx := context.Background()
 	conn, err := pgx.Connect(ctx, ConnStr(user, pass, host, port, "postgres", tlsCfg))
@@ -113,6 +91,89 @@ func ListDatabases(host string, port int, user, pass string, tlsCfg *config.TLSC
 
 func Maintain(host string, port int, user, pass, dbName string, cfg *common.MaintenanceCfg, tlsCfg *config.TLSConfig) ([]common.OpResult, error) {
 	return nil, nil
+}
+
+func pgExecCopy(ctx context.Context, conn *pgx.Conn, header string, data *strings.Builder) error {
+	if header == "" {
+		return nil
+	}
+	payload := data.String()
+	if !strings.HasSuffix(payload, "\n") {
+		payload += "\n"
+	}
+	dr := strings.NewReader(payload)
+	if _, err := conn.PgConn().CopyFrom(ctx, dr, header); err != nil {
+		return fmt.Errorf("copy: %w", err)
+	}
+	return nil
+}
+
+func pgRestoreStream(ctx context.Context, conn *pgx.Conn, r io.Reader) error {
+	br := bufio.NewReader(r)
+
+	var stmt strings.Builder
+	inCopy := false
+	var copyHeader string
+	var copyBuf strings.Builder
+	var tag string
+
+	for {
+		raw, readErr := br.ReadString('\n')
+		line := strings.TrimSuffix(raw, "\n")
+		line = strings.TrimSuffix(line, "\r")
+
+		if len(raw) > 0 {
+			if inCopy {
+				if line == "\\." {
+					inCopy = false
+					if err := pgExecCopy(ctx, conn, copyHeader, &copyBuf); err != nil {
+						return err
+					}
+					copyBuf.Reset()
+					copyHeader = ""
+					stmt.Reset()
+				} else {
+					if copyBuf.Len() > 0 {
+						copyBuf.WriteByte('\n')
+					}
+					copyBuf.WriteString(line)
+				}
+			} else {
+				nextTag := updateDollarTag(line, tag)
+				if tag == "" && strings.HasPrefix(line, "COPY ") && strings.Contains(line, " FROM stdin;") {
+					if stmt.Len() > 0 {
+						if err := execStmtGroup(ctx, conn, &stmt); err != nil {
+							return err
+						}
+						stmt.Reset()
+					}
+					copyHeader = strings.TrimSuffix(line, ";")
+					inCopy = true
+				} else {
+					tag = nextTag
+
+					stmt.WriteString(line)
+					stmt.WriteByte('\n')
+
+					if tag == "" && strings.HasSuffix(strings.TrimSpace(line), ";") {
+						if err := execStmtGroup(ctx, conn, &stmt); err != nil {
+							return err
+						}
+						stmt.Reset()
+					}
+				}
+			}
+		}
+
+		if readErr != nil {
+			if readErr == io.EOF {
+				break
+			}
+			return fmt.Errorf("read dump: %w", readErr)
+		}
+	}
+
+	return execStmtGroup(ctx, conn, &stmt)
 }
 
 func Restore(r io.Reader, host string, port int, user, pass, dbName string, tlsCfg *config.TLSConfig) error {
@@ -144,78 +205,26 @@ func Restore(r io.Reader, host string, port int, user, pass, dbName string, tlsC
 	return pgRestoreStream(ctx, conn, r)
 }
 
-func pgExecCopy(ctx context.Context, conn *pgx.Conn, header string, data *strings.Builder) error {
-	if header == "" {
-		return nil
-	}
-	payload := data.String()
-	if !strings.HasSuffix(payload, "\n") {
-		payload += "\n"
-	}
-	dr := strings.NewReader(payload)
-	if _, err := conn.PgConn().CopyFrom(ctx, dr, header); err != nil {
-		return fmt.Errorf("copy: %w", err)
-	}
-	return nil
-}
-
-func pgRestoreStream(ctx context.Context, conn *pgx.Conn, r io.Reader) error {
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
-
-	var stmt strings.Builder
-	inCopy := false
-	var copyHeader string
-	var copyBuf strings.Builder
+func splitStatements(src string) []string {
+	var out []string
+	var cur strings.Builder
 	var tag string
-
-	for scanner.Scan() {
-		line := scanner.Text()
-
-		if inCopy {
-			if line == "\\." {
-				inCopy = false
-				if err := pgExecCopy(ctx, conn, copyHeader, &copyBuf); err != nil {
-					return err
-				}
-				copyBuf.Reset()
-				copyHeader = ""
-				stmt.Reset()
-			} else {
-				if copyBuf.Len() > 0 {
-					copyBuf.WriteByte('\n')
-				}
-				copyBuf.WriteString(line)
-			}
-			continue
+	flush := func() {
+		if s := strings.TrimSpace(cur.String()); s != "" {
+			out = append(out, s)
 		}
-
-		nextTag := updateDollarTag(line, tag)
-		if tag == "" && strings.HasPrefix(line, "COPY ") && strings.Contains(line, " FROM stdin;") {
-			if stmt.Len() > 0 {
-				if err := execStmtGroup(ctx, conn, &stmt); err != nil {
-					return err
-				}
-				stmt.Reset()
-			}
-			copyHeader = strings.TrimSuffix(line, ";")
-			inCopy = true
-			continue
-		}
-		tag = nextTag
-
-		stmt.WriteString(line)
-		stmt.WriteByte('\n')
-
+		cur.Reset()
+	}
+	for _, line := range strings.Split(src, "\n") {
+		cur.WriteString(line)
+		cur.WriteByte('\n')
+		tag = updateDollarTag(line, tag)
 		if tag == "" && strings.HasSuffix(strings.TrimSpace(line), ";") {
-			if err := execStmtGroup(ctx, conn, &stmt); err != nil {
-				return err
-			}
-			stmt.Reset()
+			flush()
 		}
 	}
-
-	return execStmtGroup(ctx, conn, &stmt)
+	flush()
+	return out
 }
 
 func updateDollarTag(line, tag string) string {

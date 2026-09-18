@@ -10,7 +10,10 @@
       - (container) support LOG_LEVEL=TRACE
 
    ### Changed
-      - (mysql|mariadb) further refine auto detection to solve dump variances/restores
+      - (postgres) restore failing with invalid input syntax for type jsonb values
+      - (postgres) restore truncation on json rows wider than 1MB
+      - (postgres) dump optimize json output routines
+      - (mysql|mariadb) refine auto detection to solve dump variances/restores
       - change ALL database backups with split_db: false to be filename _all_
       - split_db revert to default true
       - (container) s3 tls configuration properly generates in config
