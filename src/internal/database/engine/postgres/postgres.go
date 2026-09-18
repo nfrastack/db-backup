@@ -529,6 +529,9 @@ func (d *Dumper) dumpDatabase(w io.Writer, dbName string) error {
 	if err := d.dumpTriggers(w, dbName, postTables); err != nil {
 		return err
 	}
+	if err := d.dumpRowSecurity(w, dbName, postTables); err != nil {
+		return err
+	}
 	if err := d.dumpBlobs(w, dbName, postTables); err != nil {
 		return err
 	}
@@ -1009,6 +1012,88 @@ func (d *Dumper) dumpTriggers(w io.Writer, dbName string, tables []string) error
 		rows.Close()
 	}
 	log.Debug("postgres", "triggers done", "database", dbName,
+		"count", count, "elapsed", time.Since(start).Round(time.Millisecond).String())
+	return nil
+}
+
+func (d *Dumper) dumpRowSecurity(w io.Writer, dbName string, tables []string) error {
+	start := time.Now()
+	count := 0
+	for _, t := range tables {
+		parts := strings.SplitN(t, ".", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		schema, table := parts[0], parts[1]
+		var enabled, force bool
+		err := d.conn.QueryRow(d.ctxOrBg(),
+			"SELECT c.relrowsecurity, c.relforcerowsecurity "+
+				"FROM pg_catalog.pg_class c "+
+				"JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "+
+				"WHERE n.nspname = $1 AND c.relname = $2", schema, table).Scan(&enabled, &force)
+		if err != nil || !enabled {
+			continue
+		}
+		qt := quotePGIdent(schema) + "." + quotePGIdent(table)
+		fmt.Fprintf(w, "\n-- Row security: %s.%s\n", schema, table)
+		fmt.Fprintf(w, "ALTER TABLE %s ENABLE ROW LEVEL SECURITY;\n", qt)
+		if force {
+			fmt.Fprintf(w, "ALTER TABLE %s FORCE ROW LEVEL SECURITY;\n", qt)
+		}
+		rows, err := d.conn.Query(d.ctxOrBg(),
+			"SELECT p.polname, p.polpermissive, "+
+				"CASE WHEN p.polroles = '{0}'::oid[] THEN 'PUBLIC' "+
+				"ELSE (SELECT string_agg(quote_ident(r::regrole::text), ', ' ORDER BY r::regrole::text) FROM unnest(p.polroles) AS r) END, "+
+				"p.polcmd, pg_get_expr(p.polqual, p.polrelid), pg_get_expr(p.polwithcheck, p.polrelid) "+
+				"FROM pg_catalog.pg_policy p "+
+				"JOIN pg_catalog.pg_class c ON c.oid = p.polrelid "+
+				"JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "+
+				"WHERE n.nspname = $1 AND c.relname = $2 ORDER BY p.polname", schema, table)
+		if err != nil {
+			log.Trace("postgres", "policies unavailable", "database", dbName,
+				"table", t, "error", err.Error())
+			continue
+		}
+		for rows.Next() {
+			var name string
+			var permissive bool
+			var roles *string
+			var cmd string
+			var qual, withCheck *string
+			if err := rows.Scan(&name, &permissive, &roles, &cmd, &qual, &withCheck); err != nil {
+				break
+			}
+			forCmd := map[string]string{"r": "SELECT", "a": "INSERT", "w": "UPDATE", "d": "DELETE", "*": "ALL"}[cmd]
+			if forCmd == "" {
+				continue
+			}
+			to := "PUBLIC"
+			if roles != nil && *roles != "" {
+				to = *roles
+			}
+			as := "PERMISSIVE"
+			if !permissive {
+				as = "RESTRICTIVE"
+			}
+			var sb strings.Builder
+			fmt.Fprintf(&sb, "CREATE POLICY %s ON %s AS %s FOR %s TO %s",
+				quotePGIdent(name), qt, as, forCmd, to)
+			if qual != nil && *qual != "" && cmd != "a" {
+				fmt.Fprintf(&sb, " USING (%s)", *qual)
+			}
+			if withCheck != nil && *withCheck != "" && cmd != "r" && cmd != "d" {
+				fmt.Fprintf(&sb, " WITH CHECK (%s)", *withCheck)
+			}
+			sb.WriteString(";\n")
+			count++
+			log.Trace("postgres", "policy dumped", "database", dbName,
+				"table", t, "policy", name)
+			fmt.Fprintf(w, "DROP POLICY IF EXISTS %s ON %s;\n", quotePGIdent(name), qt)
+			fmt.Fprint(w, sb.String())
+		}
+		rows.Close()
+	}
+	log.Debug("postgres", "row security done", "database", dbName,
 		"count", count, "elapsed", time.Since(start).Round(time.Millisecond).String())
 	return nil
 }
