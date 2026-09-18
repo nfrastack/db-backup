@@ -24,6 +24,7 @@ type Dumper struct {
 	host       string
 	port       int
 	pass       string
+	db         int
 	client     *redis.Client
 	tlsCfg     *config.TLSConfig
 	connCfg    *config.ConnectivityConfig
@@ -42,13 +43,16 @@ func (d *Dumper) Close() error {
 func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
 	ctx := d.ctxOrBg()
 	start := time.Now()
+	if err := checkDBNames(dbNames, d.db); err != nil {
+		return err
+	}
 	log.Debug("redis", "backup start",
 		"host", d.host, "port", d.port, "tls", d.tlsCfg != nil,
-		"auth", d.authMode())
+		"auth", d.authMode(), "db", d.db)
 
 	fmt.Fprint(w, common.DumpBanner("#", "Redis",
 		fmt.Sprintf("Host: %s:%d", d.host, d.port)))
-	fmt.Fprintf(w, "#\n\n")
+	fmt.Fprintf(w, "# Database: %d\n#\n\n", d.db)
 	var cursor uint64
 	var scanned, dumped, skipped int
 	var skippedKeys []string
@@ -93,6 +97,29 @@ func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
 	return nil
 }
 
+func checkDBNames(dbNames []string, selected int) error {
+	var names []string
+	for _, n := range dbNames {
+		if strings.TrimSpace(n) != "" {
+			names = append(names, n)
+		}
+	}
+	if len(names) > 1 {
+		return fmt.Errorf("redis supports a single database index per backup, got %q", strings.Join(names, ","))
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	idx, err := ParseDBIndex(names[0])
+	if err != nil {
+		return err
+	}
+	if idx != selected {
+		return fmt.Errorf("redis database mismatch: requested %d but connected to %d", idx, selected)
+	}
+	return nil
+}
+
 func NewDumper(host string, port int, pass string, tlsCfg ...*config.TLSConfig) *Dumper {
 	if port == 0 {
 		port = 6379
@@ -102,6 +129,22 @@ func NewDumper(host string, port int, pass string, tlsCfg ...*config.TLSConfig) 
 		d.tlsCfg = tlsCfg[0]
 	}
 	return d
+}
+
+func ParseDBIndex(name string) (int, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return 0, nil
+	}
+	n, err := strconv.Atoi(name)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("invalid redis database %q: must be a numeric database index (e.g. --name 3)", name)
+	}
+	return n, nil
+}
+
+func strconvFormatFloat(f float64) string {
+	return strconv.FormatFloat(f, 'f', -1, 64)
 }
 
 func (d *Dumper) Open() error {
@@ -118,6 +161,7 @@ func (d *Dumper) OpenContext(ctx context.Context) error {
 		opts := &redis.Options{
 			Addr:        net.JoinHostPort(d.host, fmt.Sprintf("%d", d.port)),
 			Password:    d.pass,
+			DB:          d.db,
 			DialTimeout: 10 * time.Second,
 		}
 		if tc, err := common.BuildTLSConfig(d.tlsCfg); err == nil && tc != nil {
@@ -250,9 +294,7 @@ func (d *Dumper) getKeyValue(ctx context.Context, key string) (string, error) {
 		return d.client.Get(ctx, key).Result()
 	}
 }
-func strconvFormatFloat(f float64) string {
-	return strconv.FormatFloat(f, 'f', -1, 64)
-}
+
 func (d *Dumper) writeRestoreCmd(w io.Writer, parts []string, ttl time.Duration) {
 	fmt.Fprintln(w, strings.Join(parts, " "))
 	switch ttlSec := int64(ttl.Seconds()); {

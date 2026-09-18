@@ -18,13 +18,19 @@ func Spec() registry.EngineSpec {
 		Label:       "Redis",
 		DefaultPort: 6379,
 		New: func(o registry.Options) (registry.Engine, error) {
-			return NewDumper(o.Host, o.Port, o.Pass, o.TLS), nil
+			db, err := ParseDBIndex(o.DB)
+			if err != nil {
+				return nil, err
+			}
+			d := NewDumper(o.Host, o.Port, o.Pass, o.TLS)
+			d.db = db
+			return d, nil
 		},
 		Maintain: func(host string, port int, user, pass, dbName, authSource string, cfg *common.MaintenanceCfg, tlsCfg *config.TLSConfig) ([]common.OpResult, error) {
 			return Maintain(host, port, pass, cfg)
 		},
 		Restore: func(r io.Reader, host string, port int, user, pass, dbName, authSource string, tlsCfg *config.TLSConfig) error {
-			return Restore(r, host, port, pass, tlsCfg)
+			return Restore(r, host, port, pass, dbName, tlsCfg)
 		},
 	}
 }

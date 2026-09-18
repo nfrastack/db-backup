@@ -21,9 +21,14 @@ import (
 )
 
 func ClientFor(host string, port int, pass string, tlsCfg *config.TLSConfig) *redis.Client {
+	return ClientForDB(host, port, pass, 0, tlsCfg)
+}
+
+func ClientForDB(host string, port int, pass string, db int, tlsCfg *config.TLSConfig) *redis.Client {
 	opts := &redis.Options{
 		Addr:        fmt.Sprintf("%s:%d", host, port),
 		Password:    pass,
+		DB:          db,
 		DialTimeout: 10 * time.Second,
 	}
 	if tc, err := common.BuildTLSConfig(tlsCfg); err == nil && tc != nil {
@@ -36,8 +41,12 @@ func Maintain(host string, port int, pass string, cfg *common.MaintenanceCfg) ([
 	return nil, nil
 }
 
-func Restore(r io.Reader, host string, port int, pass string, tlsCfg *config.TLSConfig) error {
-	rdb := ClientFor(host, port, pass, tlsCfg)
+func Restore(r io.Reader, host string, port int, pass, dbName string, tlsCfg *config.TLSConfig) error {
+	db, err := ParseDBIndex(dbName)
+	if err != nil {
+		return err
+	}
+	rdb := ClientForDB(host, port, pass, db, tlsCfg)
 	defer rdb.Close()
 	ctx := context.Background()
 
@@ -45,7 +54,7 @@ func Restore(r io.Reader, host string, port int, pass string, tlsCfg *config.TLS
 		return fmt.Errorf("ping: %w", err)
 	}
 	restoreStart := time.Now()
-	log.Debug("redis", "restore start", "host", host, "port", port)
+	log.Debug("redis", "restore start", "host", host, "port", port, "db", db)
 
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
