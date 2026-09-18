@@ -369,6 +369,7 @@ func (d *Dumper) dumpView(w io.Writer, conn *sql.DB, tx *sql.Tx, dbName, view st
 
 func escapeString(s string) string {
 	s = strings.ReplaceAll(s, "\\", "\\\\")
+	s = strings.ReplaceAll(s, "\x00", "\\0")
 	s = strings.ReplaceAll(s, "'", "\\'")
 	s = strings.ReplaceAll(s, "\"", "\\\"")
 	s = strings.ReplaceAll(s, "\n", "\\n")

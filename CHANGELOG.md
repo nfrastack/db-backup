@@ -10,6 +10,7 @@
       - (container) support LOG_LEVEL=TRACE
 
    ### Changed
+      - (mysql) dump escape null bytes
       - (mysql) shrink insert batches on small max_allowed_packet
       - (mysql) verify max_allowed_packet before dump
       - (mysql) split inserts into 1mb batches
