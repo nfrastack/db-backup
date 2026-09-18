@@ -107,7 +107,7 @@ func pgExecCopy(ctx context.Context, conn *pgx.Conn, header string, data *string
 		return nil
 	}
 	payload := data.String()
-	if !strings.HasSuffix(payload, "\n") {
+	if payload != "" && !strings.HasSuffix(payload, "\n") {
 		payload += "\n"
 	}
 	dr := strings.NewReader(payload)

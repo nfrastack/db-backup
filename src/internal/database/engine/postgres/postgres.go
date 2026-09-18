@@ -1208,8 +1208,27 @@ func (d *Dumper) dumpComments(w io.Writer, dbName string) error {
 			"LEFT JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid AND a.attnum = d.objsubid "+
 			"WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') "+
 			"AND c.relkind IN ('r', 'p', 'v', 'm', 'S', 'i') "+
-			"ORDER BY n.nspname, c.relname, d.objsubid")
+			"	ORDER BY n.nspname, c.relname, d.objsubid")
 	if err != nil {
+		log.Trace("postgres", "comments unavailable", "database", dbName,
+			"error", err.Error())
+		return nil
+	}
+	type commentRef struct {
+		schema, rel, kind, desc string
+		subid                  int32
+		col                    *string
+	}
+	var comments []commentRef
+	for rows.Next() {
+		var c commentRef
+		if err := rows.Scan(&c.schema, &c.rel, &c.kind, &c.subid, &c.col, &c.desc); err != nil {
+			break
+		}
+		comments = append(comments, c)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
 		log.Trace("postgres", "comments unavailable", "database", dbName,
 			"error", err.Error())
 		return nil
@@ -1224,13 +1243,8 @@ func (d *Dumper) dumpComments(w io.Writer, dbName string) error {
 		"S": "SEQUENCE", "i": "INDEX",
 	}
 	count := 0
-	for rows.Next() {
-		var schema, rel, kind, desc string
-		var subid int32
-		var col *string
-		if err := rows.Scan(&schema, &rel, &kind, &subid, &col, &desc); err != nil {
-			break
-		}
+	for _, c := range comments {
+		schema, rel, kind, desc := c.schema, c.rel, c.kind, c.desc
 		if extMembers[schema+"."+rel] {
 			continue
 		}
@@ -1239,17 +1253,16 @@ func (d *Dumper) dumpComments(w io.Writer, dbName string) error {
 			continue
 		}
 		count++
-		if subid == 0 {
+		if c.subid == 0 {
 			fmt.Fprintf(w, "\n-- Comment: %s %s.%s\n", kw, schema, rel)
 			fmt.Fprintf(w, "COMMENT ON %s %s.%s IS '%s';\n", kw,
 				quotePGIdent(schema), quotePGIdent(rel), escapePGLiteral(desc))
-		} else if col != nil {
-			fmt.Fprintf(w, "\n-- Comment: column %s.%s.%s\n", schema, rel, *col)
+		} else if c.col != nil {
+			fmt.Fprintf(w, "\n-- Comment: column %s.%s.%s\n", schema, rel, *c.col)
 			fmt.Fprintf(w, "COMMENT ON COLUMN %s.%s.%s IS '%s';\n",
-				quotePGIdent(schema), quotePGIdent(rel), quotePGIdent(*col), escapePGLiteral(desc))
+				quotePGIdent(schema), quotePGIdent(rel), quotePGIdent(*c.col), escapePGLiteral(desc))
 		}
 	}
-	rows.Close()
 	log.Debug("postgres", "comments done", "database", dbName,
 		"count", count, "elapsed", time.Since(start).Round(time.Millisecond).String())
 	return nil
