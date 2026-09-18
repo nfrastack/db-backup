@@ -500,13 +500,23 @@ func (d *Dumper) dumpDatabase(w io.Writer, dbName string) error {
 	}
 
 	postTables := append([]string{}, included...)
+	var fkDefs []string
 	for _, table := range included {
 		common.TraceTable(d.ctxOrBg(), dbName, table)
-		partitionNames, err := d.dumpTable(w, dbName, table)
+		partitionNames, fkSQL, err := d.dumpTable(w, dbName, table)
 		if err != nil {
 			return err
 		}
 		postTables = append(postTables, partitionNames...)
+		if fkSQL != "" {
+			fkDefs = append(fkDefs, fkSQL)
+		}
+	}
+	if len(fkDefs) > 0 {
+		fmt.Fprintf(w, "\n-- Foreign keys\n")
+		for _, fk := range fkDefs {
+			fmt.Fprint(w, fk)
+		}
 	}
 
 	if err := d.dumpViews(w, dbName); err != nil {
@@ -906,14 +916,14 @@ func (d *Dumper) dumpSequenceValues(w io.Writer, dbName string) error {
 	return nil
 }
 
-func (d *Dumper) dumpTable(w io.Writer, dbName, table string) ([]string, error) {
+func (d *Dumper) dumpTable(w io.Writer, dbName, table string) ([]string, string, error) {
 	parts := strings.SplitN(table, ".", 2)
 	schema := parts[0]
 	tableName := parts[1]
 
 	createSQL, err := d.getCreateTable(schema, tableName)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	fmt.Fprintf(w, "\n-- Table: %s.%s\n%s\n\n", schema, tableName, createSQL)
 	if owner, err := d.ownerOf(schema, tableName); err == nil && owner != "" {
@@ -935,19 +945,28 @@ func (d *Dumper) dumpTable(w io.Writer, dbName, table string) ([]string, error) 
 		schemaOnly = schemaOnly || so
 	}
 
+	var fkSQL string
+	if fk, err := d.getForeignKeys(schema, tableName); err == nil {
+		fkSQL = fk
+	} else {
+		log.Trace("postgres", "foreign keys unavailable", "database", dbName,
+			"table", schema+"."+tableName, "error", err.Error())
+	}
+
 	if d.isPartitioned(schema, tableName) {
 		log.Trace("postgres", "partitioned parent, DDL only", "database", dbName, "table", table)
-		return d.dumpPartitions(w, dbName, schema, tableName, schemaOnly, 0)
+		partitionNames, err := d.dumpPartitions(w, dbName, schema, tableName, schemaOnly, 0)
+		return partitionNames, fkSQL, err
 	}
 	if schemaOnly {
-		return nil, nil
+		return nil, fkSQL, nil
 	}
 
 	if err := d.copyData(w, dbName, schema, tableName); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
-	return nil, nil
+	return nil, fkSQL, nil
 }
 
 func (d *Dumper) dumpTriggers(w io.Writer, dbName string, tables []string) error {
@@ -1554,9 +1573,6 @@ func (d *Dumper) getCreateTable(schema, table string) (string, error) {
 	}
 	if checkSQL, err := d.getCheckConstraints(schema, table); err == nil {
 		sb.WriteString("\n" + checkSQL)
-	}
-	if fkSQL, err := d.getForeignKeys(schema, table); err == nil {
-		sb.WriteString("\n" + fkSQL)
 	}
 
 	return sb.String(), rows.Err()
