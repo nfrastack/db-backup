@@ -12,20 +12,22 @@
       - (storage/webdav) add additional debug and trace verbosity
 
    ### Changed
-      - change ALL database backups with split_db: false to be filename _all_
+      - change name: ALL database backups with split_db: false to be filename _all_
       - split_db revert to default true
       - update stats schema to 4
       - (container) s3 tls configuration properly generates in config
       - (influx) use http as default
-      - (mysql|mariadb) refine auto detection to solve dump and restore variances
-      - (mysql) dump escape null bytes
-      - (mysql) dump verify max_allowed_packet
-      - (mysql) restore setting session for incremental
-      - (mysql) restore shrink insert batches on small max_allowed_packet
-      - (mysql) restore split inserts into 1mb batches
+      - (mysql) refine auto detection to solve dump and restore variances
+      - (mysql) dump parity
+        - dump escape null bytes
+        - dump verify max_allowed_packet
+      - (mysql) restore parity
+        - enforce binlog session for incremental/differential
+        - split inserts into 1mb batches
+        - shrink insert batches on small max_allowed_packet
       - (postgres) pg_dump parity
         - dump PARTITION OF with one COPY per partition
-        - dump comments, constraints, extensions, grants, materialized views, rules
+        - dump comments, constraints, extensions, grants, materialized views, rules, statistics
         - dump referenced largeobjects from oid columns
         - dump skip auto generatied columns
         - dump quoting rules for json data
@@ -38,7 +40,7 @@
         - truncation on json rows wider than 1mb
       - (storage) fixes
         - (azure/s3/webdav) open new handle on each connection attempt
-        - default to https if url is not passed
+        - (s3) default to https if url is not passed
 
 
 ## 5.0.2 2026-09-12 <code at nfrastack dot com>

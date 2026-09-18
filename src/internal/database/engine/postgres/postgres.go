@@ -579,6 +579,9 @@ func (d *Dumper) dumpDatabase(w io.Writer, dbName string) error {
 	if err := d.dumpRules(w, dbName, postTables); err != nil {
 		return err
 	}
+	if err := d.dumpStatistics(w, dbName, postTables); err != nil {
+		return err
+	}
 	if err := d.dumpComments(w, dbName); err != nil {
 		return err
 	}
@@ -1198,6 +1201,76 @@ func (d *Dumper) dumpRules(w io.Writer, dbName string, tables []string) error {
 	return nil
 }
 
+func (d *Dumper) dumpStatistics(w io.Writer, dbName string, tables []string) error {
+	start := time.Now()
+	included := map[string]bool{}
+	for _, t := range tables {
+		included[t] = true
+	}
+	rows, err := d.conn.Query(d.ctxOrBg(),
+		"SELECT DISTINCT n.nspname, s.stxname, pg_get_statisticsobjdef(s.oid), r.rolname, tn.nspname, tc.relname "+
+			"FROM pg_catalog.pg_statistic_ext s "+
+			"JOIN pg_catalog.pg_namespace n ON n.oid = s.stxnamespace "+
+			"JOIN pg_catalog.pg_authid r ON r.oid = s.stxowner "+
+			"JOIN pg_catalog.pg_depend dd ON dd.objid = s.oid AND dd.classid = 'pg_statistic_ext'::regclass AND dd.refclassid = 'pg_class'::regclass "+
+			"JOIN pg_catalog.pg_class tc ON tc.oid = dd.refobjid "+
+			"JOIN pg_catalog.pg_namespace tn ON tn.oid = tc.relnamespace "+
+			"WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') "+
+			"AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend e WHERE e.objid = s.oid AND e.deptype = 'e') "+
+			"ORDER BY n.nspname, s.stxname")
+	if err != nil {
+		log.Trace("postgres", "statistics unavailable", "database", dbName,
+			"error", err.Error())
+		return nil
+	}
+	type statRef struct {
+		schema, name, def, owner, tabschema, tabname string
+	}
+	var stats []statRef
+	for rows.Next() {
+		var s statRef
+		if err := rows.Scan(&s.schema, &s.name, &s.def, &s.owner, &s.tabschema, &s.tabname); err != nil {
+			break
+		}
+		if s.def == "" {
+			continue
+		}
+		if !included[s.tabschema+"."+s.tabname] {
+			continue
+		}
+		stats = append(stats, s)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		log.Trace("postgres", "statistics unavailable", "database", dbName,
+			"error", err.Error())
+		return nil
+	}
+	count := 0
+	for _, s := range stats {
+		def := strings.TrimSuffix(strings.TrimSpace(s.def), ";")
+		if idx := strings.LastIndex(def, " FROM "); idx >= 0 {
+			target := def[idx+6:]
+			if !strings.Contains(target, ".") {
+				def = def[:idx+6] + quotePGIdent(s.schema) + "." +
+					quotePGIdent(strings.Trim(target, `"`))
+			}
+		}
+		count++
+		log.Trace("postgres", "statistics dumped", "database", dbName,
+			"statistics", s.schema+"."+s.name)
+		fmt.Fprintf(w, "\n-- Statistics: %s.%s\n", s.schema, s.name)
+		fmt.Fprintf(w, "DROP STATISTICS IF EXISTS %s.%s;\n",
+			quotePGIdent(s.schema), quotePGIdent(s.name))
+		fmt.Fprintf(w, "%s;\n", def)
+		fmt.Fprintf(w, "ALTER STATISTICS %s.%s OWNER TO %s;\n",
+			quotePGIdent(s.schema), quotePGIdent(s.name), quotePGIdent(s.owner))
+	}
+	log.Debug("postgres", "statistics done", "database", dbName,
+		"count", count, "elapsed", time.Since(start).Round(time.Millisecond).String())
+	return nil
+}
+
 func (d *Dumper) dumpComments(w io.Writer, dbName string) error {
 	start := time.Now()
 	rows, err := d.conn.Query(d.ctxOrBg(),
@@ -1216,8 +1289,8 @@ func (d *Dumper) dumpComments(w io.Writer, dbName string) error {
 	}
 	type commentRef struct {
 		schema, rel, kind, desc string
-		subid                  int32
-		col                    *string
+		subid                   int32
+		col                     *string
 	}
 	var comments []commentRef
 	for rows.Next() {
