@@ -1922,6 +1922,7 @@ func (d *Dumper) OpenContext(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("connect: %w", err)
 		}
+		guardSession(ctx, d.conn)
 		return nil
 	}
 	ping := func() error {

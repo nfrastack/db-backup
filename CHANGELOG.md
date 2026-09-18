@@ -4,6 +4,7 @@
       - add additional version detail in dump bannner comments
       - add %dbs% filename tag to expand database names when ALL+split_db:false
       - (postgres) additional trace output
+      - (postgres) avoid server timeout with long operations
       - (storage/webdav) add additional debug and trace verbosity
       - (storage/s3) add aditional debug and trace verbosity
       - (storage/azure) add additional debug and trace verbosity

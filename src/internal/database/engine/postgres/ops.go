@@ -15,6 +15,7 @@ import (
 
 	"github.com/nfrastack/db-backup/internal/config"
 	"github.com/nfrastack/db-backup/internal/database/common"
+	"github.com/nfrastack/db-backup/internal/log"
 )
 
 func dollarTagOpen(s string) string {
@@ -63,6 +64,13 @@ func execStmtGroup(ctx context.Context, conn *pgx.Conn, stmt *strings.Builder) e
 	return nil
 }
 
+func guardSession(ctx context.Context, conn *pgx.Conn) {
+	if _, err := conn.Exec(ctx,
+		"SET statement_timeout = 0; SET lock_timeout = 0; SET idle_in_transaction_session_timeout = 0"); err != nil {
+		log.Trace("postgres", "session guard unavailable", "error", err.Error())
+	}
+}
+
 func ListDatabases(host string, port int, user, pass string, tlsCfg *config.TLSConfig) ([]string, error) {
 	ctx := context.Background()
 	conn, err := pgx.Connect(ctx, ConnStr(user, pass, host, port, "postgres", tlsCfg))
@@ -70,6 +78,7 @@ func ListDatabases(host string, port int, user, pass string, tlsCfg *config.TLSC
 		return nil, fmt.Errorf("connect: %w", err)
 	}
 	defer conn.Close(ctx)
+	guardSession(ctx, conn)
 
 	rows, err := conn.Query(ctx, "SELECT datname FROM pg_database WHERE datistemplate = false")
 	if err != nil {
@@ -188,10 +197,12 @@ func Restore(r io.Reader, host string, port int, user, pass, dbName string, tlsC
 		return fmt.Errorf("connect: %w", err)
 	}
 	defer conn.Close(ctx)
+	guardSession(ctx, conn)
 
 	if firstDB != "postgres" && firstDB != "template1" && firstDB != "template0" {
 		bootstrap := ConnStr(user, pass, host, port, "postgres", tlsCfg)
 		if bootConn, err := pgx.Connect(ctx, bootstrap); err == nil {
+			guardSession(ctx, bootConn)
 			var exists bool
 			bootConn.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname=$1)", firstDB).Scan(&exists)
 			if !exists {
