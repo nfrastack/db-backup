@@ -186,6 +186,75 @@ func splitSQLStatements(data string) []string {
 	var out []string
 	var buf strings.Builder
 	delimiter := ";"
+	var inSingle, inDouble, inBacktick, inLineComment, inBlockComment bool
+	scan := func(line string) {
+		for i := 0; i < len(line); i++ {
+			c := line[i]
+			if inLineComment {
+				continue
+			}
+			if inBlockComment {
+				if c == '*' && i+1 < len(line) && line[i+1] == '/' {
+					inBlockComment = false
+					i++
+				}
+				continue
+			}
+			if inSingle {
+				if c == '\\' {
+					i++
+				} else if c == '\'' {
+					if i+1 < len(line) && line[i+1] == '\'' {
+						i++
+					} else {
+						inSingle = false
+					}
+				}
+				continue
+			}
+			if inDouble {
+				if c == '\\' {
+					i++
+				} else if c == '"' {
+					inDouble = false
+				}
+				continue
+			}
+			if inBacktick {
+				if c == '`' {
+					inBacktick = false
+				}
+				continue
+			}
+			switch {
+			case c == '\'':
+				inSingle = true
+			case c == '"':
+				inDouble = true
+			case c == '`':
+				inBacktick = true
+			case c == '#' || (c == '-' && i+1 < len(line) && line[i+1] == '-' &&
+				(i+2 >= len(line) || line[i+2] == ' ' || line[i+2] == '\t' || line[i+2] == '\r')):
+				inLineComment = true
+			case c == '/' && i+1 < len(line) && line[i+1] == '*':
+				inBlockComment = true
+				i++
+			}
+		}
+	}
+	neutral := func() bool {
+		return !inSingle && !inDouble && !inBacktick && !inBlockComment
+	}
+	endsStatement := func() bool {
+		if delimiter == "" || !neutral() || inLineComment {
+			return false
+		}
+		s := strings.TrimSpace(buf.String())
+		if !strings.HasSuffix(s, delimiter) {
+			return false
+		}
+		return true
+	}
 	flush := func() {
 		s := strings.TrimSpace(buf.String())
 		buf.Reset()
@@ -202,17 +271,20 @@ func splitSQLStatements(data string) []string {
 	for _, line := range strings.Split(data, "\n") {
 		trimmed := strings.TrimSpace(line)
 		upper := strings.ToUpper(trimmed)
-		if strings.HasPrefix(upper, "DELIMITER ") {
+		if neutral() && !inLineComment && strings.HasPrefix(upper, "DELIMITER ") {
 			flush()
 			delimiter = strings.TrimSpace(trimmed[len("DELIMITER "):])
 			continue
 		}
 		if trimmed == "" && buf.Len() == 0 {
+			inLineComment = false
 			continue
 		}
+		scan(line)
 		buf.WriteString(line)
 		buf.WriteString("\n")
-		if delimiter != "" && strings.HasSuffix(trimmed, delimiter) {
+		inLineComment = false
+		if endsStatement() {
 			flush()
 		}
 	}
