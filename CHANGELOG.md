@@ -10,6 +10,7 @@
       - (container) support LOG_LEVEL=TRACE
 
    ### Changed
+      - (mysql) split inserts into 1mb batches
       - (postgres) dump constraints not as indexes
       - (postgres) change order of foreign key creation
       - (postgres) encode uuid and bytea arrays as text

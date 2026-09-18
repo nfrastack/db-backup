@@ -742,6 +742,8 @@ func (d *Dumper) showCreate(conn *sql.DB, tx *sql.Tx, query string) (string, err
 	return best, rows.Err()
 }
 
+const mysqlInsertBatchBytes = 1000000
+
 func (d *Dumper) streamRows(w io.Writer, q querier, dbName, table string, insertCols []string) error {
 	if len(insertCols) == 0 {
 		return nil
@@ -763,16 +765,25 @@ func (d *Dumper) streamRows(w io.Writer, q querier, dbName, table string, insert
 		return err
 	}
 
-	var rowCount int
+	qCols := make([]string, len(cols))
+	for i, c := range cols {
+		qCols[i] = quoteMySQLIdent(c)
+	}
+	header := fmt.Sprintf("INSERT INTO %s (%s) VALUES\n", quoteMySQLIdent(table), strings.Join(qCols, ", "))
+
+	var sb strings.Builder
+	rowsInBatch := 0
+	flush := func() {
+		sb.WriteString(";\n")
+		_, _ = io.WriteString(w, sb.String())
+		sb.Reset()
+		rowsInBatch = 0
+	}
 	for rows.Next() {
-		if rowCount == 0 {
-			qCols := make([]string, len(cols))
-			for i, c := range cols {
-				qCols[i] = quoteMySQLIdent(c)
-			}
-			fmt.Fprintf(w, "INSERT INTO %s (%s) VALUES\n", quoteMySQLIdent(table), strings.Join(qCols, ", "))
+		if rowsInBatch == 0 {
+			sb.WriteString(header)
 		} else {
-			fmt.Fprintf(w, ",\n")
+			sb.WriteString(",\n")
 		}
 
 		values := make([]any, len(cols))
@@ -785,46 +796,49 @@ func (d *Dumper) streamRows(w io.Writer, q querier, dbName, table string, insert
 			return fmt.Errorf("scan row: %w", err)
 		}
 
-		fmt.Fprintf(w, "(")
+		sb.WriteString("(")
 		for i, val := range values {
 			if i > 0 {
-				fmt.Fprintf(w, ", ")
+				sb.WriteString(", ")
 			}
 			switch v := val.(type) {
 			case nil:
-				fmt.Fprintf(w, "NULL")
+				sb.WriteString("NULL")
 			case []byte:
 				scanType := colTypes[i].DatabaseTypeName()
 				if isBlobType(scanType) {
-					fmt.Fprintf(w, "0x%x", v)
+					fmt.Fprintf(&sb, "0x%x", v)
 				} else {
-					fmt.Fprintf(w, "'%s'", escapeString(string(v)))
+					sb.WriteString("'" + escapeString(string(v)) + "'")
 				}
 			case int64:
-				fmt.Fprintf(w, "%d", v)
+				fmt.Fprintf(&sb, "%d", v)
 			case float64:
-				fmt.Fprintf(w, "%v", v)
+				fmt.Fprintf(&sb, "%v", v)
 			case bool:
 				if v {
-					fmt.Fprintf(w, "1")
+					sb.WriteString("1")
 				} else {
-					fmt.Fprintf(w, "0")
+					sb.WriteString("0")
 				}
 			case string:
-				fmt.Fprintf(w, "'%s'", escapeString(v))
+				sb.WriteString("'" + escapeString(v) + "'")
 			case fmt.Stringer:
-				fmt.Fprintf(w, "'%s'", escapeString(v.String()))
+				sb.WriteString("'" + escapeString(v.String()) + "'")
 			default:
-				fmt.Fprintf(w, "'%s'", escapeString(fmt.Sprintf("%v", v)))
+				sb.WriteString("'" + escapeString(fmt.Sprintf("%v", v)) + "'")
 			}
 		}
-		fmt.Fprintf(w, ")")
+		sb.WriteString(")")
 
-		rowCount++
+		rowsInBatch++
+		if sb.Len() >= mysqlInsertBatchBytes {
+			flush()
+		}
 	}
 
-	if rowCount > 0 {
-		fmt.Fprintf(w, ";\n")
+	if rowsInBatch > 0 {
+		flush()
 	}
 
 	return rows.Err()
