@@ -24,6 +24,7 @@
       - (mysql) restore parity
         - enforce binlog session for incremental/differential
         - split inserts into 1mb batches
+        - strip DEFINER and own by restoring user
         - shrink insert batches on small max_allowed_packet
       - (postgres) pg_dump parity
         - dump PARTITION OF with one COPY per partition

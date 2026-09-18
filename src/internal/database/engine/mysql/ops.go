@@ -141,6 +141,12 @@ func Restore(r io.Reader, host string, port int, user, pass, dbName string, tlsC
 		}
 	}
 
+	reDefiner := regexp.MustCompile("(?i)\\s*DEFINER\\s*=\\s*(`[^`]*`|'[^']*'|\"[^\"]*\"|[A-Za-z0-9_.$-]+)(\\s*@\\s*(`[^`]*`|'[^']*'|\"[^\"]*\"|[A-Za-z0-9_.$%-]+))?")
+	if stripped := reDefiner.FindAll(data, -1); len(stripped) > 0 {
+		log.Debug("mysql", "definers stripped", "count", len(stripped))
+		data = reDefiner.ReplaceAll(data, []byte(""))
+	}
+
 	for _, s := range splitSQLStatements(string(data)) {
 		if _, err := db.Exec(s); err != nil {
 			return fmt.Errorf("exec: %w", err)
