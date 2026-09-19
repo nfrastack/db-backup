@@ -24,8 +24,9 @@ type backupChain struct {
 }
 
 func backupPrefix(dbType, dbName, host string) string {
-	job := config.JobConfig{Type: dbType}
-	return fmt.Sprintf("%s-%s-%s-", dbType, dbToken(job, dbName), hostSanitizer.Replace(host))
+	job := config.JobConfig{Type: dbType, Host: host}
+	dbTok, hostTok := defaultFilenameTokens(job, dbName)
+	return joinNonEmpty("-", dbType, dbTok, hostTok) + "-"
 }
 
 func chainInfo(st storage.Storage, dbType, dbName, host string) backupChain {

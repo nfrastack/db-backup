@@ -13,8 +13,10 @@
 
    ### Changed
       - change name: ALL database backups with split_db: false to be filename _all_
+      - default backup filename tag omits empty db/host components
       - split_db revert to default true
       - update stats schema to 4
+      - (backup) create_latest link follows strips empty parameters when naming
       - (container) s3 tls configuration properly generates in config
       - (influx) use http as default
       - (mysql) refine auto detection to solve dump and restore variances
@@ -46,6 +48,7 @@
       - (storage) fixes
         - (azure/s3/webdav) open new handle on each connection attempt
         - (s3) default to https if url is not passed
+      - (sqlite) normalize NAME/HOST file path into a single filename token
 
 
 ## 5.0.2 2026-09-12 <code at nfrastack dot com>

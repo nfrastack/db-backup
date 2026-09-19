@@ -25,8 +25,11 @@ type BackupInfo struct {
 	Encryption string
 }
 
-var backupRe = regexp.MustCompile(`^(.+?)-(.+?)-(.+?)-(full|incr|diff)-(\d{8}-\d{6})(?:-\d+)?\.(?:sql|mongo|redis|influx|couch)(\.(zst|gz|bz2|xz))?(\.(age|enc|gpg))?$`)
-var backupReIP = regexp.MustCompile(`^(.+?)-(.+?)-(\d+_\d+_\d+_\d+)-(full|incr|diff)-(\d{8}-\d{6})(?:-\d+)?\.(?:sql|mongo|redis|influx|couch)(\.(zst|gz|bz2|xz))?(\.(age|enc|gpg))?$`)
+var backupRe = regexp.MustCompile(`^(.*?)-(.*?)-(.*?)-(full|incr|diff)-(\d{8}-\d{6})(?:-\d+)?\.(?:sql|mongo|redis|influx|couch)(\.(zst|gz|bz2|xz))?(\.(age|enc|gpg))?$`)
+var backupReIP = regexp.MustCompile(`^(.*?)-(.*?)-(\d+_\d+_\d+_\d+)-(full|incr|diff)-(\d{8}-\d{6})(?:-\d+)?\.(?:sql|mongo|redis|influx|couch)(\.(zst|gz|bz2|xz))?(\.(age|enc|gpg))?$`)
+
+var backupReNoHost = regexp.MustCompile(`^(.*?)-(.*?)-(full|incr|diff)-(\d{8}-\d{6})(?:-\d+)?\.(?:sql|mongo|redis|influx|couch)(\.(zst|gz|bz2|xz))?(\.(age|enc|gpg))?$`)
+var backupReTypeOnly = regexp.MustCompile(`^(.*?)-(full|incr|diff)-(\d{8}-\d{6})(?:-\d+)?\.(?:sql|mongo|redis|influx|couch)(\.(zst|gz|bz2|xz))?(\.(age|enc|gpg))?$`)
 
 var extToCompress = map[string]string{
 	".bz2": "bzip2",
@@ -100,21 +103,30 @@ func LatestBackup(entries []BackupInfo) *BackupInfo {
 func ParseBackupFilename(path string) (*BackupInfo, error) {
 	base := filepath.Base(path)
 
-	m := backupReIP.FindStringSubmatch(base)
-	if m == nil {
-		m = backupRe.FindStringSubmatch(base)
-	}
-	if m == nil {
+	var (
+		typeTok, dbTok, hostTok string
+		stratTok, tsTok         string
+		compressTok, encTok     string
+	)
+	if m := backupReIP.FindStringSubmatch(base); m != nil {
+		typeTok, dbTok, hostTok, stratTok, tsTok, compressTok, encTok = m[1], m[2], m[3], m[4], m[5], m[7], m[8]
+	} else if m := backupRe.FindStringSubmatch(base); m != nil {
+		typeTok, dbTok, hostTok, stratTok, tsTok, compressTok, encTok = m[1], m[2], m[3], m[4], m[5], m[7], m[8]
+	} else if m := backupReNoHost.FindStringSubmatch(base); m != nil {
+		typeTok, dbTok, hostTok, stratTok, tsTok, compressTok, encTok = m[1], m[2], "", m[3], m[4], m[6], m[7]
+	} else if m := backupReTypeOnly.FindStringSubmatch(base); m != nil {
+		typeTok, dbTok, hostTok, stratTok, tsTok, compressTok, encTok = m[1], "", "", m[2], m[3], m[5], m[6]
+	} else {
 		return nil, fmt.Errorf("cannot parse backup filename: %s", base)
 	}
 
-	ts, err := time.Parse("20060102-150405", m[5])
+	ts, err := time.Parse("20060102-150405", tsTok)
 	if err != nil {
-		return nil, fmt.Errorf("parse timestamp %q: %w", m[5], err)
+		return nil, fmt.Errorf("parse timestamp %q: %w", tsTok, err)
 	}
 
 	strategy := "full"
-	switch m[4] {
+	switch stratTok {
 	case "incr":
 		strategy = "incremental"
 	case "diff":
@@ -122,19 +134,19 @@ func ParseBackupFilename(path string) (*BackupInfo, error) {
 	}
 
 	compress := ""
-	if m[7] != "" {
-		compress = extToCompress["."+m[7]]
+	if compressTok != "" {
+		compress = extToCompress["."+compressTok]
 	}
 
 	return &BackupInfo{
-		Type:       m[1],
-		DBName:     m[2],
-		Host:       m[3],
+		Type:       typeTok,
+		DBName:     dbTok,
+		Host:       hostTok,
 		Strategy:   strategy,
 		Timestamp:  ts,
 		Path:       base,
 		Compress:   compress,
-		Encryption: extToEncryption[m[8]],
+		Encryption: extToEncryption[encTok],
 	}, nil
 }
 

@@ -35,9 +35,9 @@ func createLatestSymlink(job config.JobConfig, dbName, storagePath, filename str
 			"status", "warn", "backend", job.Storage.Backend)
 		return
 	}
-	host := hostSanitizer.Replace(job.Host)
-	name := strings.NewReplacer(",", "_", "/", "_").Replace(dbToken(job, dbName))
-	link := filepath.Join(storagePath, fmt.Sprintf("latest-%s_%s_%s", job.Type, name, host))
+	dbTok, hostTok := defaultFilenameTokens(job, dbName)
+	name := strings.NewReplacer(",", "_", "/", "_").Replace(dbTok)
+	link := filepath.Join(storagePath, "latest-"+joinNonEmpty("_", job.Type, name, hostTok))
 	if err := os.Remove(link); err != nil && !os.IsNotExist(err) {
 		JLog(log.LevelWarn, job, "create_latest symlink update failed",
 			"status", "warn", "link", link, "error", err.Error())
@@ -79,20 +79,30 @@ func dbsToken(job config.JobConfig, dbName string) string {
 	return guardToken(tok)
 }
 
-func expandFilename(tmpl string, job config.JobConfig, dbName, strat string, now time.Time) string {
-	if tmpl == "" {
-		tmpl = "%type%-%db%-%host%-%strategy%-%timestamp%"
+func defaultFilenameTokens(job config.JobConfig, dbName string) (string, string) {
+	if isSQLiteType(job.Type) {
+		return sqliteIdentity(dbName, job.Host), ""
 	}
+	return dbToken(job, dbName), hostSanitizer.Replace(job.Host)
+}
+
+func expandFilename(tmpl string, job config.JobConfig, dbName, strat string, now time.Time) string {
 	switch strings.ToLower(strat) {
 	case "incremental":
 		strat = "incr"
 	case "differential":
 		strat = "diff"
 	}
+	if tmpl == "" {
+		dbTok, hostTok := defaultFilenameTokens(job, dbName)
+		ts := now.Format("20060102-150405")
+		return joinNonEmpty("-", job.Type, dbTok, hostTok, strat, ts)
+	}
 	utcNow := now.UTC()
+	dbTok, _ := defaultFilenameTokens(job, dbName)
 	return strings.NewReplacer(
 		"%type%", job.Type,
-		"%db%", dbToken(job, dbName),
+		"%db%", dbTok,
 		"%dbs%", dbsToken(job, dbName),
 		"%host_raw%", job.Host,
 		"%host%", hostSanitizer.Replace(job.Host),
@@ -117,4 +127,30 @@ func guardToken(tok string) string {
 	sum.Write([]byte(tok))
 	r := []rune(tok)
 	return string(r[:96]) + "-" + fmt.Sprintf("%08x", sum.Sum32())
+}
+
+func isSQLiteType(dbType string) bool {
+	return strings.EqualFold(dbType, "sqlite") || strings.EqualFold(dbType, "sqlite3")
+}
+
+func joinNonEmpty(sep string, parts ...string) string {
+	kept := parts[:0]
+	for _, p := range parts {
+		if p != "" {
+			kept = append(kept, p)
+		}
+	}
+	return strings.Join(kept, sep)
+}
+
+func sqliteIdentity(dbName, host string) string {
+	effective := dbName
+	if effective == "" {
+		effective = host
+	}
+	if effective == "" {
+		return ""
+	}
+	base := filepath.Base(effective)
+	return strings.TrimSuffix(base, filepath.Ext(base))
 }
