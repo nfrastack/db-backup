@@ -51,7 +51,6 @@ jobs:
     outputs:
       container_tags: ${{ steps.prep.outputs.container_tags }}
       build_args: ${{ steps.prep.outputs.build_args }}
-      staging_prefix: ${{ steps.prep.outputs.staging_prefix }}
       build_amd64: ${{ steps.arch.outputs.build_amd64 }}
       build_arm64: ${{ steps.arch.outputs.build_arm64 }}
     steps:
@@ -167,12 +166,12 @@ jobs:
           echo "$build_args" >> $GITHUB_OUTPUT
           echo "BUILDARGS_EOF" >> $GITHUB_OUTPUT
 
-          echo "staging_prefix=${GITHUB_SHA:0:12}" >> $GITHUB_OUTPUT
-
   build-amd64:
     name: Build amd64
     runs-on: ubuntu-latest
     needs: prepare
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
     if: needs.prepare.outputs.build_amd64 == 'true' && github.event_name != 'pull_request'
     env:
       build_file: ${{ inputs.build_file }}
@@ -222,15 +221,16 @@ jobs:
           context: .
           file: ./${{ env.build_file }}
           platforms: linux/amd64
-          push: true
           provenance: false
-          tags: ghcr.io/${{ github.repository }}:${{ needs.prepare.outputs.staging_prefix }}-amd64
+          outputs: type=image,name=ghcr.io/${{ github.repository }},push-by-digest=true,name-canonical=true,push=true
           build-args: ${{ needs.prepare.outputs.build_args }}
 
   build-arm64:
     name: Build arm64
     runs-on: ubuntu-24.04-arm
     needs: prepare
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
     if: needs.prepare.outputs.build_arm64 == 'true' && github.event_name != 'pull_request'
     env:
       build_file: ${{ inputs.build_file }}
@@ -280,9 +280,8 @@ jobs:
           context: .
           file: ./${{ env.build_file }}
           platforms: linux/arm64
-          push: true
           provenance: false
-          tags: ghcr.io/${{ github.repository }}:${{ needs.prepare.outputs.staging_prefix }}-arm64
+          outputs: type=image,name=ghcr.io/${{ github.repository }},push-by-digest=true,name-canonical=true,push=true
           build-args: ${{ needs.prepare.outputs.build_args }}
 
   manifest:
@@ -310,19 +309,28 @@ jobs:
       - name: Create and push manifests
         env:
           CONTAINER_TAGS: ${{ needs.prepare.outputs.container_tags }}
-          STAGING_PREFIX: ${{ needs.prepare.outputs.staging_prefix }}
           BUILD_AMD64: ${{ needs.prepare.outputs.build_amd64 }}
           BUILD_ARM64: ${{ needs.prepare.outputs.build_arm64 }}
           AMD64_RESULT: ${{ needs.build-amd64.result }}
           ARM64_RESULT: ${{ needs.build-arm64.result }}
+          AMD64_DIGEST: ${{ needs.build-amd64.outputs.digest }}
+          ARM64_DIGEST: ${{ needs.build-arm64.outputs.digest }}
         run: |
           sources=""
           staging_repo="ghcr.io/${GITHUB_REPOSITORY}"
           if [[ "$BUILD_AMD64" == "true" && "$AMD64_RESULT" == "success" ]]; then
-            sources="${staging_repo}:${STAGING_PREFIX}-amd64"
+            if [ -z "${AMD64_DIGEST}" ]; then
+              echo "ERROR amd64 build succeeded but produced no digest"
+              exit 1
+            fi
+            sources="${staging_repo}@${AMD64_DIGEST}"
           fi
           if [[ "$BUILD_ARM64" == "true" && "$ARM64_RESULT" == "success" ]]; then
-            sources="${sources} ${staging_repo}:${STAGING_PREFIX}-arm64"
+            if [ -z "${ARM64_DIGEST}" ]; then
+              echo "ERROR arm64 build succeeded but produced no digest"
+              exit 1
+            fi
+            sources="${sources} ${staging_repo}@${ARM64_DIGEST}"
           fi
           sources=$(echo "$sources" | xargs)
 
@@ -337,48 +345,6 @@ jobs:
             if [ -z "$tag" ]; then continue; fi
             echo "Creating manifest for: $tag"
             docker buildx imagetools create -t "$tag" $sources
-          done
-
-  cleanup-staging:
-    name: Delete staging tags
-    runs-on: ubuntu-latest
-    needs: [prepare, manifest]
-    if: needs.manifest.result == 'success'
-    permissions:
-      packages: write
-    steps:
-      - name: Delete <sha>-amd64/-arm64 staging versions from GHCR
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          STAGING_PREFIX: ${{ needs.prepare.outputs.staging_prefix }}
-        run: |
-          set -euo pipefail
-          repo="${GITHUB_REPOSITORY}"
-          owner="${repo%%/*}"
-          pkg="${repo##*/}"
-          for tag in "${STAGING_PREFIX}-amd64" "${STAGING_PREFIX}-arm64"; do
-            id=$(gh api \
-              -H "Accept: application/vnd.github+json" \
-              "/orgs/${owner}/packages/container/${pkg}/versions?per_page=100" \
-              --paginate -q ".[] | select(.metadata.container.tags // [] | index(\"${tag}\")) | .id" 2>/dev/null | head -1 || true)
-            if [ -z "$id" ]; then
-              id=$(gh api \
-                -H "Accept: application/vnd.github+json" \
-                "/user/packages/container/${pkg}/versions?per_page=100" \
-                --paginate -q ".[] | select(.metadata.container.tags // [] | index(\"${tag}\")) | .id" 2>/dev/null | head -1 || true)
-            fi
-            if [ -n "$id" ]; then
-              echo "Deleting staging version $id (tag $tag)"
-              gh api --method DELETE \
-                -H "Accept: application/vnd.github+json" \
-                "/orgs/${owner}/packages/container/${pkg}/versions/${id}" 2>/dev/null || \
-              gh api --method DELETE \
-                -H "Accept: application/vnd.github+json" \
-                "/user/packages/container/${pkg}/versions/${id}" 2>/dev/null || \
-              echo "WARN Could not delete staging tag $tag (id $id)"
-            else
-              echo "Staging tag $tag not found, nothing to delete."
-            fi
           done
 
   summary:

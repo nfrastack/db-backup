@@ -57,7 +57,10 @@ jobs:
           fi
 
           mapfile -t candidates < <(jq -r \
-            '.[] | .updated_at as $u | .id as $id | (.metadata.container.tags // [])[] | select(test("^develop-[0-9a-f]{7,12}$")) | "\($u) \($id) \(.)"' \
+            '.[]
+             | .updated_at as $u | .id as $id | (.metadata.container.tags // []) as $tags
+             | select(all($tags[]; test("^develop-[0-9a-f]{7,12}$")))
+             | $tags[] | "\($u) \($id) \(.)"' \
             "$versions_json" | sort || true)
 
           total="${#candidates[@]}"
