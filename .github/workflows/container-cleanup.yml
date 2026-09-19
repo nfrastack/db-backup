@@ -30,7 +30,18 @@ jobs:
     env:
       KEEP_N: ${{ inputs.keep_n || 5 }}
       DRY_RUN: ${{ github.event_name == 'schedule' && 'false' || inputs.dry_run }}
+      ORPHAN_GRACE_HOURS: '48'
     steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Delete old develop-<sha> versions (keep newest N)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -57,18 +68,21 @@ jobs:
           fi
 
           mapfile -t candidates < <(jq -r \
-            '.[] | .updated_at as $u | .id as $id | (.metadata.container.tags // [])[] | select(test("^develop-[0-9a-f]{7,12}$")) | "\($u) \($id) \(.)"' \
+            '.[]
+             | .updated_at as $u | .id as $id | (.metadata.container.tags // []) as $tags
+             | select(all($tags[]; test("^develop-[0-9a-f]{7,12}$")))
+             | $tags[] | "\($u) \($id) \(.)"' \
             "$versions_json" | sort || true)
 
           total="${#candidates[@]}"
           echo "Found ${total} develop-<sha> versions."
-          if [ "$total" -le "$keep" ]; then
+          delete_count=0
+          if [ "$total" -gt "$keep" ]; then
+            delete_count=$((total - keep))
+            echo "Deleting ${delete_count} oldest (keeping newest ${keep})."
+          else
             echo "Nothing to prune (total <= keep)."
-            exit 0
           fi
-
-          delete_count=$((total - keep))
-          echo "Deleting ${delete_count} oldest (keeping newest ${keep})."
           for ((i = 0; i < delete_count; i++)); do
             line="${candidates[$i]}"
             vid=$(echo "$line" | awk '{print $2}')
@@ -85,6 +99,56 @@ jobs:
             echo "WARN Failed to delete version ${vid} (tag ${tag})"
           done
 
+          echo "Resolving child digests of surviving tagged versions (orphan protection)"
+          protected=$(mktemp)
+          while read -r digest; do
+            [ -n "$digest" ] || continue
+            echo "$digest" >> "$protected"
+            raw=$(docker buildx imagetools inspect --raw "ghcr.io/${repo}@${digest}" 2>/dev/null) || {
+              echo "ERROR Cannot inspect ghcr.io/${repo}@${digest}, deleting no orphans."
+              exit 1
+            }
+            echo "$raw" | jq -r '.manifests // empty | .[].digest' >> "$protected" || {
+              echo "ERROR Cannot parse manifest for ${digest}, deleting no orphans."
+              exit 1
+            }
+          done < <(jq -r '.[] | select((.metadata.container.tags // []) | length > 0) | .name' "$versions_json" | sort -u || true)
+
+          cutoff=$(date -u -d "${ORPHAN_GRACE_HOURS:-48} hours ago" +%s)
+          mapfile -t orphans < <(jq -r \
+            '.[] | select((.metadata.container.tags // []) | length == 0) | "\(.updated_at) \(.name) \(.id)"' \
+            "$versions_json" | sort || true)
+
+          orphan_total="${#orphans[@]}"
+          echo "Found ${orphan_total} untagged versions."
+          for line in ${orphans[@]+"${orphans[@]}"}; do
+            updated=$(echo "$line" | awk '{print $1}')
+            digest=$(echo "$line" | awk '{print $2}')
+            vid=$(echo "$line" | awk '{print $3}')
+            if grep -qxF "$digest" "$protected" 2>/dev/null; then
+              continue
+            fi
+            age=$(date -u -d "$updated" +%s 2>/dev/null || echo "")
+            if [ -z "$age" ]; then
+              echo "WARN Cannot parse date ${updated} for untagged ${digest}, keeping it."
+              continue
+            fi
+            if [ "$age" -ge "$cutoff" ]; then
+              echo "Keeping recent untagged ${digest} (younger than grace window)."
+              continue
+            fi
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "[DRY RUN] Would delete orphan version ${vid} (digest ${digest})"
+              continue
+            fi
+            echo "Deleting orphan version ${vid} (digest ${digest})"
+            gh api --method DELETE -H "Accept: application/vnd.github+json" \
+              "/orgs/${owner}/packages/container/${pkg}/versions/${vid}" 2>/dev/null || \
+            gh api --method DELETE -H "Accept: application/vnd.github+json" \
+              "/user/packages/container/${pkg}/versions/${vid}" 2>/dev/null || \
+            echo "WARN Failed to delete orphan version ${vid} (digest ${digest})"
+          done
+
   dockerhub:
     name: Prune Docker Hub develop-<sha> tags
     runs-on: ubuntu-latest
@@ -94,8 +158,8 @@ jobs:
     steps:
       - name: Delete old develop-<sha> tags (keep newest N)
         env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKER_PASSWORD }}
         run: |
           set -euo pipefail
           repo="${GITHUB_REPOSITORY}"
@@ -105,7 +169,7 @@ jobs:
           echo "Docker Hub cleanup: ${ns}/${dh_repo} keep=${keep} dry_run=${DRY_RUN}"
 
           if [ -z "${DOCKERHUB_USERNAME:-}" ] || [ -z "${DOCKERHUB_TOKEN:-}" ]; then
-            echo "WARN DOCKERHUB_USERNAME/DOCKERHUB_TOKEN not set, deleting nothing."
+            echo "WARN DOCKER_USERNAME/DOCKER_PASSWORD not set, deleting nothing."
             exit 0
           fi
 
