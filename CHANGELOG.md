@@ -33,14 +33,17 @@
         - dump PARTITION OF with one COPY per partition
         - dump comments, constraints, extensions, grants, materialized views, rules, statistics
         - dump referenced largeobjects from oid columns
+        - dump named not NULLs
         - dump skip auto generatied columns
         - dump quoting rules for json data
         - dump encode (var)bit, bytea, (multi)range, uuid as plain text
+        - dump seperate a constraint per transaction
       - (postgres) restore parity
+        - allow jsonb values properly
         - change order of foreign key creation
         - compatibility with pg_restore --clean
-        - allow jsonb values properly
         - create empty tables with strange dump characters
+        - don't precreate identity backed sequences
         - truncation on json rows wider than 1mb
       - (redis) hard error on ALL
       - (redis) allow name: int for backup and restore
