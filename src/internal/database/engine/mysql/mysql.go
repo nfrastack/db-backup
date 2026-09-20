@@ -39,6 +39,7 @@ type Dumper struct {
 	Routines          bool
 	Triggers          bool
 	Views             bool
+	RawBlobs          bool
 	SplitDB           bool
 	Tables            *config.TableFilter
 	SchemaOnly        bool
@@ -298,15 +299,11 @@ func (d *Dumper) dumpTable(w io.Writer, conn *sql.DB, tx *sql.Tx, dbName, table 
 		return nil
 	}
 
-	// Exclude generated columns (VIRTUAL/STORED/PERSISTENT) from data.
-	// mysqldump omits them; emitting values breaks restore with
-	// ERROR 3105 on MySQL (issues #347/#567). Same for MariaDB.
 	insertCols, err := d.insertableColumns(conn, tx, dbName, table)
 	if err != nil {
 		return err
 	}
 	if len(insertCols) == 0 {
-		// Table with only generated columns: schema already dumped.
 		fmt.Fprintf(w, "-- No insertable columns for %s (all generated); data skipped\n", quoteMySQLIdent(table))
 		return nil
 	}
@@ -375,6 +372,11 @@ func escapeString(s string) string {
 	s = strings.ReplaceAll(s, "\n", "\\n")
 	s = strings.ReplaceAll(s, "\r", "\\r")
 	return s
+}
+
+func escapeBlob(b []byte) string {
+	s := escapeString(string(b))
+	return strings.ReplaceAll(s, "\x1a", "\\Z")
 }
 
 func filterInsertableColumns(cols []string, extras []string, generationExprs []string) []string {
@@ -685,6 +687,7 @@ func (d *Dumper) SetMysqlObjects(o config.MysqlObjects) {
 	d.Events = o.Events
 	d.Triggers = o.Triggers
 	d.Views = o.Views
+	d.RawBlobs = o.RawBlobs
 }
 
 func (d *Dumper) SetTableFilter(f *config.TableFilter, schemaOnly bool) {
@@ -824,13 +827,15 @@ func (d *Dumper) streamRows(w io.Writer, q querier, dbName, table string, insert
 			switch v := val.(type) {
 			case nil:
 				sb.WriteString("NULL")
-			case []byte:
-				scanType := colTypes[i].DatabaseTypeName()
-				if isBlobType(scanType) {
-					fmt.Fprintf(&sb, "0x%x", v)
-				} else {
-					sb.WriteString("'" + escapeString(string(v)) + "'")
-				}
+		case []byte:
+			scanType := colTypes[i].DatabaseTypeName()
+			if isBlobType(scanType) && !d.RawBlobs {
+				fmt.Fprintf(&sb, "0x%x", v)
+			} else if isBlobType(scanType) {
+				sb.WriteString("'" + escapeBlob(v) + "'")
+			} else {
+				sb.WriteString("'" + escapeString(string(v)) + "'")
+			}
 			case int64:
 				fmt.Fprintf(&sb, "%d", v)
 			case float64:

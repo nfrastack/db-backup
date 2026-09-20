@@ -532,7 +532,7 @@ dbbackup_generate_configuration() {
             fi
 
             # MYSQL_STORED_PROCEDURES is the 4.x alias for routines
-            local mysql_events mysql_routines mysql_triggers mysql_views mysql_sp_alias
+            local mysql_events mysql_routines mysql_triggers mysql_views mysql_sp_alias mysql_raw_blobs
             mysql_events="$(_dbbackup_getv "${inst}" MYSQL_EVENTS TRUE)"
             mysql_routines="$(_dbbackup_getv "${inst}" MYSQL_ROUTINES "")"
             if [ -z "${mysql_routines}" ]; then
@@ -545,6 +545,7 @@ dbbackup_generate_configuration() {
             fi
             mysql_triggers="$(_dbbackup_getv "${inst}" MYSQL_TRIGGERS TRUE)"
             mysql_views="$(_dbbackup_getv "${inst}" MYSQL_VIEWS TRUE)"
+            mysql_raw_blobs="$(_dbbackup_getv "${inst}" MYSQL_RAW_BLOBS FALSE)"
             if [ "$(_dbbackup_tyone "${mysql_events}")" = "false" ]; then
                 yq -i '.profiles.databases[strenv(DBB_REF)].events = false' "${CONFIG_FILE_PATH}"
             fi
@@ -556,6 +557,9 @@ dbbackup_generate_configuration() {
             fi
             if [ "$(_dbbackup_tyone "${mysql_views}")" = "false" ]; then
                 yq -i '.profiles.databases[strenv(DBB_REF)].views = false' "${CONFIG_FILE_PATH}"
+            fi
+            if [ "$(_dbbackup_tyone "${mysql_raw_blobs}")" = "true" ]; then
+                yq -i '.profiles.databases[strenv(DBB_REF)].raw_blobs = true' "${CONFIG_FILE_PATH}"
             fi
         fi
     done

@@ -5,6 +5,7 @@
       - add %dbs% filename tag to expand database names when ALL+split_db:false
       - add restore.create_db and cli create-db variable to control auto db creation
       - (container) support undocumented trace log level
+      - (mysql) experimental dump raw_blobs option to write blobs as escaped raw strings
       - (postgres) additional trace output
       - (postgres) avoid server timeout with long operations
       - (storage/azure) add additional debug and trace verbosity

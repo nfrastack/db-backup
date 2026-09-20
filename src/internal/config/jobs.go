@@ -56,6 +56,7 @@ type DatabaseList struct {
 	Events   *bool        `yaml:"events,omitempty"`
 	Triggers *bool        `yaml:"triggers,omitempty"`
 	Views    *bool        `yaml:"views,omitempty"`
+	RawBlobs *bool        `yaml:"raw_blobs,omitempty"`
 }
 
 type DbProfile struct {
@@ -68,6 +69,7 @@ type DbProfile struct {
 	Events     *bool        `yaml:"events,omitempty"`
 	Triggers   *bool        `yaml:"triggers,omitempty"`
 	Views      *bool        `yaml:"views,omitempty"`
+	RawBlobs   *bool        `yaml:"raw_blobs,omitempty"`
 }
 
 type EncryptionConfig struct {
@@ -137,6 +139,7 @@ type MysqlObjects struct {
 	Events   bool
 	Triggers bool
 	Views    bool
+	RawBlobs bool
 }
 
 type RetentionConfig struct {
@@ -230,6 +233,9 @@ func (d *DatabaseList) ResolveMysqlObjects() MysqlObjects {
 	}
 	if d.Views != nil {
 		o.Views = *d.Views
+	}
+	if d.RawBlobs != nil {
+		o.RawBlobs = *d.RawBlobs
 	}
 	return o
 }

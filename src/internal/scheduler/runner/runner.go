@@ -182,6 +182,7 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 				Events:   job.Databases.Events,
 				Triggers: job.Databases.Triggers,
 				Views:    job.Databases.Views,
+				RawBlobs: job.Databases.RawBlobs,
 			}
 			sub.SplitDB = false
 			if err := Run(ctx, sub, trigger); err != nil {

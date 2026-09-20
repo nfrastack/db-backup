@@ -670,6 +670,9 @@ func (c *Config) resolveJob(job *JobConfig) {
 				if job.Databases.Views == nil && prof.Views != nil && !job.unsetKey("databases") {
 					job.Databases.Views = prof.Views
 				}
+				if job.Databases.RawBlobs == nil && prof.RawBlobs != nil && !job.unsetKey("databases") {
+					job.Databases.RawBlobs = prof.RawBlobs
+				}
 				if job.Databases.Tables == nil && prof.Tables != nil && !job.unsetKey("tables") {
 					t := *prof.Tables
 					job.Databases.Tables = &t
