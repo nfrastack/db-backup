@@ -968,7 +968,7 @@ func (d *Dumper) dumpSequenceValues(w io.Writer, dbName string) error {
 			called = "true"
 		}
 		fmt.Fprintf(w, "SELECT pg_catalog.setval('%s', %d, %s);\n",
-			escapePGLiteral(schema+"."+name), lastVal, called)
+			escapePGLiteral(schema+"."+quotePGIdent(name)), lastVal, called)
 		log.Trace("postgres", "sequence value dumped", "database", dbName,
 			"sequence", schema+"."+name, "last_value", lastVal, "is_called", isCalled)
 	}
