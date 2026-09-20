@@ -178,10 +178,39 @@ type HooksConfig struct {
 }
 
 type ConnectivityConfig struct {
-	Enabled       bool   `yaml:"enabled"`
+	Enabled       *bool  `yaml:"enabled"`
 	Method        string `yaml:"method"`
 	RetryInterval int    `yaml:"retry_interval"`
 	Timeout       int    `yaml:"timeout"`
+}
+
+func (c *ConnectivityConfig) IsEnabled() bool {
+	return c != nil && (c.Enabled == nil || *c.Enabled)
+}
+
+func (c *ConnectivityConfig) UnmarshalYAML(value *yaml.Node) error {
+	type plain ConnectivityConfig
+	var p plain
+	if err := value.Decode(&p); err != nil {
+		return err
+	}
+	var fields map[string]any
+	if err := value.Decode(&fields); err != nil {
+		return err
+	}
+	for k := range fields {
+		switch k {
+		case "enabled", "method", "retry_interval", "timeout":
+		default:
+			return fmt.Errorf("connectivity: unknown field %q (want enabled|method|retry_interval|timeout)", k)
+		}
+	}
+	*c = ConnectivityConfig(p)
+	return nil
+}
+
+func BoolPtr(b bool) *bool {
+	return &b
 }
 
 const (
@@ -861,7 +890,7 @@ func (c *Config) resolveJob(job *JobConfig) {
 			job.Connectivity = &cp
 		default:
 			job.Connectivity = &ConnectivityConfig{
-				Enabled:       true,
+				Enabled:       BoolPtr(true),
 				Method:        MethodFull,
 				RetryInterval: 5,
 				Timeout:       30,
