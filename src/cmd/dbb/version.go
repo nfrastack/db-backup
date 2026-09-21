@@ -11,8 +11,10 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/nfrastack/db-backup/internal/stats"
+	versionPkg "github.com/nfrastack/db-backup/internal/version"
 )
 
 func cmdVersion(args []string) int {
@@ -77,6 +79,9 @@ func cmdVersion(args []string) int {
 		fmt.Printf("note:    %s\n", note)
 	}
 	fmt.Printf("license: %s\n", licenseLabel())
+	if stale, age := versionPkg.StaleDevBuild(time.Now()); stale {
+		fmt.Printf("warning: develop build is %d days old (built %s) and is likely stale. move to a stable relelease or rebuild from develop for latest fixes\n", age, buildDate)
+	}
 	return 0
 }
 

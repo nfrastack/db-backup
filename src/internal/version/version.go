@@ -7,13 +7,16 @@ package version
 import (
 	"regexp"
 	"strings"
+	"time"
 )
+
+const StaleDevBuildDays = 15
 
 var (
 	BuildDate = "unknown"
-	Channel = ""
-	Commit = ""
-	Version = "dev"
+	Channel   = ""
+	Commit    = ""
+	Version   = "dev"
 )
 
 var (
@@ -35,6 +38,28 @@ func Display() string {
 		v += " (commit " + c + ")"
 	}
 	return v
+}
+
+func IsEdgeBuild() bool {
+	if Channel != "" {
+		switch strings.ToLower(Channel) {
+		case "edge":
+			return true
+		case "stable", "beta":
+			return false
+		}
+	}
+	lower := strings.ToLower(Version)
+	if strings.HasPrefix(lower, "dev-") || strings.HasPrefix(lower, "dev+") ||
+		strings.HasPrefix(lower, "dev_") || lower == "dev" {
+		return true
+	}
+	if strings.HasPrefix(lower, "develop-") || strings.HasPrefix(lower, "develop+") ||
+		strings.HasPrefix(lower, "develop_") {
+		return true
+	}
+	return strings.Contains(Version, "-g") || strings.Contains(Version, "-dev") ||
+		strings.Contains(Version, "+")
 }
 
 func ResolveCommit(version string) string {
@@ -60,3 +85,22 @@ func ResolveCommit(version string) string {
 	}
 	return ""
 }
+
+func StaleDevBuild(now time.Time) (bool, int) {
+	if !IsEdgeBuild() {
+		return false, 0
+	}
+	built, err := time.Parse(time.RFC3339, BuildDate)
+	if err != nil {
+		built, err = time.Parse("2006-01-02", BuildDate)
+		if err != nil {
+			return false, 0
+		}
+	}
+	age := int(now.Sub(built).Hours() / 24)
+	if age <= StaleDevBuildDays {
+		return false, age
+	}
+	return true, age
+}
+

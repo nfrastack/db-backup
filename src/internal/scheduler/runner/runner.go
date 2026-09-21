@@ -24,6 +24,7 @@ import (
 	"github.com/nfrastack/db-backup/internal/log"
 	"github.com/nfrastack/db-backup/internal/retention"
 	"github.com/nfrastack/db-backup/internal/storage"
+	versionPkg "github.com/nfrastack/db-backup/internal/version"
 )
 
 type connectivitySetter interface {
@@ -87,6 +88,12 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 	}
 	if job.RunID == "" {
 		job.RunID = RandomID(4)
+	}
+
+	if stale, age := versionPkg.StaleDevBuild(time.Now()); stale {
+		JLog(log.LevelWarn, job,
+			fmt.Sprintf("dbb develop build is %d days old (built %s) and is likely stale. move to a stable release or rebuild from develop for latest fixes", age, versionPkg.BuildDate),
+			"status", "warn", "build_date", versionPkg.BuildDate, "age_days", age)
 	}
 
 	ctx = common.WithLogFields(ctx, jobRunFields(job)...)

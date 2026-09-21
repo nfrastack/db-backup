@@ -3,6 +3,7 @@
    ### Added
       - add additional version detail in dump bannner comments
       - add %dbs% filename tag to expand database names when ALL+split_db:false
+      - add warning if running a stale develop build
       - add restore.create_db and cli create-db variable to control auto db creation
       - default connectivity.enabled to true on partial blocks
       - default compression type/level on partial blocks
