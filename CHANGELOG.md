@@ -5,6 +5,7 @@
       - add %dbs% filename tag to expand database names when ALL+split_db:false
       - add restore.create_db and cli create-db variable to control auto db creation
       - default connectivity.enabled to true on partial blocks
+      - default compression type/level on partial blocks
       - (container) support undocumented trace log level
       - (mysql) experimental dump raw_blobs option to write blobs as escaped raw strings
       - (postgres) additional trace output

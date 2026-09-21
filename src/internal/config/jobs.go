@@ -414,6 +414,15 @@ func (j *JobConfig) Validate() error {
 	case "", "none", "age", "gpg", "openpgp", "pgp", "openssl":
 
 	default:
+		return fmt.Errorf("job %q has unknown encryption type %q (want none|age|gpg|openssl)", j.Name, j.Encryption)
+	}
+	if j.Compression != nil && !j.unsetKey("compression") {
+		switch strings.ToLower(j.Compression.Type) {
+		case "", "none", "gz", "gzip", "bz", "bzip", "bzip2", "xz", "xzip", "zst", "zstd":
+
+		default:
+			return fmt.Errorf("job %q has unknown compression type %q (want none|gz|bz|xz|zstd)", j.Name, j.Compression.Type)
+		}
 	}
 	if j.Schedule != nil {
 		if err := j.Schedule.enforceCommunityLimits(); err != nil {

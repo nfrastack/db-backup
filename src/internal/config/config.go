@@ -833,6 +833,15 @@ func (c *Config) resolveJob(job *JobConfig) {
 			job.Compression = &CompressionConfig{Type: "zstd", Level: 3, Threads: 1}
 		}
 	}
+
+	if !job.unsetKey("compression") {
+		if job.Compression.Type == "" {
+			job.Compression.Type = "zstd"
+		}
+		if job.Compression.Level == 0 {
+			job.Compression.Level = 3
+		}
+	}
 	if job.unsetKey("compression") {
 		job.Compression = &CompressionConfig{}
 	}
