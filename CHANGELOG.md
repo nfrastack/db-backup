@@ -5,9 +5,10 @@
       - add %dbs% filename tag to expand database names when ALL+split_db:false
       - add warning if running a stale develop build
       - add restore.create_db and cli create-db variable to control auto db creation
-      - add enngine version/arch detection routines
+      - add engine version/arch detection routines
       - default connectivity.enabled to true on partial blocks
       - default compression type/level on partial blocks
+      - warn when engine version is different when restoring
       - (container) support undocumented trace log level
       - (mysql) experimental dump raw_blobs option to write blobs as escaped raw strings
       - (postgres) additional trace output
