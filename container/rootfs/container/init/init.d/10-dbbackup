@@ -20,4 +20,20 @@ dbbackup_bootstrap_filesystem
 dbbackup_generate_configuration
 dbbackup_generate_helpers
 
+if [ "${MODE,,}" = "manual" ] && var_nottrue "${MANUAL_RUN_FOREVER}"; then
+    for service in \
+                        01-secrets \
+                        02-metrics \
+                        03-monitoring \
+                        04-scheduling \
+                        05-logging \
+                        06-messaging \
+                        07-firewall \
+                        08-vpn \
+                        ; \
+                    do \
+        service_stop "${service}"
+    done
+fi
+
 liftoff

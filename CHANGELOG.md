@@ -20,6 +20,7 @@
       - split_db revert to default true
       - update stats schema to 4
       - (backup) create_latest strips empty parameters when naming
+      - (container) halt container and output error code value when manual_run_forever=false
       - (container) s3 tls configuration properly generates in config
       - (influx) use http as default
       - (mysql) refine auto detection to solve dump and restore variances

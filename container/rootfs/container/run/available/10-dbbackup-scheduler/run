@@ -16,12 +16,23 @@ liftoff
 case "${MODE,,}" in
     manual )
         if var_nottrue "${MANUAL_RUN_FOREVER}"; then
-            print_start "Running all backup jobs once (MODE=MANUAL, MANUAL_RUN_FOREVER=FALSE)"
+            print_start "Running all backup jobs once"
+            once_code=0
             if [ ! -f "${CONFIG_FILE_PATH}" ]; then
                 print_error "No config at ${CONFIG_FILE_PATH} - set DB* environment variables or mount a db-backup.yml"
-                exit 1
+                once_code=1
+            else
+                s6-setuidgid "${DBBACKUP_USER}" /app/dbb --container scheduler --config "${CONFIG_FILE_PATH}" --once
+                once_code=$?
             fi
-            exec s6-setuidgid "${DBBACKUP_USER}" /app/dbb --container scheduler --config "${CONFIG_FILE_PATH}" --once
+            if [ "${once_code}" -ne 0 ]; then
+                print_error "One shot backup run failed (exit ${once_code}) - halting container"
+            else
+                print_info "backup run complete - halting container"
+            fi
+            /var/run/s6/basedir/bin/halt
+            s6-svc -d /var/run/s6/legacy-services/10-dbbackup-scheduler
+            exit "${once_code}"
         fi
         s6-svc -d /var/run/s6/legacy-services/10-dbbackup-scheduler
         exit 0
