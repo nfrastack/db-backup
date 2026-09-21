@@ -22,18 +22,18 @@ import (
 const initialReportDelay = 5 * time.Minute
 
 type Manager struct {
-	cfg        			*config.StatsConfig
-	vc         			*config.CheckNewVersionConfig
-	state      			*config.StatsState
-	vstate     			*config.VersionState
-	client     			*Client
-	key        			string
-	start      			time.Time
-	warnedOnce 			bool
-	container  			bool
-	stateDir   			string
-	nextVersionRetry 	time.Time
-	nextStatsRetry   	time.Time
+	cfg              *config.StatsConfig
+	vc               *config.CheckNewVersionConfig
+	state            *config.StatsState
+	vstate           *config.VersionState
+	client           *Client
+	key              string
+	start            time.Time
+	warnedOnce       bool
+	container        bool
+	stateDir         string
+	nextVersionRetry time.Time
+	nextStatsRetry   time.Time
 }
 
 // snapshot of ok/failed counts for jobs for stats

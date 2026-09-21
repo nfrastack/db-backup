@@ -47,25 +47,26 @@ type Log struct {
 
 // decoded 15 field job entry
 type Job struct {
-	Database         string `json:"database"`
-	Strategy         string `json:"strategy"`
-	Compression      string `json:"compression"`
-	CompressionLevel int    `json:"compression_level,omitempty"`
-	Encryption       string `json:"encryption"`
-	EncryptionMode   string `json:"encryption_mode"`
-	Storage          string `json:"storage"`
-	Schedule         string `json:"schedule"`
-	Maintenance      bool   `json:"maintenance"`
-	Archive          bool   `json:"archive"`
-	Successes        int    `json:"successes"`
-	Failures         int    `json:"failures"`
-	RetentionTiers   string `json:"retention_tiers,omitempty"`
-	DurationMs       int64  `json:"duration_ms"`
-	Pruned           int    `json:"pruned"`
-	Archived         int    `json:"archived"`
-	KB               int64  `json:"kb,omitempty"`
-	RawKB            int64  `json:"raw_kb,omitempty"`
-	Checksum         string `json:"checksum,omitempty"`
+	Database         string   `json:"database"`
+	Strategy         string   `json:"strategy"`
+	Compression      string   `json:"compression"`
+	CompressionLevel int      `json:"compression_level,omitempty"`
+	Encryption       string   `json:"encryption"`
+	EncryptionMode   string   `json:"encryption_mode"`
+	Storage          string   `json:"storage"`
+	Schedule         string   `json:"schedule"`
+	Maintenance      bool     `json:"maintenance"`
+	Archive          bool     `json:"archive"`
+	Successes        int      `json:"successes"`
+	Failures         int      `json:"failures"`
+	RetentionTiers   string   `json:"retention_tiers,omitempty"`
+	DurationMs       int64    `json:"duration_ms"`
+	Pruned           int      `json:"pruned"`
+	Archived         int      `json:"archived"`
+	KB               int64    `json:"kb,omitempty"`
+	RawKB            int64    `json:"raw_kb,omitempty"`
+	Checksum         string   `json:"checksum,omitempty"`
+	Servers          []string `json:"servers,omitempty"`
 }
 
 var (
@@ -264,6 +265,9 @@ func (d *Decoded) String() string {
 		if j.Checksum != "" {
 			fmt.Fprintf(&b, "  checksum      %s\n", j.Checksum)
 		}
+		for _, s := range j.Servers {
+			fmt.Fprintf(&b, "  server        %s\n", s)
+		}
 		if j.Pruned > 0 {
 			fmt.Fprintf(&b, "  pruned        %d\n", j.Pruned)
 		}
@@ -359,9 +363,44 @@ func decodeJobs(val string) []Job {
 		if len(f) >= 19 {
 			j.CompressionLevel = atoiCode(f[18])
 		}
+		if len(f) >= 20 {
+			j.Servers = decodeServers(f[19])
+		}
 		jobs = append(jobs, j)
 	}
 	return jobs
+}
+
+func decodeServers(field string) []string {
+	var out []string
+	for _, tok := range strings.Split(field, ",") {
+		tok = strings.TrimSpace(tok)
+		if tok == "" {
+			continue
+		}
+		parts := strings.Split(tok, "/")
+		if len(parts) != 3 {
+			continue
+		}
+		out = append(out, decodeServerToken(parts[0], parts[1], parts[2]))
+	}
+	return out
+}
+
+func decodeServerToken(db, version, arch string) string {
+	name := decodeName(db, dbTypeNames)
+	switch arch {
+	case archAmd64:
+		arch = "amd64"
+	case archArm64:
+		arch = "arm64"
+	case "0", "":
+		arch = ""
+	}
+	if arch == "" {
+		return name + " " + version
+	}
+	return name + " " + version + " " + arch
 }
 
 func decodeLog(code string) Log {

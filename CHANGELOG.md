@@ -6,6 +6,7 @@
       - add warning if running a stale develop build
       - add restore.create_db and cli create-db variable to control auto db creation
       - add engine version/arch detection routines
+      - record database server version in sidecars and usage stats
       - default connectivity.enabled to true on partial blocks
       - default compression type/level on partial blocks
       - warn when engine version is different when restoring
@@ -21,7 +22,7 @@
       - change name: ALL database backups with split_db: false to be filename _all_
       - default backup filename tag omits empty db/host components
       - split_db revert to default true
-      - update stats schema to 4
+      - update stats schema to 5
       - (backup) create_latest strips empty parameters when naming
       - (container) halt container and output error code value when manual_run_forever=false
       - (container) s3 tls configuration properly generates in config

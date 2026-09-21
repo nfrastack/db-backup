@@ -19,7 +19,7 @@ import (
 const (
 	ToolDBBackup = "322"
 )
-const SchemaVersion = 4
+const SchemaVersion = 5
 
 // db type codes jf1
 const (
@@ -42,6 +42,19 @@ const (
 	stratDiff  = "d" // differential
 	stratOther = "?" // unknown
 )
+
+// server version tokens jf20 engine/version/arch per server,
+var serverEngineCodes = map[string]string{
+	"postgres": "p",
+	"mysql":    "m",
+	"mariadb":  "a",
+	"mongo":    "o",
+	"mssql":    "s",
+	"redis":    "r",
+	"couch":    "c",
+	"influx":   "i",
+	"sqlite":   "q",
+}
 
 // compression jf3
 const (
@@ -323,6 +336,25 @@ func scheduleCode(s *config.Schedule) string {
 	}
 }
 
+func ServerToken(engine, version, arch string) string {
+	code, ok := serverEngineCodes[engine]
+	if !ok || version == "" {
+		return ""
+	}
+	a := "0"
+	switch arch {
+	case "amd64":
+		a = archAmd64
+	case "arm64":
+		a = archArm64
+	default:
+		if arch != "" {
+			a = arch
+		}
+	}
+	return code + "/" + version + "/" + a
+}
+
 func splitFields(s string) []string {
 	var out []string
 	var cur []byte
@@ -359,6 +391,7 @@ func storageCode(b string) string {
 		return storeOther
 	}
 }
+
 func strategyCode(s string) string {
 	switch normalize(s) {
 	case "full":

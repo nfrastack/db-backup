@@ -5,6 +5,7 @@
 package stats
 
 import (
+	"sort"
 	"sync"
 	"time"
 )
@@ -15,6 +16,7 @@ type Tracker struct {
 	now      func() time.Time
 	byTs     map[string]map[int64]*counts
 	activity map[string]map[int64]map[string]int64 // dbType -> hour -> op -> n
+	servers  map[string]map[string]int64           // dbType -> server token -> hour
 }
 type counts struct {
 	success  int
@@ -60,6 +62,21 @@ func NewTracker() *Tracker {
 	return &Tracker{now: time.Now}
 }
 
+func (t *Tracker) NoteServer(dbType, token string) {
+	if t == nil || token == "" {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.servers == nil {
+		t.servers = make(map[string]map[string]int64)
+	}
+	if t.servers[dbType] == nil {
+		t.servers[dbType] = make(map[string]int64)
+	}
+	t.servers[dbType][token] = t.now().Unix() / 3600
+}
+
 // increment prune or archive counter
 func (t *Tracker) RecordActivity(dbType, op string, n int) {
 	if t == nil || n <= 0 {
@@ -93,6 +110,14 @@ func (t *Tracker) Snapshot() []JobOutcome {
 	var out []JobOutcome
 	for dbType, buckets := range t.byTs {
 		o := JobOutcome{Type: dbType}
+		for tok, h := range t.servers[dbType] {
+			if h < minHour {
+				delete(t.servers[dbType], tok)
+				continue
+			}
+			o.Servers = append(o.Servers, tok)
+		}
+		sort.Strings(o.Servers)
 		var bytes, rawBytes int64
 		for hour, c := range buckets {
 			if hour < minHour {

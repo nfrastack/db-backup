@@ -7,6 +7,7 @@ package stats
 import (
 	"fmt"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -42,6 +43,7 @@ type JobOutcome struct {
 	Archived int           // backup files moved to archive storage in the window
 	KB       int64         // uploaded kilobytes in the window
 	RawKB    int64         // pre compression kilobytes in the window
+	Servers  []string      // server version tokens (engine/version/arch)
 }
 type ReportBuilder struct {
 	opts       Options
@@ -76,6 +78,7 @@ func (b *ReportBuilder) Build(cfg *config.Config) (string, error) {
 			outcomes[key].Archived += o.Archived
 			outcomes[key].KB += o.KB
 			outcomes[key].RawKB += o.RawKB
+			outcomes[key].Servers = unionStrings(outcomes[key].Servers, o.Servers)
 		}
 	}
 
@@ -133,6 +136,25 @@ func NewReportBuilder(opts Options, instanceID, prevVers string, uptime time.Dur
 
 // attachrs journal ops aggregate for report window
 func (b *ReportBuilder) SetOps(token string) { b.ops = token }
+func unionStrings(a, b []string) []string {
+	seen := make(map[string]bool, len(a)+len(b))
+	var out []string
+	for _, s := range a {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	for _, s := range b {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 func (b *ReportBuilder) encodeJob(job config.JobConfig, outcomes map[string]*JobOutcome) string {
 	compression := "0"
 	if job.Compression != nil {
@@ -176,11 +198,13 @@ func (b *ReportBuilder) encodeJob(job config.JobConfig, outcomes map[string]*Job
 	dur := int64(0)
 	pruned, archived := 0, 0
 	var kb, rawKB int64
+	servers := ""
 	if o, ok := outcomes[normalize(job.Type)]; ok {
 		succ, fail = o.Success, o.Failed
 		dur = o.Duration.Milliseconds()
 		pruned, archived = o.Pruned, o.Archived
 		kb, rawKB = o.KB, o.RawKB
+		servers = strings.Join(o.Servers, ",")
 	}
 
 	return strings.Join([]string{
@@ -203,6 +227,7 @@ func (b *ReportBuilder) encodeJob(job config.JobConfig, outcomes map[string]*Job
 		itoa64(rawKB),
 		checksumCode(job.Checksum),
 		itoa(compLevel),
+		servers,
 	}, ":")
 }
 
