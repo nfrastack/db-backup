@@ -32,6 +32,7 @@ type Dumper struct {
 	ctx        context.Context
 	Tables     *config.TableFilter
 	SchemaOnly bool
+	server     common.ServerVersion
 }
 
 var mssqlStringLikeTypes = map[string]bool{
@@ -81,7 +82,7 @@ func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
 		"host", d.host, "port", d.port,
 		"databases", strings.Join(dbNames, ","))
 	fmt.Fprint(w, common.DumpBanner("--", "MSSQL",
-		fmt.Sprintf("Host: %s:%d", d.host, d.port)))
+		fmt.Sprintf("Host: %s:%d  Server: %s", d.host, d.port, d.server.Display())))
 	fmt.Fprintf(w, "--\n\n")
 
 	if len(dbNames) == 1 && strings.ToLower(dbNames[0]) == "all" {
@@ -146,7 +147,14 @@ func (d *Dumper) OpenContext(ctx context.Context) error {
 		if err := d.db.PingContext(ctx); err != nil {
 			return fmt.Errorf("ping: %w", err)
 		}
-		log.Debug("mssql", "connected", "host", d.host, "port", d.port)
+		var ver string
+		if err := d.db.QueryRowContext(ctx, "SELECT @@VERSION").Scan(&ver); err != nil {
+			log.Trace("mssql", "server version unavailable", "host", d.host, "error", err.Error())
+			log.Debug("mssql", "connected", "host", d.host, "port", d.port)
+		} else {
+			d.server = ParseServerVersion(ver)
+			log.Debug("mssql", "connected", "host", d.host, "port", d.port, "server", ver)
+		}
 		return nil
 	}
 	return common.WithConnectivity(ctx, "mssql", d.connCfg, probe, connect, ping)

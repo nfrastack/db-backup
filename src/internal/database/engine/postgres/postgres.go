@@ -33,6 +33,7 @@ type Dumper struct {
 	dbname     string
 	conn       *pgx.Conn
 	serverVer  string
+	server     common.ServerVersion
 	tlsCfg     *config.TLSConfig
 	connCfg    *config.ConnectivityConfig
 	ctx        context.Context
@@ -1237,7 +1238,7 @@ func (d *Dumper) DumpGlobals(w io.Writer) error {
 	ctx := d.ctx
 
 	fmt.Fprint(w, common.DumpBanner("--", "PostgreSQL globals",
-		fmt.Sprintf("Host: %s  Server: %s", d.host, d.serverVer)))
+		fmt.Sprintf("Host: %s  Server: %s", d.host, d.server.Display())))
 	fmt.Fprintf(w, "--\n\n")
 
 	rows, err := d.conn.Query(ctx,
@@ -3151,6 +3152,7 @@ func (d *Dumper) OpenContext(ctx context.Context) error {
 			return fmt.Errorf("ping: %w", err)
 		}
 		d.serverVer = ver
+		d.server = ParseServerVersion(ver)
 		log.Debug("postgres", "connected",
 			"host", d.host, "port", d.port, "server", ver)
 		return nil
@@ -3415,7 +3417,7 @@ func (d *Dumper) writeFooter(w io.Writer) {
 
 func (d *Dumper) writeHeader(w io.Writer, dbNames []string) {
 	fmt.Fprint(w, common.DumpBanner("--", "PostgreSQL",
-		fmt.Sprintf("Host: %s  Server: %s", d.host, d.serverVer)))
+		fmt.Sprintf("Host: %s  Server: %s", d.host, d.server.Display())))
 	fmt.Fprintf(w, `--
 `)
 	fmt.Fprintf(w, "SET statement_timeout = 0;\n")

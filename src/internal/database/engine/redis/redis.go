@@ -32,6 +32,7 @@ type Dumper struct {
 	ctx        context.Context
 	Tables     *config.TableFilter
 	SchemaOnly bool
+	server     common.ServerVersion
 }
 
 func (d *Dumper) Close() error {
@@ -52,7 +53,7 @@ func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
 		"auth", d.authMode(), "db", d.db)
 
 	fmt.Fprint(w, common.DumpBanner("#", "Redis",
-		fmt.Sprintf("Host: %s:%d", d.host, d.port)))
+		fmt.Sprintf("Host: %s:%d  Server: %s", d.host, d.port, d.server.Display())))
 	fmt.Fprintf(w, "# Database: %d\n#\n\n", d.db)
 	var cursor uint64
 	var scanned, dumped, skipped int
@@ -175,9 +176,15 @@ func (d *Dumper) OpenContext(ctx context.Context) error {
 		if err := d.client.Ping(ctx).Err(); err != nil {
 			return fmt.Errorf("ping: %w", err)
 		}
+		info, err := d.client.Info(ctx, "server").Result()
+		if err != nil {
+			log.Trace("redis", "server version unavailable", "host", d.host, "error", err.Error())
+		} else {
+			d.server = ParseServerVersion(info)
+		}
 		log.Debug("redis", "connected",
 			"host", d.host, "port", d.port, "tls", d.tlsCfg != nil,
-			"auth", d.authMode())
+			"auth", d.authMode(), "server", d.server.Display())
 		return nil
 	}
 	return common.WithConnectivity(ctx, "redis", d.connCfg, probe, connect, ping)

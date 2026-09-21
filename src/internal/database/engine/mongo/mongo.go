@@ -31,6 +31,7 @@ type Dumper struct {
 	uri        string
 	client     *mongo.Client
 	serverVer  string
+	server     common.ServerVersion
 	tlsCfg     *config.TLSConfig
 	connCfg    *config.ConnectivityConfig
 	ctx        context.Context
@@ -53,7 +54,7 @@ func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
 		"databases", strings.Join(dbNames, ","))
 
 	fmt.Fprint(w, common.DumpBanner("//", "MongoDB",
-		fmt.Sprintf("Host: %s  Server: %s", d.host, d.serverVer)))
+		fmt.Sprintf("Host: %s  Server: %s", d.host, d.server.Display())))
 	fmt.Fprintf(w, "//\n\n")
 
 	if len(dbNames) == 1 && strings.ToLower(dbNames[0]) == "all" {
@@ -131,6 +132,7 @@ func (d *Dumper) OpenContext(ctx context.Context) error {
 		if err := d.client.Database("admin").RunCommand(pingCtx, bson.D{{Key: "buildInfo", Value: 1}}).Decode(&bi); err == nil {
 			if v, ok := bi.Lookup("version").StringValueOK(); ok {
 				d.serverVer = v
+				d.server = ParseServerVersion(v)
 			}
 		}
 		log.Debug("mongo", "connected",

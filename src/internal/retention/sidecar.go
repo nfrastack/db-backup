@@ -44,6 +44,7 @@ type Sidecar struct {
 	Type            string            `json:"type"`
 	DB              string            `json:"db"`
 	Host            string            `json:"host"`
+	Server          *ServerMeta       `json:"server,omitempty"`
 	Timestamp       string            `json:"timestamp"`
 	Checksums       map[string]string `json:"checksums"`
 	Size            int64             `json:"size"`
@@ -71,6 +72,12 @@ type ToolMeta struct {
 type JobMeta struct {
 	Name     string `json:"name"`
 	Schedule string `json:"schedule,omitempty"`
+}
+
+type ServerMeta struct {
+	Engine  string `json:"engine"`
+	Version string `json:"version"`
+	Arch    string `json:"arch,omitempty"`
 }
 
 type EncryptionMeta struct {

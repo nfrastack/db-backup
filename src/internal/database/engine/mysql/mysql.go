@@ -27,6 +27,7 @@ type Dumper struct {
 	db             *sql.DB
 	isMariaDB      bool
 	serverVer      string
+	server         common.ServerVersion
 	configuredType string
 	detectedType   string
 	connCfg        *config.ConnectivityConfig
@@ -628,6 +629,7 @@ func (d *Dumper) OpenContext(ctx context.Context) error {
 			return fmt.Errorf("ping version: %w", err)
 		}
 		d.serverVer = ver
+		d.server = ParseServerVersion(ver)
 		d.isMariaDB = strings.Contains(strings.ToLower(ver), "mariadb")
 		d.detectedType = DetectType(ver)
 		log.Debug("mysql", "connected",
@@ -827,15 +829,15 @@ func (d *Dumper) streamRows(w io.Writer, q querier, dbName, table string, insert
 			switch v := val.(type) {
 			case nil:
 				sb.WriteString("NULL")
-		case []byte:
-			scanType := colTypes[i].DatabaseTypeName()
-			if isBlobType(scanType) && !d.RawBlobs {
-				fmt.Fprintf(&sb, "0x%x", v)
-			} else if isBlobType(scanType) {
-				sb.WriteString("'" + escapeBlob(v) + "'")
-			} else {
-				sb.WriteString("'" + escapeString(string(v)) + "'")
-			}
+			case []byte:
+				scanType := colTypes[i].DatabaseTypeName()
+				if isBlobType(scanType) && !d.RawBlobs {
+					fmt.Fprintf(&sb, "0x%x", v)
+				} else if isBlobType(scanType) {
+					sb.WriteString("'" + escapeBlob(v) + "'")
+				} else {
+					sb.WriteString("'" + escapeString(string(v)) + "'")
+				}
 			case int64:
 				fmt.Fprintf(&sb, "%d", v)
 			case float64:
@@ -902,7 +904,7 @@ func (d *Dumper) writeFooter(w io.Writer) {
 
 func (d *Dumper) writeHeader(w io.Writer) {
 	detail := fmt.Sprintf("Host: %s  Server: %s  Detected: %s  Configured: %s",
-		d.host, d.serverVer, d.DetectedType(), d.configuredType)
+		d.host, d.server.Display(), d.DetectedType(), d.configuredType)
 	fmt.Fprint(w, common.DumpBanner("--", "MySQL/MariaDB", detail))
 	fmt.Fprintf(w, "/*!40101 SET @OLD_CHARACTER_SET_CLIENT=@@CHARACTER_SET_CLIENT */;\n")
 	fmt.Fprintf(w, "/*!40101 SET @OLD_CHARACTER_SET_RESULTS=@@CHARACTER_SET_RESULTS */;\n")
@@ -917,5 +919,5 @@ func (d *Dumper) writeHeader(w io.Writer) {
 }
 
 func (d *Dumper) writeVersion(w io.Writer) {
-	fmt.Fprintf(w, "-- Server version %s\n\n", d.serverVer)
+	fmt.Fprintf(w, "-- Server version %s\n\n", d.server.Display())
 }

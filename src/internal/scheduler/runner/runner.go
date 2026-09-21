@@ -49,6 +49,7 @@ type Outcome struct {
 	Bytes       int64
 	RawBytes    int64
 	Checksum    string
+	Server      common.ServerVersion
 }
 
 var (
@@ -101,6 +102,7 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 	outcome := recordOutcome
 	var outcomeBytes, outcomeRaw int64
 	outcomeChecksum := ""
+	var outcomeServer common.ServerVersion
 	defer func() {
 		if outcome != nil {
 			outcome(Outcome{
@@ -112,6 +114,7 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 				Bytes:       outcomeBytes,
 				RawBytes:    outcomeRaw,
 				Checksum:    outcomeChecksum,
+				Server:      outcomeServer,
 			})
 		}
 	}()
@@ -655,6 +658,15 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 		backupProtocol := common.TakeBackupProtocol(
 			common.ProtocolKey(job.Host, port, job.User, dbName))
 
+		var serverMeta *retention.ServerMeta
+		if sv, serr := database.ServerVersion(ctx, job.Type, job.Host, port, job.User, pass, dbName, job.AuthSource, job.TLS); serr == nil && (sv.Engine != "" || sv.Version != "") {
+			outcomeServer = sv
+			serverMeta = &retention.ServerMeta{Engine: sv.Engine, Version: sv.Version, Arch: sv.Arch}
+		} else if serr != nil {
+			JLog(log.LevelTrace, job, "server version unavailable",
+				"status", "debug", "error", serr.Error())
+		}
+
 		sc := &retention.Sidecar{
 			Base:          baseFile,
 			Format:        retention.FormatName,
@@ -676,6 +688,7 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 			Type:            job.Type,
 			DB:              dbName,
 			Host:            job.Host,
+			Server:          serverMeta,
 			Timestamp:       now.Format(time.RFC3339),
 			Checksums:       chks,
 			Size:            n,

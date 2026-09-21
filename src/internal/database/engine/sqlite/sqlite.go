@@ -9,6 +9,7 @@ import (
 	"database/sql"
 	"fmt"
 	"io"
+	"runtime"
 	"strings"
 	"time"
 
@@ -26,6 +27,7 @@ type Dumper struct {
 	ctx        context.Context
 	Tables     *config.TableFilter
 	SchemaOnly bool
+	server     common.ServerVersion
 }
 
 func (d *Dumper) Close() error {
@@ -39,7 +41,7 @@ func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
 	start := time.Now()
 	log.Debug("sqlite", "backup start", "path", d.path)
 	fmt.Fprint(w, common.DumpBanner("--", "SQLite",
-		fmt.Sprintf("File: %s", d.path)))
+		fmt.Sprintf("File: %s  Server: %s", d.path, d.server.Display())))
 	fmt.Fprintf(w, "--\n\n")
 
 	tables, err := d.listTables()
@@ -99,7 +101,13 @@ func (d *Dumper) OpenContext(ctx context.Context) error {
 		if err := d.db.QueryRowContext(ctx, "SELECT 1").Scan(&one); err != nil {
 			return fmt.Errorf("ping: %w", err)
 		}
-		log.Debug("sqlite", "connected", "path", d.path)
+		var ver string
+		if err := d.db.QueryRowContext(ctx, "SELECT sqlite_version()").Scan(&ver); err != nil {
+			log.Trace("sqlite", "server version unavailable", "path", d.path, "error", err.Error())
+		} else {
+			d.server = ParseServerVersion(ver, runtime.GOARCH)
+		}
+		log.Debug("sqlite", "connected", "path", d.path, "server", ver)
 		return nil
 	}
 	return common.WithConnectivity(ctx, "sqlite", d.connCfg, probe, connect, ping)
