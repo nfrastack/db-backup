@@ -59,7 +59,7 @@ RUN echo "" && \
     if [ -z "${dbbcommit}" ]; then dbbcommit=$(echo "${dbbver}" | sed -n 's/^develop-\([0-9a-f]\{7,\}\).*/\1/p'); fi; \
     mkdir -p /usr/src/container && \
     cp -aR \
-           /usr/src/db-backup/container/CHANGELOG.md \
+           /usr/src/db-backup/CHANGELOG.md \
            /usr/src/db-backup/container/README.md \
            /usr/src/db-backup/container/LICENSE \
            /usr/src/container && \
