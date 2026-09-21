@@ -6,6 +6,7 @@
       - add warning if running a stale develop build
       - add restore.create_db and cli create-db variable to control auto db creation
       - add engine version/arch detection routines
+      - fail spectacularly when encountering an error in restore
       - record database server version in sidecars and usage stats
       - default connectivity.enabled to true on partial blocks
       - default compression type/level on partial blocks
