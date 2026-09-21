@@ -395,6 +395,252 @@ func (d *Dumper) dumpAll(w io.Writer) error {
 	return nil
 }
 
+func (d *Dumper) listPublications() ([]string, error) {
+	rows, err := d.conn.Query(d.ctxOrBg(),
+		"SELECT p.pubname FROM pg_catalog.pg_publication p ORDER BY 1")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		out = append(out, name)
+	}
+	return out, rows.Err()
+}
+
+func (d *Dumper) dumpPublications(w io.Writer, dbName string) error {
+	hasCol := func(rel, col string) bool {
+		var has bool
+		if err := d.conn.QueryRow(d.ctxOrBg(),
+			"SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_attribute "+
+				"WHERE attrelid = ('pg_catalog.' || $1)::regclass AND attname = $2)", rel, col).Scan(&has); err != nil {
+			return false
+		}
+		return has
+	}
+	viarootSel := "false"
+	if hasCol("pg_publication", "pubviaroot") {
+		viarootSel = "p.pubviaroot"
+	}
+	gencolsSel := "NULL"
+	if hasCol("pg_publication", "pubgencols") {
+		gencolsSel = "p.pubgencols"
+	}
+	hasAttrs := hasCol("pg_publication_rel", "prattrs")
+	rows, err := d.conn.Query(d.ctxOrBg(),
+		"SELECT p.pubname, pg_get_userbyid(p.pubowner), p.puballtables, "+
+			"p.pubinsert, p.pubupdate, p.pubdelete, p.pubtruncate, "+
+			viarootSel+", "+gencolsSel+" "+
+			"FROM pg_catalog.pg_publication p ORDER BY p.pubname")
+	if err != nil {
+		return fmt.Errorf("query publications: %w", err)
+	}
+	defer rows.Close()
+	type pubRef struct {
+		name, owner                   string
+		all                           bool
+		ins, upd, del, trunc, viaroot bool
+		gencols                       sql.NullString
+	}
+	var pubs []pubRef
+	for rows.Next() {
+		var p pubRef
+		if err := rows.Scan(&p.name, &p.owner, &p.all,
+			&p.ins, &p.upd, &p.del, &p.trunc, &p.viaroot, &p.gencols); err != nil {
+			return fmt.Errorf("scan publication row: %w", err)
+		}
+		pubs = append(pubs, p)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	relAttrs := "NULL AS attrs"
+	if hasAttrs {
+		relAttrs = "pr.prattrs::text AS attrs"
+	}
+	for _, p := range pubs {
+		var tables []string
+		if !p.all {
+			trows, err := d.conn.Query(d.ctxOrBg(),
+				"SELECT n.nspname, c.relname, "+relAttrs+" "+
+					"FROM pg_catalog.pg_publication_rel pr "+
+					"JOIN pg_catalog.pg_class c ON c.oid = pr.prrelid "+
+					"JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "+
+					"WHERE pr.prpubid = (SELECT oid FROM pg_catalog.pg_publication WHERE pubname = $1) "+
+					"ORDER BY n.nspname, c.relname", p.name)
+			if err != nil {
+				return fmt.Errorf("query publication tables: %w", err)
+			}
+			for trows.Next() {
+				var tschema, tname string
+				var attrs sql.NullString
+				if err := trows.Scan(&tschema, &tname, &attrs); err != nil {
+					trows.Close()
+					return fmt.Errorf("scan publication table row: %w", err)
+				}
+				entry := quotePGIdent(tschema) + "." + quotePGIdent(tname)
+				if cols := d.pubColumnNames(tschema, tname, attrs.String); cols != "" {
+					entry += " (" + cols + ")"
+				}
+				tables = append(tables, entry)
+			}
+			trows.Close()
+			if err := trows.Err(); err != nil {
+				return err
+			}
+		}
+		var sb strings.Builder
+		fmt.Fprintf(&sb, "CREATE PUBLICATION %s", quotePGIdent(p.name))
+		if p.all {
+			sb.WriteString(" FOR ALL TABLES")
+		} else if len(tables) > 0 {
+			sb.WriteString(" FOR TABLE " + strings.Join(tables, ", "))
+		}
+		ops := []string{}
+		if p.ins {
+			ops = append(ops, "insert")
+		}
+		if p.upd {
+			ops = append(ops, "update")
+		}
+		if p.del {
+			ops = append(ops, "delete")
+		}
+		if p.trunc {
+			ops = append(ops, "truncate")
+		}
+		opts := []string{}
+		if len(ops) != 4 {
+			opts = append(opts, "publish = '"+strings.Join(ops, ", ")+"'")
+		}
+		if p.viaroot {
+			opts = append(opts, "publish_via_partition_root = true")
+		}
+		if p.gencols.Valid {
+			if gen, ok := map[string]string{"n": "none"}[p.gencols.String]; ok {
+				opts = append(opts, "publish_generated_columns = "+gen)
+			}
+		}
+		if len(opts) > 0 {
+			sb.WriteString(" WITH (" + strings.Join(opts, ", ") + ")")
+		}
+		sb.WriteString(";")
+		log.Trace("postgres", "publication dumped", "database", dbName, "publication", p.name)
+		fmt.Fprintf(w, "\n-- Publication: %s\n%s\n", p.name, sb.String())
+		if p.owner != "" {
+			fmt.Fprintf(w, "ALTER PUBLICATION %s OWNER TO %s;\n", quotePGIdent(p.name), quotePGIdent(p.owner))
+		}
+	}
+	return nil
+}
+
+func (d *Dumper) pubColumnNames(schema, table, attrs string) string {
+	attrs = strings.TrimSpace(attrs)
+	if attrs == "" || attrs == "{}" {
+		return ""
+	}
+	var cols []string
+	for _, an := range strings.Fields(attrs) {
+		var col string
+		err := d.conn.QueryRow(d.ctxOrBg(),
+			"SELECT a.attname FROM pg_catalog.pg_attribute a "+
+				"JOIN pg_catalog.pg_class c ON c.oid = a.attrelid "+
+				"JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "+
+				"WHERE n.nspname = $1 AND c.relname = $2 AND a.attnum = $3",
+			schema, table, an).Scan(&col)
+		if err != nil || col == "" {
+			return ""
+		}
+		cols = append(cols, quotePGIdent(col))
+	}
+	return strings.Join(cols, ", ")
+}
+
+func (d *Dumper) dumpDefaultPrivileges(w io.Writer, dbName string) error {
+	rows, err := d.conn.Query(d.ctxOrBg(),
+		"SELECT CASE WHEN d.defaclrole = 0 THEN NULL ELSE pg_get_userbyid(d.defaclrole) END, "+
+			"n.nspname, d.defaclobjtype, "+
+			"x.grantee::int, x.privilege_type, x.is_grantable "+
+			"FROM pg_catalog.pg_default_acl d "+
+			"LEFT JOIN pg_catalog.pg_namespace n ON n.oid = d.defaclnamespace "+
+			"CROSS JOIN LATERAL aclexplode(d.defaclacl) x "+
+			"ORDER BY 1, 2, 3, 5")
+	if err != nil {
+		return fmt.Errorf("query default privileges: %w", err)
+	}
+	defer rows.Close()
+	type key struct {
+		role, schema, obj, priv string
+		grantable               bool
+	}
+	groups := map[key][]string{}
+	var order []key
+	for rows.Next() {
+		var role, schema sql.NullString
+		var obj string
+		var grantee int32
+		var priv string
+		var grantable bool
+		if err := rows.Scan(&role, &schema, &obj, &grantee, &priv, &grantable); err != nil {
+			return fmt.Errorf("scan default privilege row: %w", err)
+		}
+		var objWord string
+		switch obj {
+		case "r":
+			objWord = "TABLES"
+		case "S":
+			objWord = "SEQUENCES"
+		case "f":
+			objWord = "FUNCTIONS"
+		case "T":
+			objWord = "TYPES"
+		default:
+			continue
+		}
+		to := "PUBLIC"
+		if grantee != 0 {
+			var rn string
+			if err := d.conn.QueryRow(d.ctxOrBg(),
+				"SELECT rolname FROM pg_catalog.pg_roles WHERE oid = $1", grantee).Scan(&rn); err != nil || rn == "" {
+				continue
+			}
+			to = quotePGIdent(rn)
+		}
+		k := key{role.String, schema.String, objWord, priv, grantable}
+		if _, ok := groups[k]; !ok {
+			order = append(order, k)
+		}
+		groups[k] = append(groups[k], to)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, k := range order {
+		var sb strings.Builder
+		sb.WriteString("ALTER DEFAULT PRIVILEGES")
+		if k.role != "" {
+			sb.WriteString(" FOR ROLE " + quotePGIdent(k.role))
+		}
+		if k.schema != "" {
+			sb.WriteString(" IN SCHEMA " + quotePGIdent(k.schema))
+		}
+		sb.WriteString(" GRANT " + k.priv + " ON " + k.obj + " TO " + strings.Join(groups[k], ", "))
+		if k.grantable {
+			sb.WriteString(" WITH GRANT OPTION")
+		}
+		sb.WriteString(";")
+		log.Trace("postgres", "default privileges dumped", "database", dbName,
+			"statement", sb.String())
+		fmt.Fprintf(w, "\n-- Default privileges\n%s\n", sb.String())
+	}
+	return nil
+}
+
 func (d *Dumper) dumpBlobs(w io.Writer, dbName string, tables []string) error {
 	if d.SchemaOnly {
 		return nil
@@ -542,7 +788,6 @@ func (d *Dumper) dumpDatabase(w io.Writer, dbName string) error {
 	if err := d.dumpAggregates(w, dbName); err != nil {
 		return err
 	}
-	// Domain CHECKs after functions: a CHECK may call a user function.
 	if len(domainChecks) > 0 {
 		fmt.Fprintf(w, "\n-- Domain checks\n")
 		for _, chk := range domainChecks {
@@ -616,6 +861,12 @@ func (d *Dumper) dumpDatabase(w io.Writer, dbName string) error {
 		return err
 	}
 	if err := d.dumpACLs(w, dbName, postTables); err != nil {
+		return err
+	}
+	if err := d.dumpDefaultPrivileges(w, dbName); err != nil {
+		return err
+	}
+	if err := d.dumpPublications(w, dbName); err != nil {
 		return err
 	}
 	if len(matviewRefreshes) > 0 {
@@ -715,6 +966,13 @@ func (d *Dumper) dumpDrops(w io.Writer, dbName string, included []string) error 
 	} else {
 		log.Trace("postgres", "type drops unavailable", "database", dbName, "error", err.Error())
 	}
+	if pubs, err := d.listPublications(); err == nil {
+		for _, p := range pubs {
+			fmt.Fprintf(w, "DROP PUBLICATION IF EXISTS %s;\n", quotePGIdent(p))
+		}
+	} else {
+		log.Trace("postgres", "publication drops unavailable", "database", dbName, "error", err.Error())
+	}
 	return nil
 }
 
@@ -800,16 +1058,6 @@ func (d *Dumper) dumpFunctions(w io.Writer, dbName string, tableDependent bool) 
 }
 
 func (d *Dumper) dumpAggregates(w io.Writer, dbName string) error {
-	var hasParallel bool
-	if err := d.conn.QueryRow(d.ctxOrBg(),
-		"SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_attribute "+
-			"WHERE attrelid = 'pg_catalog.pg_aggregate'::regclass AND attname = 'aggparallel')").Scan(&hasParallel); err != nil {
-		return fmt.Errorf("probe pg_aggregate columns: %w", err)
-	}
-	parallelSel := "NULL"
-	if hasParallel {
-		parallelSel = "a.aggparallel::text"
-	}
 	rows, err := d.conn.Query(d.ctxOrBg(),
 		"SELECT n.nspname, p.proname, "+
 			"CASE WHEN a.aggnumdirectargs > 0 THEN "+
@@ -830,7 +1078,7 @@ func (d *Dumper) dumpAggregates(w io.Writer, dbName string) error {
 			"a.aggfinalextra, a.aggmfinalextra, a.aggfinalmodify::text, a.aggmfinalmodify::text, "+
 			"a.aggtransspace, a.aggmtransspace, "+
 			"CASE WHEN a.aggsortop = 0 THEN '' ELSE a.aggsortop::regoperator::text END, "+
-			"a.agginitval, a.aggminitval, "+parallelSel+" "+
+			"a.agginitval, a.aggminitval, p.proparallel::text, p.provariadic "+
 			"FROM pg_catalog.pg_proc p "+
 			"JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace "+
 			"JOIN pg_catalog.pg_aggregate a ON a.aggfnoid = p.oid "+
@@ -853,24 +1101,33 @@ func (d *Dumper) dumpAggregates(w io.Writer, dbName string) error {
 		var sspace, mspace int
 		var sortop string
 		var initcond, minitcond, parallel sql.NullString
+		var provariadic uint32
 		if err := rows.Scan(&schema, &name, &directArgs, &aggArgs, &kind,
 			&sfunc, &stype, &finalfn, &combinefn, &serialfn, &deserialfn,
 			&msfunc, &minvfunc, &mfinalfn, &finalextra, &mfinalextra,
 			&finalmodify, &mfinalmodify, &sspace, &mspace, &sortop,
-			&initcond, &minitcond, &parallel); err != nil {
+			&initcond, &minitcond, &parallel, &provariadic); err != nil {
 			return fmt.Errorf("scan aggregate row: %w", err)
 		}
 		direct, agg := directArgs.String, aggArgs.String
+		if provariadic != 0 {
+			if agg != "" {
+				agg = wrapVariadicLast(agg)
+			} else {
+				direct = wrapVariadicLast(direct)
+			}
+			if kind == "o" && direct != "" && !strings.HasPrefix(direct, "VARIADIC") {
+				direct = wrapVariadicLast(direct)
+			}
+		}
 		var sig string
 		switch kind {
-		case "o":
-			sig = direct + " ORDER BY " + agg
-		case "h":
-			if direct != "" && agg != "" {
-				sig = direct + ", " + agg
-			} else {
-				sig = direct + agg
+		case "o", "h":
+			dd := direct
+			if dd == "" {
+				dd = agg
 			}
+			sig = dd + " ORDER BY " + agg
 		default:
 			sig = agg
 		}
@@ -953,6 +1210,24 @@ func (d *Dumper) dumpAggregates(w io.Writer, dbName string) error {
 			quotePGIdent(schema), quotePGIdent(name), sig, strings.Join(opts, ",\n    "))
 	}
 	return rows.Err()
+}
+
+func wrapVariadicLast(sig string) string {
+	depth := 0
+	for i := len(sig) - 1; i >= 0; i-- {
+		switch sig[i] {
+		case ')':
+			depth++
+		case '(':
+			depth--
+		case ' ':
+			if depth == 0 && i > 0 && sig[i-1] == ',' {
+				head, last := sig[:i-1], strings.TrimSpace(sig[i+1:])
+				return head + `, VARIADIC "` + last + `"`
+			}
+		}
+	}
+	return `VARIADIC "` + strings.TrimSpace(sig) + `"`
 }
 
 func (d *Dumper) DumpGlobals(w io.Writer) error {
