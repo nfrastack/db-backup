@@ -36,8 +36,11 @@
       - (postgres) pg_dump parity
         - dump PARTITION OF with one COPY per partition
         - dump comments, constraints, extensions, grants, materialized views, rules, statistics
-        - dump referenced largeobjects from oid columns
+        - dump extensions in dependency order, skip plpgsql
+        - dump functions before tables
+        - dump user aggregates as CREATE AGGREGATE
         - dump named not NULLs
+        - dump referenced largeobjects from oid columns
         - dump skip auto generatied columns
         - dump quoting rules for json data
         - dump encode (var)bit, bytea, (multi)range, uuid as plain text

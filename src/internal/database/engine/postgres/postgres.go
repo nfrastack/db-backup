@@ -531,6 +531,12 @@ func (d *Dumper) dumpDatabase(w io.Writer, dbName string) error {
 	if err := d.dumpTypes(w, dbName); err != nil {
 		return err
 	}
+	if err := d.dumpFunctions(w, dbName, false); err != nil {
+		return err
+	}
+	if err := d.dumpAggregates(w, dbName); err != nil {
+		return err
+	}
 
 	if err := d.dumpSequences(w, dbName); err != nil {
 		return err
@@ -563,7 +569,7 @@ func (d *Dumper) dumpDatabase(w io.Writer, dbName string) error {
 	if err != nil {
 		return err
 	}
-	if err := d.dumpFunctions(w, dbName); err != nil {
+	if err := d.dumpFunctions(w, dbName, true); err != nil {
 		return err
 	}
 
@@ -639,8 +645,22 @@ func (d *Dumper) dumpDrops(w io.Writer, dbName string, included []string) error 
 
 func (d *Dumper) dumpExtensions(w io.Writer, dbName string) error {
 	rows, err := d.conn.Query(d.ctxOrBg(),
-		"SELECT e.extname, n.nspname FROM pg_catalog.pg_extension e "+
-			"JOIN pg_catalog.pg_namespace n ON n.oid = e.extnamespace ORDER BY e.extname")
+		"WITH RECURSIVE extdeps AS ("+
+			"SELECT d.objid AS ext, d.refobjid AS req "+
+			"FROM pg_catalog.pg_depend d "+
+			"WHERE d.classid = 'pg_extension'::regclass "+
+			"AND d.refclassid = 'pg_extension'::regclass), "+
+			"extorder AS ("+
+			"SELECT e.oid, 0 AS depth FROM pg_catalog.pg_extension e "+
+			"WHERE NOT EXISTS (SELECT 1 FROM extdeps WHERE extdeps.ext = e.oid) "+
+			"UNION "+
+			"SELECT dd.ext, o.depth + 1 FROM extdeps dd "+
+			"JOIN extorder o ON o.oid = dd.req WHERE o.depth < 32) "+
+			"SELECT e.extname, n.nspname FROM pg_catalog.pg_extension e "+
+			"JOIN pg_catalog.pg_namespace n ON n.oid = e.extnamespace "+
+			"LEFT JOIN (SELECT oid, MAX(depth) AS depth FROM extorder GROUP BY oid) o ON o.oid = e.oid "+
+			"WHERE e.extname <> 'plpgsql' "+
+			"ORDER BY COALESCE(o.depth, 0), e.extname")
 	if err != nil {
 		return fmt.Errorf("list extensions: %w", err)
 	}
@@ -665,12 +685,28 @@ func (d *Dumper) dumpExtensions(w io.Writer, dbName string) error {
 	return nil
 }
 
-func (d *Dumper) dumpFunctions(w io.Writer, dbName string) error {
+func (d *Dumper) dumpFunctions(w io.Writer, dbName string, tableDependent bool) error {
 	rows, err := d.conn.Query(d.ctxOrBg(),
 		"SELECT proname, pg_get_functiondef(oid) FROM pg_proc "+
 			"WHERE pronamespace NOT IN ('pg_catalog'::regnamespace, 'information_schema'::regnamespace) "+
-			"AND prokind IN ('f', 'p') "+
-			"AND NOT EXISTS (SELECT 1 FROM pg_depend dd WHERE dd.objid = pg_proc.oid AND dd.deptype = 'e')")
+			"AND prokind IN ('f', 'p', 'w') "+
+			"AND NOT EXISTS (SELECT 1 FROM pg_depend dd WHERE dd.objid = pg_proc.oid AND dd.deptype = 'e') "+
+			"AND (EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd "+
+			"JOIN pg_catalog.pg_class c ON c.oid = dd.refobjid "+
+			"JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "+
+			"WHERE dd.objid = pg_proc.oid "+
+			"AND dd.refclassid = 'pg_class'::regclass "+
+			"AND c.relkind IN ('r', 'p', 'v', 'm', 'f') "+
+			"AND n.nspname NOT IN ('pg_catalog', 'information_schema')) "+
+			"OR EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd "+
+			"JOIN pg_catalog.pg_type t ON t.oid = dd.refobjid "+
+			"JOIN pg_catalog.pg_class c ON c.oid = t.typrelid "+
+			"WHERE dd.objid = pg_proc.oid "+
+			"AND dd.refclassid = 'pg_type'::regclass "+
+			"AND t.typtype = 'c' "+
+			"AND c.relkind IN ('r', 'p', 'v', 'm', 'f') "+
+			"AND c.relnamespace NOT IN ('pg_catalog'::regnamespace, 'information_schema'::regnamespace))) = $1",
+		tableDependent)
 	if err != nil {
 		return fmt.Errorf("query functions: %w", err)
 	}
@@ -684,6 +720,162 @@ func (d *Dumper) dumpFunctions(w io.Writer, dbName string) error {
 		def = strings.TrimSuffix(strings.TrimSpace(def), ";") + ";"
 		log.Trace("postgres", "function dumped", "database", dbName, "function", name)
 		fmt.Fprintf(w, "\n-- Function: %s\n%s\n\n", name, def)
+	}
+	return rows.Err()
+}
+
+func (d *Dumper) dumpAggregates(w io.Writer, dbName string) error {
+	var hasParallel bool
+	if err := d.conn.QueryRow(d.ctxOrBg(),
+		"SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_attribute "+
+			"WHERE attrelid = 'pg_catalog.pg_aggregate'::regclass AND attname = 'aggparallel')").Scan(&hasParallel); err != nil {
+		return fmt.Errorf("probe pg_aggregate columns: %w", err)
+	}
+	parallelSel := "NULL"
+	if hasParallel {
+		parallelSel = "a.aggparallel::text"
+	}
+	rows, err := d.conn.Query(d.ctxOrBg(),
+		"SELECT n.nspname, p.proname, "+
+			"CASE WHEN a.aggnumdirectargs > 0 THEN "+
+			"(SELECT string_agg(format_type(u.oid::oid, NULL), ', ' ORDER BY u.ord) "+
+			"FROM unnest(string_to_array(NULLIF(p.proargtypes::text, ''), ' ')) WITH ORDINALITY AS u(oid, ord) "+
+			"WHERE u.ord <= a.aggnumdirectargs) ELSE '' END AS direct_args, "+
+			"(SELECT string_agg(format_type(u.oid::oid, NULL), ', ' ORDER BY u.ord) "+
+			"FROM unnest(string_to_array(NULLIF(p.proargtypes::text, ''), ' ')) WITH ORDINALITY AS u(oid, ord) "+
+			"WHERE u.ord > a.aggnumdirectargs) AS agg_args, "+
+			"a.aggkind::text, a.aggtransfn::regproc::text, format_type(a.aggtranstype, NULL), "+
+			"CASE WHEN a.aggfinalfn = 0 THEN '' ELSE a.aggfinalfn::regproc::text END, "+
+			"CASE WHEN a.aggcombinefn = 0 THEN '' ELSE a.aggcombinefn::regproc::text END, "+
+			"CASE WHEN a.aggserialfn = 0 THEN '' ELSE a.aggserialfn::regproc::text END, "+
+			"CASE WHEN a.aggdeserialfn = 0 THEN '' ELSE a.aggdeserialfn::regproc::text END, "+
+			"CASE WHEN a.aggmtransfn = 0 THEN '' ELSE a.aggmtransfn::regproc::text END, "+
+			"CASE WHEN a.aggminvtransfn = 0 THEN '' ELSE a.aggminvtransfn::regproc::text END, "+
+			"CASE WHEN a.aggmfinalfn = 0 THEN '' ELSE a.aggmfinalfn::regproc::text END, "+
+			"a.aggfinalextra, a.aggmfinalextra, a.aggfinalmodify::text, a.aggmfinalmodify::text, "+
+			"a.aggtransspace, a.aggmtransspace, "+
+			"CASE WHEN a.aggsortop = 0 THEN '' ELSE a.aggsortop::regoperator::text END, "+
+			"a.agginitval, a.aggminitval, "+parallelSel+" "+
+			"FROM pg_catalog.pg_proc p "+
+			"JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace "+
+			"JOIN pg_catalog.pg_aggregate a ON a.aggfnoid = p.oid "+
+			"WHERE p.prokind = 'a' "+
+			"AND n.nspname NOT IN ('pg_catalog', 'information_schema') "+
+			"AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = p.oid AND dd.deptype = 'e') "+
+			"ORDER BY n.nspname, p.proname")
+	if err != nil {
+		return fmt.Errorf("query aggregates: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var schema, name string
+		var directArgs, aggArgs sql.NullString
+		var kind, sfunc, stype string
+		var finalfn, combinefn, serialfn, deserialfn, msfunc, minvfunc, mfinalfn string
+		var finalextra, mfinalextra bool
+		var finalmodify, mfinalmodify string
+		var sspace, mspace int
+		var sortop string
+		var initcond, minitcond, parallel sql.NullString
+		if err := rows.Scan(&schema, &name, &directArgs, &aggArgs, &kind,
+			&sfunc, &stype, &finalfn, &combinefn, &serialfn, &deserialfn,
+			&msfunc, &minvfunc, &mfinalfn, &finalextra, &mfinalextra,
+			&finalmodify, &mfinalmodify, &sspace, &mspace, &sortop,
+			&initcond, &minitcond, &parallel); err != nil {
+			return fmt.Errorf("scan aggregate row: %w", err)
+		}
+		direct, agg := directArgs.String, aggArgs.String
+		var sig string
+		switch kind {
+		case "o": // ordered-set: direct args then ORDER BY aggregated args
+			sig = direct + " ORDER BY " + agg
+		case "h": // hypothetical-set: direct args then aggregated args
+			if direct != "" && agg != "" {
+				sig = direct + ", " + agg
+			} else {
+				sig = direct + agg
+			}
+		default:
+			sig = agg
+		}
+		if strings.TrimSpace(sig) == "" {
+			sig = "*"
+		}
+		opts := []string{"SFUNC = " + sfunc, "STYPE = " + stype}
+		if sspace != 0 {
+			opts = append(opts, "SSPACE = "+strconv.Itoa(sspace))
+		}
+		if finalfn != "" {
+			opt := "FINALFUNC = " + finalfn
+			if finalextra {
+				opt += " FINALFUNC_EXTRA"
+			}
+			switch finalmodify {
+			case "s":
+				opt += " FINALFUNC_MODIFY = SHAREABLE"
+			case "w":
+				opt += " FINALFUNC_MODIFY = READ_WRITE"
+			}
+			opts = append(opts, opt)
+		}
+		if combinefn != "" {
+			opts = append(opts, "COMBINEFUNC = "+combinefn)
+		}
+		if serialfn != "" {
+			opts = append(opts, "SERIALFUNC = "+serialfn)
+		}
+		if deserialfn != "" {
+			opts = append(opts, "DESERIALFUNC = "+deserialfn)
+		}
+		if msfunc != "" {
+			opts = append(opts, "MSFUNC = "+msfunc)
+		}
+		if minvfunc != "" {
+			opts = append(opts, "MINVFUNC = "+minvfunc)
+		}
+		if mfinalfn != "" {
+			opt := "MFINALFUNC = " + mfinalfn
+			if mfinalextra {
+				opt += " MFINALFUNC_EXTRA"
+			}
+			switch mfinalmodify {
+			case "s":
+				opt += " MFINALFUNC_MODIFY = SHAREABLE"
+			case "w":
+				opt += " MFINALFUNC_MODIFY = READ_WRITE"
+			}
+			opts = append(opts, opt)
+		}
+		if mspace != 0 {
+			opts = append(opts, "MSPACE = "+strconv.Itoa(mspace))
+		}
+		if initcond.Valid && initcond.String != "" {
+			opts = append(opts, "INITCOND = '"+strings.ReplaceAll(initcond.String, "'", "''")+"'")
+		}
+		if minitcond.Valid && minitcond.String != "" {
+			opts = append(opts, "MINITCOND = '"+strings.ReplaceAll(minitcond.String, "'", "''")+"'")
+		}
+		if sortop != "" {
+			opts = append(opts, "SORTOP = "+sortop)
+		}
+		if parallel.Valid {
+			switch parallel.String {
+			case "s":
+				opts = append(opts, "PARALLEL = SAFE")
+			case "r":
+				opts = append(opts, "PARALLEL = RESTRICTED")
+			case "u":
+				opts = append(opts, "PARALLEL = UNSAFE")
+			}
+		}
+		if kind == "h" {
+			opts = append(opts, "HYPOTHETICAL")
+		}
+		log.Trace("postgres", "aggregate dumped", "database", dbName, "aggregate", schema+"."+name)
+		fmt.Fprintf(w, "\n-- Aggregate: %s.%s(%s)\n", schema, name, sig)
+		fmt.Fprintf(w, "CREATE AGGREGATE %s.%s(%s) (\n    %s\n);\n",
+			quotePGIdent(schema), quotePGIdent(name), sig, strings.Join(opts, ",\n    "))
 	}
 	return rows.Err()
 }
