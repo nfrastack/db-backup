@@ -104,9 +104,9 @@ func (d *Dumper) copyData(w io.Writer, dbName, schema, table string) error {
 		}
 		crows.Close()
 	}
-	query := "SELECT * FROM " + quotePGIdent(schema) + "." + quotePGIdent(table)
+	query := "SELECT * FROM ONLY " + quotePGIdent(schema) + "." + quotePGIdent(table)
 	if len(generated) > 0 && len(orderedCols) > 0 {
-		query = "SELECT " + strings.Join(orderedCols, ", ") + " FROM " + quotePGIdent(schema) + "." + quotePGIdent(table)
+		query = "SELECT " + strings.Join(orderedCols, ", ") + " FROM ONLY " + quotePGIdent(schema) + "." + quotePGIdent(table)
 	}
 	rows, err := d.conn.Query(d.ctxOrBg(), query, pgx.QueryResultFormats{pgx.TextFormatCode})
 	if err != nil {
@@ -517,6 +517,7 @@ func (d *Dumper) dumpDatabase(w io.Writer, dbName string) error {
 		}
 		included = append(included, table)
 	}
+	included = d.orderTablesByInheritance(dbName, included)
 
 	if err := d.dumpDrops(w, dbName, included); err != nil {
 		return err
@@ -528,7 +529,11 @@ func (d *Dumper) dumpDatabase(w io.Writer, dbName string) error {
 	if err := d.dumpExtensions(w, dbName); err != nil {
 		return err
 	}
-	if err := d.dumpTypes(w, dbName); err != nil {
+	if err := d.dumpCollations(w, dbName); err != nil {
+		return err
+	}
+	domainChecks, err := d.dumpTypes(w, dbName)
+	if err != nil {
 		return err
 	}
 	if err := d.dumpFunctions(w, dbName, false); err != nil {
@@ -537,26 +542,42 @@ func (d *Dumper) dumpDatabase(w io.Writer, dbName string) error {
 	if err := d.dumpAggregates(w, dbName); err != nil {
 		return err
 	}
+	// Domain CHECKs after functions: a CHECK may call a user function.
+	if len(domainChecks) > 0 {
+		fmt.Fprintf(w, "\n-- Domain checks\n")
+		for _, chk := range domainChecks {
+			fmt.Fprint(w, chk)
+		}
+	}
 
 	if err := d.dumpSequences(w, dbName); err != nil {
 		return err
 	}
 
 	postTables := append([]string{}, included...)
-	var fkDefs []string
+	var attachDefs, fkDefs []string
 	for _, table := range included {
 		common.TraceTable(d.ctxOrBg(), dbName, table)
-		partitionNames, fkSQL, err := d.dumpTable(w, dbName, table)
+		partitionNames, attachSQL, fkSQL, err := d.dumpTable(w, dbName, table)
 		if err != nil {
 			return err
 		}
 		postTables = append(postTables, partitionNames...)
+		if attachSQL != "" {
+			attachDefs = append(attachDefs, attachSQL)
+		}
 		if fkSQL != "" {
 			fkDefs = append(fkDefs, fkSQL)
 		}
 	}
+	if len(attachDefs) > 0 {
+		fmt.Fprintf(w, "\n-- Attach partitions\n")
+		for _, a := range attachDefs {
+			fmt.Fprint(w, a)
+		}
+	}
 	if len(fkDefs) > 0 {
-		fmt.Fprintf(w, "\n-- Foreign keys\n")
+		fmt.Fprintf(w, "\n-- Foreign keys and exclusion constraints\n")
 		for _, fk := range fkDefs {
 			fmt.Fprint(w, fk)
 		}
@@ -607,6 +628,60 @@ func (d *Dumper) dumpDatabase(w io.Writer, dbName string) error {
 		"database", dbName, "tables", len(tables),
 		"elapsed", time.Since(dbStart).Round(time.Millisecond).String())
 	return nil
+}
+
+func (d *Dumper) orderTablesByInheritance(dbName string, tables []string) []string {
+	rows, err := d.conn.Query(d.ctxOrBg(),
+		"SELECT n.nspname || '.' || c.relname, pn.nspname || '.' || p.relname "+
+			"FROM pg_catalog.pg_inherits i "+
+			"JOIN pg_catalog.pg_class c ON c.oid = i.inhrelid "+
+			"JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "+
+			"JOIN pg_catalog.pg_class p ON p.oid = i.inhparent "+
+			"JOIN pg_catalog.pg_namespace pn ON pn.oid = p.relnamespace "+
+			"WHERE c.relispartition = false")
+	if err != nil {
+		log.Trace("postgres", "inheritance order unavailable", "database", dbName,
+			"error", err.Error())
+		return tables
+	}
+	defer rows.Close()
+	parents := map[string][]string{}
+	for rows.Next() {
+		var child, parent string
+		if err := rows.Scan(&child, &parent); err != nil {
+			break
+		}
+		parents[child] = append(parents[child], parent)
+	}
+	if rows.Err() != nil {
+		return tables
+	}
+	depth := map[string]int{}
+	var compute func(t string, seen map[string]bool) int
+	compute = func(t string, seen map[string]bool) int {
+		if dd, ok := depth[t]; ok {
+			return dd
+		}
+		if seen[t] {
+			return 0
+		}
+		seen[t] = true
+		max := 0
+		for _, p := range parents[t] {
+			if dd := compute(p, seen) + 1; dd > max {
+				max = dd
+			}
+		}
+		delete(seen, t)
+		depth[t] = max
+		return max
+	}
+	for _, t := range tables {
+		compute(t, map[string]bool{})
+	}
+	out := append([]string{}, tables...)
+	sort.SliceStable(out, func(i, j int) bool { return depth[out[i]] < depth[out[j]] })
+	return out
 }
 
 func (d *Dumper) dumpDrops(w io.Writer, dbName string, included []string) error {
@@ -788,9 +863,9 @@ func (d *Dumper) dumpAggregates(w io.Writer, dbName string) error {
 		direct, agg := directArgs.String, aggArgs.String
 		var sig string
 		switch kind {
-		case "o": // ordered-set: direct args then ORDER BY aggregated args
+		case "o":
 			sig = direct + " ORDER BY " + agg
-		case "h": // hypothetical-set: direct args then aggregated args
+		case "h":
 			if direct != "" && agg != "" {
 				sig = direct + ", " + agg
 			} else {
@@ -968,9 +1043,9 @@ func (d *Dumper) DumpGlobals(w io.Writer) error {
 	return rows.Err()
 }
 
-func (d *Dumper) dumpPartitions(w io.Writer, dbName, schema, table string, schemaOnly bool, depth int) ([]string, error) {
+func (d *Dumper) dumpPartitions(w io.Writer, dbName, schema, table string, schemaOnly bool, depth int) ([]string, string, string, error) {
 	if depth > 8 {
-		return nil, fmt.Errorf("partition nesting too deep at %s.%s", schema, table)
+		return nil, "", "", fmt.Errorf("partition nesting too deep at %s.%s", schema, table)
 	}
 	rows, err := d.conn.Query(d.ctxOrBg(),
 		"SELECT n.nspname, c.relname, pg_get_expr(c.relpartbound, c.oid) "+
@@ -981,7 +1056,7 @@ func (d *Dumper) dumpPartitions(w io.Writer, dbName, schema, table string, schem
 			"JOIN pg_catalog.pg_namespace pn ON pn.oid = p.relnamespace "+
 			"WHERE pn.nspname = $1 AND p.relname = $2 ORDER BY c.relname", schema, table)
 	if err != nil {
-		return nil, fmt.Errorf("list partitions: %w", err)
+		return nil, "", "", fmt.Errorf("list partitions: %w", err)
 	}
 	type partRef struct{ schema, name, bound string }
 	var parts []partRef
@@ -989,16 +1064,17 @@ func (d *Dumper) dumpPartitions(w io.Writer, dbName, schema, table string, schem
 		var p partRef
 		if err := rows.Scan(&p.schema, &p.name, &p.bound); err != nil {
 			rows.Close()
-			return nil, fmt.Errorf("scan partition row: %w", err)
+			return nil, "", "", fmt.Errorf("scan partition row: %w", err)
 		}
 		parts = append(parts, p)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, "", "", err
 	}
 
 	var dumped []string
+	var attachSQL, conSQL strings.Builder
 	for _, p := range parts {
 		pschema, pname, bound := p.schema, p.name, p.bound
 		qualified := pschema + "." + pname
@@ -1006,33 +1082,43 @@ func (d *Dumper) dumpPartitions(w io.Writer, dbName, schema, table string, schem
 		common.TraceTable(d.ctxOrBg(), dbName, qualified)
 		log.Trace("postgres", "partition dumped", "database", dbName,
 			"table", qualified, "parent", schema+"."+table)
-		fmt.Fprintf(w, "\n-- Partition: %s (of %s.%s)\n", qualified, schema, table)
-		fmt.Fprintf(w, "CREATE TABLE %s PARTITION OF %s.%s %s;\n",
-			quotePGIdent(pschema)+"."+quotePGIdent(pname),
-			quotePGIdent(schema), quotePGIdent(table), bound)
+		createSQL, err := d.getCreateTable(pschema, pname)
+		if err != nil {
+			return dumped, "", "", err
+		}
+		fmt.Fprintf(w, "\n-- Partition: %s (of %s.%s)\n%s\n\n", qualified, schema, table, createSQL)
 		if owner, err := d.ownerOf(pschema, pname); err == nil && owner != "" {
-			fmt.Fprintf(w, "ALTER TABLE %s.%s OWNER TO %s;\n",
+			fmt.Fprintf(w, "ALTER TABLE %s.%s OWNER TO %s;\n\n",
 				quotePGIdent(pschema), quotePGIdent(pname), quotePGIdent(owner))
 		} else if err != nil {
 			log.Trace("postgres", "owner unavailable", "database", dbName,
 				"table", pschema+"."+pname, "error", err.Error())
 		}
-		fmt.Fprintf(w, "\n")
-		if schemaOnly {
-			continue
-		}
-		if err := d.copyData(w, dbName, pschema, pname); err != nil {
-			return dumped, err
+		if !schemaOnly {
+			if err := d.copyData(w, dbName, pschema, pname); err != nil {
+				return dumped, "", "", err
+			}
 		}
 		if d.isPartitioned(pschema, pname) {
-			nested, err := d.dumpPartitions(w, dbName, pschema, pname, schemaOnly, depth+1)
+			nested, nestedAttach, nestedCon, err := d.dumpPartitions(w, dbName, pschema, pname, schemaOnly, depth+1)
 			if err != nil {
-				return dumped, err
+				return dumped, "", "", err
 			}
 			dumped = append(dumped, nested...)
+			attachSQL.WriteString(nestedAttach)
+			conSQL.WriteString(nestedCon)
 		}
+		if fk, err := d.getForeignKeys(pschema, pname); err == nil {
+			conSQL.WriteString(fk)
+		}
+		if excl, err := d.getExclusionConstraints(pschema, pname); err == nil {
+			conSQL.WriteString(excl)
+		}
+		fmt.Fprintf(&attachSQL, "ALTER TABLE ONLY %s.%s ATTACH PARTITION %s.%s %s;\n",
+			quotePGIdent(schema), quotePGIdent(table),
+			quotePGIdent(pschema), quotePGIdent(pname), bound)
 	}
-	return dumped, nil
+	return dumped, attachSQL.String(), conSQL.String(), nil
 }
 
 func (d *Dumper) dumpSchemas(w io.Writer, dbName string, included []string) error {
@@ -1167,14 +1253,14 @@ func (d *Dumper) dumpSequenceValues(w io.Writer, dbName string) error {
 	return nil
 }
 
-func (d *Dumper) dumpTable(w io.Writer, dbName, table string) ([]string, string, error) {
+func (d *Dumper) dumpTable(w io.Writer, dbName, table string) ([]string, string, string, error) {
 	parts := strings.SplitN(table, ".", 2)
 	schema := parts[0]
 	tableName := parts[1]
 
 	createSQL, err := d.getCreateTable(schema, tableName)
 	if err != nil {
-		return nil, "", err
+		return nil, "", "", err
 	}
 	fmt.Fprintf(w, "\n-- Table: %s.%s\n%s\n\n", schema, tableName, createSQL)
 	if owner, err := d.ownerOf(schema, tableName); err == nil && owner != "" {
@@ -1203,21 +1289,26 @@ func (d *Dumper) dumpTable(w io.Writer, dbName, table string) ([]string, string,
 		log.Trace("postgres", "foreign keys unavailable", "database", dbName,
 			"table", schema+"."+tableName, "error", err.Error())
 	}
-
+	if excl, err := d.getExclusionConstraints(schema, tableName); err == nil {
+		fkSQL += excl
+	} else {
+		log.Trace("postgres", "exclusion constraints unavailable", "database", dbName,
+			"table", schema+"."+tableName, "error", err.Error())
+	}
 	if d.isPartitioned(schema, tableName) {
 		log.Trace("postgres", "partitioned parent, DDL only", "database", dbName, "table", table)
-		partitionNames, err := d.dumpPartitions(w, dbName, schema, tableName, schemaOnly, 0)
-		return partitionNames, fkSQL, err
+		partitionNames, partAttach, partCon, err := d.dumpPartitions(w, dbName, schema, tableName, schemaOnly, 0)
+		return partitionNames, partAttach, fkSQL + partCon, err
 	}
 	if schemaOnly {
-		return nil, fkSQL, nil
+		return nil, "", fkSQL, nil
 	}
 
 	if err := d.copyData(w, dbName, schema, tableName); err != nil {
-		return nil, "", err
+		return nil, "", "", err
 	}
 
-	return nil, fkSQL, nil
+	return nil, "", fkSQL, nil
 }
 
 func (d *Dumper) dumpTriggers(w io.Writer, dbName string, tables []string) error {
@@ -1460,6 +1551,93 @@ func (d *Dumper) dumpStatistics(w io.Writer, dbName string, tables []string) err
 	return nil
 }
 
+func (d *Dumper) dbDefaultCollationOID() uint32 {
+	var oid uint32
+	err := d.conn.QueryRow(d.ctxOrBg(),
+		"SELECT c.oid FROM pg_catalog.pg_database d "+
+			"JOIN pg_catalog.pg_collation c ON c.collname = d.datcollate "+
+			"WHERE d.datname = current_database() LIMIT 1").Scan(&oid)
+	if err != nil {
+		return 0
+	}
+	return oid
+}
+
+func (d *Dumper) dumpCollations(w io.Writer, dbName string) error {
+	hasCol := func(col string) bool {
+		var has bool
+		if err := d.conn.QueryRow(d.ctxOrBg(),
+			"SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_attribute "+
+				"WHERE attrelid = 'pg_catalog.pg_collation'::regclass AND attname = $1)", col).Scan(&has); err != nil {
+			return false
+		}
+		return has
+	}
+	localeParts := []string{}
+	if hasCol("colllocale") {
+		localeParts = append(localeParts, "c.colllocale")
+	}
+	if hasCol("colliculocale") {
+		localeParts = append(localeParts, "c.colliculocale")
+	}
+	localeParts = append(localeParts, "c.collcollate")
+	localeSel := "COALESCE(" + strings.Join(localeParts, ", ") + ")"
+	rows, err := d.conn.Query(d.ctxOrBg(),
+		"SELECT n.nspname, c.collname, c.collprovider, c.collisdeterministic, "+
+			"c.collencoding, c.collcollate, c.collctype, "+localeSel+" "+
+			"FROM pg_catalog.pg_collation c "+
+			"JOIN pg_catalog.pg_namespace n ON n.oid = c.collnamespace "+
+			"WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') "+
+			"AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = c.oid AND dd.deptype = 'e') "+
+			"ORDER BY n.nspname, c.collname")
+	if err != nil {
+		return fmt.Errorf("query collations: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var schema, name string
+		var provider string
+		var deterministic bool
+		var encoding int32
+		var collate, ctype, locale sql.NullString
+		if err := rows.Scan(&schema, &name, &provider, &deterministic,
+			&encoding, &collate, &ctype, &locale); err != nil {
+			return fmt.Errorf("scan collation row: %w", err)
+		}
+		opts := []string{}
+		switch provider {
+		case "i":
+			opts = append(opts, "provider = icu")
+		case "c":
+			opts = append(opts, "provider = libc")
+		}
+		if locale.Valid && locale.String != "" {
+			opts = append(opts, "locale = '"+strings.ReplaceAll(locale.String, "'", "''")+"'")
+		} else {
+			if collate.Valid && collate.String != "" {
+				opts = append(opts, "lc_collate = '"+strings.ReplaceAll(collate.String, "'", "''")+"'")
+			}
+			if ctype.Valid && ctype.String != "" {
+				opts = append(opts, "lc_ctype = '"+strings.ReplaceAll(ctype.String, "'", "''")+"'")
+			}
+		}
+		if encoding != -1 {
+			var enc string
+			if err := d.conn.QueryRow(d.ctxOrBg(),
+				"SELECT pg_catalog.pg_encoding_to_char($1)", encoding).Scan(&enc); err == nil && enc != "" {
+				opts = append(opts, "encoding = '"+enc+"'")
+			}
+		}
+		if !deterministic {
+			opts = append(opts, "deterministic = false")
+		}
+		log.Trace("postgres", "collation dumped", "database", dbName, "collation", schema+"."+name)
+		fmt.Fprintf(w, "\n-- Collation: %s.%s\nCREATE COLLATION %s.%s (%s);\n",
+			schema, name, quotePGIdent(schema), quotePGIdent(name), strings.Join(opts, ", "))
+	}
+	return rows.Err()
+}
+
 func (d *Dumper) dumpComments(w io.Writer, dbName string) error {
 	start := time.Now()
 	rows, err := d.conn.Query(d.ctxOrBg(),
@@ -1530,13 +1708,14 @@ func (d *Dumper) dumpComments(w io.Writer, dbName string) error {
 	return nil
 }
 
-func (d *Dumper) dumpTypes(w io.Writer, dbName string) error {
+func (d *Dumper) dumpTypes(w io.Writer, dbName string) ([]string, error) {
 	start := time.Now()
 	refs, err := d.listUserTypes()
 	if err != nil {
-		return err
+		return nil, err
 	}
 
+	var domainChecks []string
 	count := 0
 	for _, r := range refs {
 		schema, name, kind := r.schema, r.name, r.kind
@@ -1551,6 +1730,14 @@ func (d *Dumper) dumpTypes(w io.Writer, dbName string) error {
 			continue
 		}
 		count++
+		if kind == "d" {
+			if chk, err := d.getDomainChecks(schema, name); err == nil && chk != "" {
+				domainChecks = append(domainChecks, chk)
+			} else if err != nil {
+				log.Trace("postgres", "domain checks unavailable", "database", dbName,
+					"type", schema+"."+name, "error", err.Error())
+			}
+		}
 		log.Trace("postgres", "type dumped", "database", dbName,
 			"type", schema+"."+name, "kind", kind)
 		fmt.Fprintf(w, "\n-- Type: %s.%s\n%s\n", schema, name, def)
@@ -1572,7 +1759,7 @@ func (d *Dumper) dumpTypes(w io.Writer, dbName string) error {
 	}
 	log.Debug("postgres", "types done", "database", dbName, "count", count,
 		"elapsed", time.Since(start).Round(time.Millisecond).String())
-	return nil
+	return domainChecks, nil
 }
 
 func (d *Dumper) dumpViews(w io.Writer, dbName string) error {
@@ -2060,6 +2247,7 @@ func (d *Dumper) getCheckConstraints(schema, table string) (string, error) {
 			"JOIN pg_catalog.pg_class t ON t.oid = c.conrelid "+
 			"JOIN pg_catalog.pg_namespace n ON n.oid = t.relnamespace "+
 			"WHERE n.nspname = $1 AND t.relname = $2 AND c.contype = 'c' "+
+			"AND c.conislocal "+
 			"ORDER BY c.conname", schema, table)
 	if err != nil {
 		return "", err
@@ -2086,13 +2274,18 @@ func (d *Dumper) getCreateTable(schema, table string) (string, error) {
 			"       format_type(a.atttypid, a.atttypmod) AS typ, "+
 			"       a.attnotnull, "+
 			"       pg_get_expr(d.adbin, d.adrelid) AS defexpr, "+
-			"       a.attidentity, a.attgenerated "+
+			"       a.attidentity, a.attgenerated, a.attislocal, "+
+			"       cn.nspname, c.collname "+
 			"FROM pg_catalog.pg_attribute a "+
-			"JOIN pg_catalog.pg_class c ON c.oid = a.attrelid "+
-			"JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "+
+			"JOIN pg_catalog.pg_class c0 ON c0.oid = a.attrelid "+
+			"JOIN pg_catalog.pg_namespace n ON n.oid = c0.relnamespace "+
+			"JOIN pg_catalog.pg_type t ON t.oid = a.atttypid "+
 			"LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum AND a.atthasdef "+
-			"WHERE n.nspname = $1 AND c.relname = $2 AND a.attnum > 0 AND NOT a.attisdropped "+
-			"ORDER BY a.attnum", schema, table)
+			"LEFT JOIN pg_catalog.pg_collation c ON c.oid = a.attcollation "+
+			"  AND a.attcollation NOT IN (0, t.typcollation) AND a.attcollation <> $3::oid "+
+			"LEFT JOIN pg_catalog.pg_namespace cn ON cn.oid = c.collnamespace "+
+			"WHERE n.nspname = $1 AND c0.relname = $2 AND a.attnum > 0 AND NOT a.attisdropped "+
+			"ORDER BY a.attnum", schema, table, d.dbDefaultCollationOID())
 	if err != nil {
 		return "", fmt.Errorf("get columns: %w", err)
 	}
@@ -2100,14 +2293,15 @@ func (d *Dumper) getCreateTable(schema, table string) (string, error) {
 	type colDef struct {
 		col, typ, identity, generated string
 		defStr                        string
-		notNull                       bool
+		collSchema, collName          string
+		notNull, isLocal              bool
 	}
 	var cols []colDef
 	for rows.Next() {
 		var col, typ, identity, generated string
-		var defExpr sql.NullString
-		var notNull bool
-		if err := rows.Scan(&col, &typ, &notNull, &defExpr, &identity, &generated); err != nil {
+		var defExpr, collSchema, collName sql.NullString
+		var notNull, isLocal bool
+		if err := rows.Scan(&col, &typ, &notNull, &defExpr, &identity, &generated, &isLocal, &collSchema, &collName); err != nil {
 			rows.Close()
 			return "", fmt.Errorf("scan column row: %w", err)
 		}
@@ -2115,7 +2309,11 @@ func (d *Dumper) getCreateTable(schema, table string) (string, error) {
 		if defExpr.Valid {
 			defStr = defExpr.String
 		}
-		cols = append(cols, colDef{col, typ, identity, generated, defStr, notNull})
+		cs, cn := "", ""
+		if collSchema.Valid && collName.Valid {
+			cs, cn = collSchema.String, collName.String
+		}
+		cols = append(cols, colDef{col, typ, identity, generated, defStr, cs, cn, notNull, isLocal})
 	}
 	scanErr := rows.Err()
 	rows.Close()
@@ -2144,6 +2342,7 @@ func (d *Dumper) getCreateTable(schema, table string) (string, error) {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "DROP TABLE IF EXISTS %s.%s;\n", quotePGIdent(schema), quotePGIdent(table))
 	fmt.Fprintf(&sb, "CREATE TABLE %s.%s (", quotePGIdent(schema), quotePGIdent(table))
+	inhParents, _ := d.getInheritParents(schema, table)
 	var first = true
 	for _, c := range cols {
 		col, typ, identity, generated := c.col, c.typ, c.identity, c.generated
@@ -2154,6 +2353,12 @@ func (d *Dumper) getCreateTable(schema, table string) (string, error) {
 			sb.WriteString(",")
 		}
 		sb.WriteString("\n    " + quotePGIdent(col) + " " + typ)
+		if len(inhParents) > 0 && !c.isLocal {
+			continue
+		}
+		if c.collName != "" {
+			sb.WriteString(" COLLATE " + quotePGIdent(c.collSchema) + "." + quotePGIdent(c.collName))
+		}
 		if nn, ok := notNullNames[col]; ok {
 			sb.WriteString(" CONSTRAINT " + quotePGIdent(nn))
 		}
@@ -2188,6 +2393,9 @@ func (d *Dumper) getCreateTable(schema, table string) (string, error) {
 	partitionBy, err := d.getPartitionInfo(schema, table)
 	if err == nil && partitionBy != "" {
 		sb.WriteString(" " + partitionBy)
+	}
+	if len(inhParents) > 0 {
+		sb.WriteString(" INHERITS (" + strings.Join(inhParents, ", ") + ")")
 	}
 	sb.WriteString(";")
 
@@ -2243,6 +2451,7 @@ func (d *Dumper) getForeignKeys(schema, table string) (string, error) {
 			"JOIN pg_catalog.pg_class t ON t.oid = c.conrelid "+
 			"JOIN pg_catalog.pg_namespace n ON n.oid = t.relnamespace "+
 			"WHERE n.nspname = $1 AND t.relname = $2 AND c.contype = 'f' "+
+			"AND c.conislocal "+
 			"ORDER BY c.conname", schema, table)
 	if err != nil {
 		return "", err
@@ -2263,6 +2472,60 @@ func (d *Dumper) getForeignKeys(schema, table string) (string, error) {
 	return sb.String(), rows.Err()
 }
 
+func (d *Dumper) getExclusionConstraints(schema, table string) (string, error) {
+	rows, err := d.conn.Query(d.ctxOrBg(),
+		"SELECT c.conname, pg_get_constraintdef(c.oid) "+
+			"FROM pg_catalog.pg_constraint c "+
+			"JOIN pg_catalog.pg_class t ON t.oid = c.conrelid "+
+			"JOIN pg_catalog.pg_namespace n ON n.oid = t.relnamespace "+
+			"WHERE n.nspname = $1 AND t.relname = $2 AND c.contype = 'x' "+
+			"AND c.conislocal "+
+			"ORDER BY c.conname", schema, table)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	var sb strings.Builder
+	for rows.Next() {
+		var conname, def string
+		if err := rows.Scan(&conname, &def); err != nil {
+			return "", err
+		}
+		if def == "" {
+			continue
+		}
+		fmt.Fprintf(&sb, "ALTER TABLE ONLY %s.%s ADD CONSTRAINT %s %s;\n",
+			quotePGIdent(schema), quotePGIdent(table), quotePGIdent(conname), def)
+	}
+	return sb.String(), rows.Err()
+}
+
+func (d *Dumper) getInheritParents(schema, table string) ([]string, error) {
+	rows, err := d.conn.Query(d.ctxOrBg(),
+		"SELECT pn.nspname, p.relname "+
+			"FROM pg_catalog.pg_inherits i "+
+			"JOIN pg_catalog.pg_class c ON c.oid = i.inhrelid "+
+			"JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "+
+			"JOIN pg_catalog.pg_class p ON p.oid = i.inhparent "+
+			"JOIN pg_catalog.pg_namespace pn ON pn.oid = p.relnamespace "+
+			"WHERE n.nspname = $1 AND c.relname = $2 "+
+			"AND c.relispartition = false AND p.relkind IN ('r', 'p') "+
+			"ORDER BY pn.nspname, p.relname", schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var pschema, pname string
+		if err := rows.Scan(&pschema, &pname); err != nil {
+			return nil, err
+		}
+		out = append(out, quotePGIdent(pschema)+"."+quotePGIdent(pname))
+	}
+	return out, rows.Err()
+}
+
 func (d *Dumper) getIndexes(schema, table string) (string, error) {
 	rows, err := d.conn.Query(d.ctxOrBg(),
 		"SELECT i.indexrelid::regclass, pg_get_indexdef(i.indexrelid), i.indisprimary "+
@@ -2270,8 +2533,8 @@ func (d *Dumper) getIndexes(schema, table string) (string, error) {
 			"JOIN pg_catalog.pg_class c ON c.oid = i.indrelid "+
 			"JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "+
 			"WHERE n.nspname = $1 AND c.relname = $2 AND i.indisprimary = false "+
-			"AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_constraint uc "+
-			"  WHERE uc.conindid = i.indexrelid AND uc.contype = 'u')",
+			"AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_constraint xc "+
+			"  WHERE xc.conindid = i.indexrelid)",
 		schema, table)
 	if err != nil {
 		return "", err
@@ -2310,7 +2573,7 @@ func (d *Dumper) getPrimaryKey(schema, table string) (string, error) {
 			"JOIN pg_catalog.pg_class t ON t.oid = c.conrelid "+
 			"JOIN pg_catalog.pg_namespace n ON n.oid = t.relnamespace "+
 			"WHERE n.nspname = $1 AND t.relname = $2 "+
-			"  AND c.contype = 'p' LIMIT 1", schema, table).Scan(&conname, &def)
+			"  AND c.contype = 'p' AND c.conislocal LIMIT 1", schema, table).Scan(&conname, &def)
 	if err != nil {
 		return "", err
 	}
@@ -2328,6 +2591,7 @@ func (d *Dumper) getUniqueConstraints(schema, table string) (string, error) {
 			"JOIN pg_catalog.pg_class t ON t.oid = c.conrelid "+
 			"JOIN pg_catalog.pg_namespace n ON n.oid = t.relnamespace "+
 			"WHERE n.nspname = $1 AND t.relname = $2 AND c.contype = 'u' "+
+			"AND c.conislocal "+
 			"ORDER BY c.conname", schema, table)
 	if err != nil {
 		return "", err
@@ -2783,24 +3047,6 @@ func (d *Dumper) typeDef(schema, name, kind string) (string, error) {
 			sb.WriteString(" NOT NULL")
 		}
 		sb.WriteString(";")
-		rows, err := d.conn.Query(ctx,
-			"SELECT pg_get_constraintdef(c.oid) FROM pg_catalog.pg_constraint c "+
-				"JOIN pg_catalog.pg_type t ON t.oid = c.contypid "+
-				"JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace "+
-				"WHERE n.nspname = $1 AND t.typname = $2 ORDER BY c.conname",
-			schema, name)
-		if err == nil {
-			for rows.Next() {
-				var cdef string
-				if err := rows.Scan(&cdef); err != nil {
-					break
-				}
-				if cdef != "" {
-					fmt.Fprintf(&sb, "\nALTER DOMAIN %s ADD %s;", qn, cdef)
-				}
-			}
-			rows.Close()
-		}
 		return sb.String(), nil
 	case "r":
 		var subtype, canonical, diff string
@@ -2840,6 +3086,33 @@ func (d *Dumper) typeDef(schema, name, kind string) (string, error) {
 			qn, qn, rng), nil
 	}
 	return "", fmt.Errorf("unknown type kind %q", kind)
+}
+
+func (d *Dumper) getDomainChecks(schema, name string) (string, error) {
+	rows, err := d.conn.Query(d.ctxOrBg(),
+		"SELECT c.conname, pg_get_constraintdef(c.oid) FROM pg_catalog.pg_constraint c "+
+			"JOIN pg_catalog.pg_type t ON t.oid = c.contypid "+
+			"JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace "+
+			"WHERE n.nspname = $1 AND t.typname = $2 AND c.contype = 'c' ORDER BY c.conname",
+		schema, name)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	qn := quotePGIdent(schema) + "." + quotePGIdent(name)
+	var sb strings.Builder
+	for rows.Next() {
+		var conname, cdef string
+		if err := rows.Scan(&conname, &cdef); err != nil {
+			return "", err
+		}
+		if cdef == "" {
+			continue
+		}
+		fmt.Fprintf(&sb, "ALTER DOMAIN %s ADD CONSTRAINT %s %s;\n",
+			qn, quotePGIdent(conname), cdef)
+	}
+	return sb.String(), rows.Err()
 }
 
 func (d *Dumper) typeGrants(schema, name string) ([]pgGrant, error) {

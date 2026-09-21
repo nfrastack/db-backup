@@ -34,10 +34,15 @@
         - strip DEFINER and own by restoring user
         - shrink insert batches on small max_allowed_packet
       - (postgres) pg_dump parity
-        - dump PARTITION OF with one COPY per partition
+        - dump partitions as CREATE plus post data ATTACH with one COPY per partition
         - dump comments, constraints, extensions, grants, materialized views, rules, statistics
-        - dump extensions in dependency order, skip plpgsql
+        - dump custom collations and per column COLLATE
+        - dump domain CHECKs after functions
+        - dump exclusion constraints data
+        - dump extensions in dependency order
         - dump functions before tables
+        - dump inherited tables parents first
+        - dump partition and inheritance data with ONLY statements
         - dump user aggregates as CREATE AGGREGATE
         - dump named not NULLs
         - dump referenced largeobjects from oid columns
