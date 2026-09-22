@@ -148,15 +148,17 @@ func (d *Dumper) copyData(w io.Writer, dbName, schema, table string) error {
 
 	fallbackCols := map[string]bool{}
 	defer func() {
-		if len(fallbackCols) > 0 {
-			names := make([]string, 0, len(fallbackCols))
-			for n := range fallbackCols {
-				names = append(names, n)
-			}
-			sort.Strings(names)
-			log.Trace("postgres", "generic COPY formatting", "database", dbName,
-				"table", schema+"."+table, "columns", strings.Join(names, ","))
+		if len(fallbackCols) == 0 {
+			return
 		}
+		names := make([]string, 0, len(fallbackCols))
+		for n := range fallbackCols {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		cols := strings.Join(names, ",")
+		log.Warn("postgres", "generic COPY formatting used - verify restored data", "database", dbName,
+			"table", schema+"."+table, "columns", cols)
 	}()
 
 	var rowCount int

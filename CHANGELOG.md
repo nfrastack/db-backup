@@ -58,6 +58,7 @@
         - dump quoting rules for json data
         - dump encode (var)bit, bytea, (multi)range, uuid as plain text
         - dump seperate a constraint per transaction
+        - dump warn on COPY fall back columns
       - (postgres) restore parity
         - allow jsonb values properly
         - change order of foreign key creation
