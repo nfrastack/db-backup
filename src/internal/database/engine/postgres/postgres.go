@@ -86,19 +86,25 @@ func (d *Dumper) copyData(w io.Writer, dbName, schema, table string) error {
 	generated := map[string]bool{}
 	var orderedCols []string
 	if crows, err := d.conn.Query(d.ctxOrBg(),
-		"SELECT a.attname, (a.attgenerated != '') AS isgen FROM pg_catalog.pg_attribute a "+
+		"SELECT a.attname, (a.attgenerated != '') AS isgen, a.atttypid::bigint, t.typcategory::text, coalesce(et.typcategory::text, '') AS elemcat FROM pg_catalog.pg_attribute a "+
 			"JOIN pg_catalog.pg_class c ON c.oid = a.attrelid "+
 			"JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "+
+			"JOIN pg_catalog.pg_type t ON t.oid = a.atttypid "+
+			"LEFT JOIN pg_catalog.pg_type et ON et.oid = t.typelem "+
 			"WHERE n.nspname = $1 AND c.relname = $2 AND a.attnum > 0 AND NOT a.attisdropped "+
 			"ORDER BY a.attnum", schema, table); err == nil {
 		for crows.Next() {
-			var name string
+			var name, cat, elemcat string
 			var isgen bool
-			if err := crows.Scan(&name, &isgen); err != nil {
+			var typid int64
+			if err := crows.Scan(&name, &isgen, &typid, &cat, &elemcat); err != nil {
+				orderedCols = nil
 				break
 			}
 			if isgen {
 				generated[name] = true
+			} else if pgCopyTextCast(uint32(typid), cat, elemcat) {
+				orderedCols = append(orderedCols, quotePGIdent(name)+"::text")
 			} else {
 				orderedCols = append(orderedCols, quotePGIdent(name))
 			}
@@ -106,7 +112,7 @@ func (d *Dumper) copyData(w io.Writer, dbName, schema, table string) error {
 		crows.Close()
 	}
 	query := "SELECT * FROM ONLY " + quotePGIdent(schema) + "." + quotePGIdent(table)
-	if len(generated) > 0 && len(orderedCols) > 0 {
+	if len(orderedCols) > 0 {
 		query = "SELECT " + strings.Join(orderedCols, ", ") + " FROM ONLY " + quotePGIdent(schema) + "." + quotePGIdent(table)
 	}
 	rows, err := d.conn.Query(d.ctxOrBg(), query, pgx.QueryResultFormats{pgx.TextFormatCode})
@@ -3219,6 +3225,24 @@ func (d *Dumper) ownerOf(schema, name string) (string, error) {
 			"JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "+
 			"WHERE n.nspname = $1 AND c.relname = $2", schema, name).Scan(&owner)
 	return owner, err
+}
+
+func pgCopyTextCast(typid uint32, cat, elemcat string) bool {
+	switch typid {
+	case pgOIDOIDBytea, pgOIDOIDJSON, pgOIDOIDJSONB, pgOIDOIDJSONArray, pgOIDOIDJSONBArray, pgOIDOIDUUID:
+		return false
+	}
+	switch cat {
+	case "B", "N", "S", "D", "T", "V", "E", "R":
+		return false
+	case "A":
+		switch elemcat {
+		case "B", "N", "S", "D", "T", "V", "E", "R":
+			return false
+		}
+		return true
+	}
+	return true
 }
 
 type pgGrant struct {
