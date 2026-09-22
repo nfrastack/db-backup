@@ -49,13 +49,15 @@ type Client struct {
 const clientTimeout = 10 * time.Second
 
 type VersionResponse struct {
-	Latest         string `json:"latest"`
-	DateReleased   string `json:"date_released,omitempty"`
-	Critical       bool   `json:"critical,omitempty"`
-	DownloadURL    string `json:"download_url,omitempty"`
-	ChangelogURL   string `json:"changelog_url,omitempty"`
-	ImageLatest    string `json:"image_latest,omitempty"`
-	LicenseRevoked bool   `json:"license_revoked,omitempty"`
+	Latest         string           `json:"latest"`
+	DateReleased   string           `json:"date_released,omitempty"`
+	Critical       bool             `json:"critical,omitempty"`
+	DownloadURL    string           `json:"download_url,omitempty"`
+	ChangelogURL   string           `json:"changelog_url,omitempty"`
+	ImageLatest    string           `json:"image_latest,omitempty"`
+	LicenseRevoked bool             `json:"license_revoked,omitempty"`
+	Channel        string           `json:"channel,omitempty"`
+	Stable         *VersionResponse `json:"stable,omitempty"`
 }
 
 func (c *Client) CheckVersion(ctx context.Context, body string) (*VersionResponse, error) {

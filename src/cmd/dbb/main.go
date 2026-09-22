@@ -637,6 +637,9 @@ Commands:
 	log.SetTimeQuoted(timeQuoted)
 
 	statsMgr, statsTracker = stats.Setup(globalConfigPaths, stats.SharedKey(), globalContainer, globalStateDir)
+	if statsMgr != nil {
+		statsMgr.SetChannel(resolveChannel(Version))
+	}
 	startEditionBackgroundServices()
 	setupLicenseWatch()
 

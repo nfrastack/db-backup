@@ -24,6 +24,7 @@
       - default backup filename tag omits empty db/host components
       - split_db revert to default true
       - update stats schema to 5
+      - version check on beta/edge also notifies if stable updated
       - (backup) create_latest strips empty parameters when naming
       - (container) halt container and output error code value when manual_run_forever=false
       - (container) s3 tls configuration properly generates in config

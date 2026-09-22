@@ -132,5 +132,10 @@ func versionCheckCmd(format string) int {
 	if img := stats.ImageVersion(); stats.IsImageStale(img, resp.ImageLatest) {
 		fmt.Printf("New container image available: %s (running %s)\n", resp.ImageLatest, img)
 	}
+	if resp.Stable != nil && resp.Stable.Latest != "" && resp.Stable.Latest != resp.Latest &&
+		stats.IsNewer(Version, resp.Stable.Latest) {
+		fmt.Printf("Stable release available: %s (released %s) - you are running %s on the %s channel\n",
+			resp.Stable.Latest, resp.Stable.DateReleased, Version, resp.Channel)
+	}
 	return 0
 }

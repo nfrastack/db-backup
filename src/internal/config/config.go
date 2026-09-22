@@ -504,10 +504,10 @@ func (v *CheckNewVersionConfig) Validate() error {
 		return nil
 	}
 	switch v.Frequency {
-	case "", "daily", "weekly", "monthly":
+	case "", "hourly", "daily", "weekly", "monthly":
 		return nil
 	}
-	return fmt.Errorf("check_new_version.frequency must be daily, weekly or monthly (got %q)", v.Frequency)
+	return fmt.Errorf("check_new_version.frequency must be hourly, daily, weekly or monthly (got %q)", v.Frequency)
 }
 
 func (c *ConnectivityConfig) Validate() error {
