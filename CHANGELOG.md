@@ -49,6 +49,7 @@
         - dump extensions in dependency order
         - dump functions before tables
         - dump inherited tables with inline INHERITS, parents first
+        - dump create multiranges via multirange_type_name
         - dump partition and inheritance data with ONLY statements
         - dump PUBLCIATIONS with tables and options and skip SUBSCRIPTIONs
         - dump user aggregates as CREATE AGGREGATE
