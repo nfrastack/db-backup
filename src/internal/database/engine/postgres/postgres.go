@@ -2242,6 +2242,20 @@ const (
 	pgOIDOIDJSONBArray = 3807
 )
 
+func encodeCopyFloat(f float64) string { return strconv.FormatFloat(f, 'g', -1, 64) }
+
+func encodeCopyVec2(p pgtype.Vec2) string {
+	return "(" + encodeCopyFloat(p.X) + "," + encodeCopyFloat(p.Y) + ")"
+}
+
+func encodeCopyVecList(ps []pgtype.Vec2, open, close string) string {
+	parts := make([]string, len(ps))
+	for i, p := range ps {
+		parts[i] = encodeCopyVec2(p)
+	}
+	return open + strings.Join(parts, ",") + close
+}
+
 func encodeCopyInterval(v pgtype.Interval) string {
 	var parts []string
 	if v.Months != 0 {
@@ -2390,6 +2404,44 @@ func encodeCopyValue(val any, oid uint32) (string, bool) {
 			}
 		}
 		return sb.String(), false
+	case pgtype.Point:
+		if !v.Valid {
+			return "\\N", false
+		}
+		return encodeCopyVec2(v.P), false
+	case pgtype.Lseg:
+		if !v.Valid {
+			return "\\N", false
+		}
+		return "[" + encodeCopyVec2(v.P[0]) + "," + encodeCopyVec2(v.P[1]) + "]", false
+	case pgtype.Box:
+		if !v.Valid {
+			return "\\N", false
+		}
+		return encodeCopyVec2(v.P[0]) + "," + encodeCopyVec2(v.P[1]), false
+	case pgtype.Polygon:
+		if !v.Valid {
+			return "\\N", false
+		}
+		return encodeCopyVecList(v.P, "(", ")"), false
+	case pgtype.Path:
+		if !v.Valid {
+			return "\\N", false
+		}
+		if v.Closed {
+			return encodeCopyVecList(v.P, "(", ")"), false
+		}
+		return encodeCopyVecList(v.P, "[", "]"), false
+	case pgtype.Line:
+		if !v.Valid {
+			return "\\N", false
+		}
+		return "{" + encodeCopyFloat(v.A) + "," + encodeCopyFloat(v.B) + "," + encodeCopyFloat(v.C) + "}", false
+	case pgtype.Circle:
+		if !v.Valid {
+			return "\\N", false
+		}
+		return "<" + encodeCopyVec2(v.P) + "," + encodeCopyFloat(v.R) + ">", false
 	case fmt.Stringer:
 		return v.String(), false
 	}

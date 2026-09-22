@@ -44,6 +44,7 @@
         - dump custom collations and per column COLLATE
         - dump default privileges
         - dump domain CHECKs after functions
+        - dump encode geometric types explicitly
         - dump exclusion constraints post data dump
         - dump extensions in dependency order
         - dump functions before tables
