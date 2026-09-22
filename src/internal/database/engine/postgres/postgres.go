@@ -3116,7 +3116,7 @@ func (d *Dumper) listUserTypes() ([]userTypeRef, error) {
 			"JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace "+
 			"WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') "+
 			"AND n.nspname NOT LIKE 'pg\\_%' "+
-			"AND t.typtype IN ('e', 'c', 'd', 'r', 'm') "+
+			"AND t.typtype IN ('e', 'c', 'd', 'r') "+
 			"AND (t.typrelid = 0 OR (SELECT c.relkind FROM pg_catalog.pg_class c WHERE c.oid = t.typrelid) = 'c') "+
 			"AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = t.oid AND dd.deptype = 'e') "+
 			"ORDER BY t.oid")
@@ -3424,21 +3424,19 @@ func (d *Dumper) typeDef(schema, name, kind string) (string, error) {
 		if diff != "" && diff != "-" {
 			opts += ", subtype_diff = " + diff
 		}
+		var mrSchema, mrName string
+		if err := d.conn.QueryRow(ctx,
+			"SELECT n2.nspname, t2.typname FROM pg_catalog.pg_range r "+
+				"JOIN pg_catalog.pg_type rt ON rt.oid = r.rngtypid "+
+				"JOIN pg_catalog.pg_namespace n ON n.oid = rt.typnamespace "+
+				"JOIN pg_catalog.pg_type t2 ON t2.oid = r.rngmultitypid "+
+				"JOIN pg_catalog.pg_namespace n2 ON n2.oid = t2.typnamespace "+
+				"WHERE n.nspname = $1 AND rt.typname = $2", schema, name).
+			Scan(&mrSchema, &mrName); err == nil {
+			opts += ", multirange_type_name = " + quotePGIdent(mrSchema) + "." + quotePGIdent(mrName)
+		}
 		return fmt.Sprintf("DROP TYPE IF EXISTS %s;\nCREATE TYPE %s AS RANGE (%s);",
 			qn, qn, opts), nil
-	case "m":
-		var rng string
-		err := d.conn.QueryRow(ctx,
-			"SELECT r.rngtypid::regtype::text FROM pg_catalog.pg_range r "+
-				"JOIN pg_catalog.pg_type t ON t.oid = r.rngmultitypid "+
-				"JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace "+
-				"WHERE n.nspname = $1 AND t.typname = $2", schema, name).
-			Scan(&rng)
-		if err != nil {
-			return "", err
-		}
-		return fmt.Sprintf("DROP TYPE IF EXISTS %s;\nCREATE TYPE %s AS MULTIRANGE (multirange_range_name = %s);",
-			qn, qn, rng), nil
 	}
 	return "", fmt.Errorf("unknown type kind %q", kind)
 }
