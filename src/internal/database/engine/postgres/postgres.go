@@ -268,7 +268,7 @@ func (d *Dumper) dumpACLs(w io.Writer, dbName string, tables []string) error {
 	grantRelation := func(kind, schema, name string) {
 		grants, err := d.relationGrants(schema, name)
 		if err != nil {
-			log.Trace("postgres", "grants unavailable", "database", dbName,
+			log.Warn("postgres", "grants unavailable", "database", dbName,
 				"object", kind+" "+schema+"."+name, "error", err.Error())
 			return
 		}
@@ -310,7 +310,7 @@ func (d *Dumper) dumpACLs(w io.Writer, dbName string, tables []string) error {
 		viewRows.Close()
 		extMembers, extErr := d.extensionMembers()
 		if extErr != nil {
-			log.Trace("postgres", "extension members unavailable", "database", dbName,
+			log.Warn("postgres", "extension members unavailable", "database", dbName,
 				"error", extErr.Error())
 		}
 		for _, v := range views {
@@ -364,7 +364,7 @@ func (d *Dumper) dumpACLs(w io.Writer, dbName string, tables []string) error {
 		if f.acl != "" && f.acl != "{}" {
 			grants, err := d.funcGrants(schema, name, args)
 			if err != nil {
-				log.Trace("postgres", "grants unavailable", "database", dbName,
+				log.Warn("postgres", "grants unavailable", "database", dbName,
 					"object", "FUNCTION "+schema+"."+name, "error", err.Error())
 			} else if len(grants) > 0 {
 				grantCount += len(grants)
@@ -663,7 +663,7 @@ func (d *Dumper) dumpBlobs(w io.Writer, dbName string, tables []string) error {
 		}
 		cols, err := d.loColumns(parts[0], parts[1])
 		if err != nil {
-			log.Trace("postgres", "lo columns unavailable", "database", dbName,
+			log.Warn("postgres", "lo columns unavailable", "database", dbName,
 				"table", t, "error", err.Error())
 			continue
 		}
@@ -685,7 +685,7 @@ func (d *Dumper) dumpBlobs(w io.Writer, dbName string, tables []string) error {
 					quotePGIdent(parts[0])+"."+quotePGIdent(parts[1])+
 					" WHERE "+quotePGIdent(c)+" IS NOT NULL")
 			if err != nil {
-				log.Trace("postgres", "lo oids unreadable", "database", dbName,
+				log.Warn("postgres", "lo oids unreadable", "database", dbName,
 					"table", t, "column", c, "error", err.Error())
 				continue
 			}
@@ -900,7 +900,7 @@ func (d *Dumper) orderTablesByInheritance(dbName string, tables []string) []stri
 			"JOIN pg_catalog.pg_namespace pn ON pn.oid = p.relnamespace "+
 			"WHERE c.relispartition = false")
 	if err != nil {
-		log.Trace("postgres", "inheritance order unavailable", "database", dbName,
+		log.Warn("postgres", "inheritance order unavailable", "database", dbName,
 			"error", err.Error())
 		return tables
 	}
@@ -961,7 +961,7 @@ func (d *Dumper) dumpDrops(w io.Writer, dbName string, included []string) error 
 				quotePGIdent(s[0]), quotePGIdent(s[1]))
 		}
 	} else {
-		log.Trace("postgres", "sequence drops unavailable", "database", dbName, "error", err.Error())
+		log.Warn("postgres", "sequence drops unavailable", "database", dbName, "error", err.Error())
 	}
 	if types, err := d.listUserTypes(); err == nil {
 		for _, t := range types {
@@ -973,14 +973,14 @@ func (d *Dumper) dumpDrops(w io.Writer, dbName string, included []string) error 
 				quotePGIdent(t.schema), quotePGIdent(t.name))
 		}
 	} else {
-		log.Trace("postgres", "type drops unavailable", "database", dbName, "error", err.Error())
+		log.Warn("postgres", "type drops unavailable", "database", dbName, "error", err.Error())
 	}
 	if pubs, err := d.listPublications(); err == nil {
 		for _, p := range pubs {
 			fmt.Fprintf(w, "DROP PUBLICATION IF EXISTS %s;\n", quotePGIdent(p))
 		}
 	} else {
-		log.Trace("postgres", "publication drops unavailable", "database", dbName, "error", err.Error())
+		log.Warn("postgres", "publication drops unavailable", "database", dbName, "error", err.Error())
 	}
 	return nil
 }
@@ -1375,7 +1375,7 @@ func (d *Dumper) dumpPartitions(w io.Writer, dbName, schema, table string, schem
 			fmt.Fprintf(w, "ALTER TABLE %s.%s OWNER TO %s;\n\n",
 				quotePGIdent(pschema), quotePGIdent(pname), quotePGIdent(owner))
 		} else if err != nil {
-			log.Trace("postgres", "owner unavailable", "database", dbName,
+			log.Warn("postgres", "owner unavailable", "database", dbName,
 				"table", pschema+"."+pname, "error", err.Error())
 		}
 		if !schemaOnly {
@@ -1435,7 +1435,7 @@ func (d *Dumper) dumpSchemas(w io.Writer, dbName string, included []string) erro
 				quotePGIdent(s.name), quotePGIdent(s.owner))
 		}
 		if grants, err := d.schemaGrants(s.name); err != nil {
-			log.Trace("postgres", "schema grants unavailable", "database", dbName,
+			log.Warn("postgres", "schema grants unavailable", "database", dbName,
 				"schema", s.name, "error", err.Error())
 		} else if len(grants) > 0 {
 			fmt.Fprint(w, formatGrants("SCHEMA "+quotePGIdent(s.name), grants))
@@ -1465,7 +1465,7 @@ func (d *Dumper) dumpSequences(w io.Writer, dbName string) error {
 				"JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "+
 				"WHERE n.nspname = $1 AND c.relname = $2", schema, name).Scan(&opts)
 		if err != nil {
-			log.Trace("postgres", "sequence skipped", "database", dbName,
+			log.Warn("postgres", "sequence skipped", "database", dbName,
 				"sequence", schema+"."+name, "error", err.Error())
 			continue
 		}
@@ -1520,7 +1520,7 @@ func (d *Dumper) dumpSequenceValues(w io.Writer, dbName string) error {
 		var isCalled bool
 		if err := d.conn.QueryRow(d.ctxOrBg(),
 			"SELECT last_value, is_called FROM "+qn).Scan(&lastVal, &isCalled); err != nil {
-			log.Trace("postgres", "sequence value unreadable", "database", dbName,
+			log.Warn("postgres", "sequence value unreadable", "database", dbName,
 				"sequence", schema+"."+name, "error", err.Error())
 			continue
 		}
@@ -1551,7 +1551,7 @@ func (d *Dumper) dumpTable(w io.Writer, dbName, table string) ([]string, string,
 		fmt.Fprintf(w, "ALTER TABLE %s.%s OWNER TO %s;\n\n",
 			quotePGIdent(schema), quotePGIdent(tableName), quotePGIdent(owner))
 	} else if err != nil {
-		log.Trace("postgres", "owner unavailable", "database", dbName,
+		log.Warn("postgres", "owner unavailable", "database", dbName,
 			"table", schema+"."+tableName, "error", err.Error())
 	}
 
@@ -1570,13 +1570,13 @@ func (d *Dumper) dumpTable(w io.Writer, dbName, table string) ([]string, string,
 	if fk, err := d.getForeignKeys(schema, tableName); err == nil {
 		fkSQL = fk
 	} else {
-		log.Trace("postgres", "foreign keys unavailable", "database", dbName,
+		log.Warn("postgres", "foreign keys unavailable", "database", dbName,
 			"table", schema+"."+tableName, "error", err.Error())
 	}
 	if excl, err := d.getExclusionConstraints(schema, tableName); err == nil {
 		fkSQL += excl
 	} else {
-		log.Trace("postgres", "exclusion constraints unavailable", "database", dbName,
+		log.Warn("postgres", "exclusion constraints unavailable", "database", dbName,
 			"table", schema+"."+tableName, "error", err.Error())
 	}
 	if d.isPartitioned(schema, tableName) {
@@ -1934,7 +1934,7 @@ func (d *Dumper) dumpComments(w io.Writer, dbName string) error {
 			"AND c.relkind IN ('r', 'p', 'v', 'm', 'S', 'i') "+
 			"	ORDER BY n.nspname, c.relname, d.objsubid")
 	if err != nil {
-		log.Trace("postgres", "comments unavailable", "database", dbName,
+		log.Warn("postgres", "comments unavailable", "database", dbName,
 			"error", err.Error())
 		return nil
 	}
@@ -1953,13 +1953,13 @@ func (d *Dumper) dumpComments(w io.Writer, dbName string) error {
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		log.Trace("postgres", "comments unavailable", "database", dbName,
+		log.Warn("postgres", "comments unavailable", "database", dbName,
 			"error", err.Error())
 		return nil
 	}
 	extMembers, extErr := d.extensionMembers()
 	if extErr != nil {
-		log.Trace("postgres", "extension members unavailable", "database", dbName,
+		log.Warn("postgres", "extension members unavailable", "database", dbName,
 			"error", extErr.Error())
 	}
 	kindKw := map[string]string{
@@ -2034,7 +2034,7 @@ func (d *Dumper) dumpTypes(w io.Writer, dbName string) ([]string, error) {
 				quotePGIdent(schema), quotePGIdent(name), quotePGIdent(owner))
 		}
 		if grants, err := d.typeGrants(schema, name); err != nil {
-			log.Trace("postgres", "grants unavailable", "database", dbName,
+			log.Warn("postgres", "grants unavailable", "database", dbName,
 				"object", "TYPE "+schema+"."+name, "error", err.Error())
 		} else if len(grants) > 0 {
 			fmt.Fprint(w, formatGrants(
@@ -2070,7 +2070,7 @@ func (d *Dumper) dumpViews(w io.Writer, dbName string) error {
 
 	extMembers, extErr := d.extensionMembers()
 	if extErr != nil {
-		log.Trace("postgres", "extension members unavailable", "database", dbName,
+		log.Warn("postgres", "extension members unavailable", "database", dbName,
 			"error", extErr.Error())
 	}
 
@@ -2092,7 +2092,7 @@ func (d *Dumper) dumpViews(w io.Writer, dbName string) error {
 			fmt.Fprintf(w, "ALTER VIEW %s.%s OWNER TO %s;\n",
 				quotePGIdent(schema), quotePGIdent(name), quotePGIdent(owner))
 		} else if err != nil {
-			log.Trace("postgres", "owner unavailable", "database", dbName,
+			log.Warn("postgres", "owner unavailable", "database", dbName,
 				"view", schema+"."+name, "error", err.Error())
 		}
 		fmt.Fprintf(w, "\n")
@@ -3036,7 +3036,7 @@ func (d *Dumper) listTables(dbName string) ([]string, error) {
 
 	extMembers, extErr := d.extensionMembers()
 	if extErr != nil {
-		log.Trace("postgres", "extension members unavailable", "database", dbName,
+		log.Warn("postgres", "extension members unavailable", "database", dbName,
 			"error", extErr.Error())
 	}
 
