@@ -142,7 +142,7 @@ func (m *Manager) LogStartup() {
 	if loc := log.Location(); loc != nil {
 		now = now.In(loc)
 	}
-	log.Info("version-check", "version check enabled - you will be notified when a new version is available.",
+	log.Info("version-check", "version check enabled - you will be notified when a new version is available",
 		"frequency", m.versionCheckFrequency(),
 		"last_check", lastActivityInLoc(m.vstate.LastCheckAt),
 		"next_check", m.nextDue(m.vstate.LastCheckAt, m.versionCheckFrequency(), now))
