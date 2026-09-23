@@ -26,6 +26,7 @@ ENV \
 ARG \
     DBBACKUP_VERSION \
     DBBACKUP_COMMIT \
+    DBBACKUP_CHANNEL="auto" \
     GOLANG_VERSION="1.26.7"
 
 HEALTHCHECK \
@@ -82,7 +83,7 @@ RUN echo "" && \
     \
     create_user dbbackup 10000 dbbackup 10000 /var/lib/dbb && \
     cd /usr/src/db-backup && \
-    make build-release DBBACKUP_VERSION="${dbbver}" GIT_COMMIT="${dbbcommit}" CHANNEL=edge && \
+    make build-release DBBACKUP_VERSION="${dbbver}" GIT_COMMIT="${dbbcommit}" CHANNEL="${DBBACKUP_CHANNEL}" && \
     cp -aR \
                 dbb \
                 LICENSE\

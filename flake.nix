@@ -5,7 +5,7 @@
 
   outputs = { self, nixpkgs }:
     let
-      version = "5.0.4";
+      version = "5.0.4-beta";
       expectedGoVersion = "1.26.7";
 
       buildDate =
@@ -16,7 +16,7 @@
             date -u +%Y-%m-%dT%H:%M:%SZ > $out
           '';
         in builtins.readFile dateFile;
-      buildChannel = "edge";
+      buildChannel = "auto";
       buildCommit =
         if self ? dirtyShortRev && self.dirtyShortRev != null then self.dirtyShortRev
         else if self ? shortRev && self.shortRev != null then self.shortRev

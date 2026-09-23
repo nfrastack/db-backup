@@ -173,9 +173,23 @@ jobs:
             build_version="${base_tag}-dev-${short_sha}"
           fi
 
+          build_channel="edge"
+          if [ -z "$branch_name" ]; then
+            lower_ver=$(echo "$build_version" | tr '[:upper:]' '[:lower:]')
+            if echo "$lower_ver" | grep -qE '^dev([-+_.]|$)|^develop([-+_.]|$)|-g|-dev|[+]'; then
+              build_channel="edge"
+            elif echo "$lower_ver" | grep -qE '[-._]?(beta|rc|pre|preview)[-._]?[0-9]*$|(b|rc)[0-9]+$'; then
+              build_channel="beta"
+            else
+              build_channel="stable"
+            fi
+          fi
+          echo "build version: $build_version channel: $build_channel" >&2
+
           build_args="BASE_IMAGE=${INPUT_BASE_IMAGE}"
           build_args="${build_args}${build_args:+$'\n'}DBBACKUP_VERSION=${build_version}"
           build_args="${build_args}${build_args:+$'\n'}DBBACKUP_COMMIT=${short_sha}"
+          build_args="${build_args}${build_args:+$'\n'}DBBACKUP_CHANNEL=${build_channel}"
           if [ -n "${INPUT_BUILD_ARGS}" ]; then
             build_args="${build_args}${build_args:+$'\n'}${INPUT_BUILD_ARGS}"
           fi

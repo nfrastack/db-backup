@@ -10,8 +10,8 @@ GIT_DIRTY := $(if $(GIT_REV),$(shell git diff --quiet HEAD 2>/dev/null || echo -
 VERSION_DEV := $(if $(GIT_REV),$(VERSION_SOURCE)-g$(GIT_REV)$(GIT_DIRTY),$(VERSION_SOURCE))
 VERSION := $(shell if [ -n "$$DBBACKUP_VERSION" ] && [ "$$DBBACKUP_VERSION" != "dev" ]; then echo "$$DBBACKUP_VERSION"; else echo "$(VERSION_DEV)"; fi)
 GIT_COMMIT ?= $(shell if [ -n "$$DBBACKUP_COMMIT" ]; then echo "$$DBBACKUP_COMMIT"; else git rev-parse --short HEAD 2>/dev/null; fi)
-# edge (default) | beta | stable
-CHANNEL ?= edge
+# auto (default: infer from version) | edge | beta | stable
+CHANNEL ?= auto
 BUILD_TIME := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 BUILD_FLAGS := -X main.Version=$(VERSION) -X main.buildChannel=$(CHANNEL) -X main.buildCommit=$(GIT_COMMIT) -X main.buildDate=$(BUILD_TIME)
 BASE_IMAGE := docker.io/nfrastack/base:alpine_3.24
