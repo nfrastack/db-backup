@@ -22,7 +22,7 @@ var (
 )
 
 func NormalizeArtifact(value string) (string, error) {
-	value = strings.TrimSpace(value)
+	value = strings.Join(strings.Fields(value), "")
 	if value == "" {
 		return "", errors.New("empty license value")
 	}
@@ -48,7 +48,7 @@ func NormalizeArtifact(value string) (string, error) {
 }
 
 func decodeAnyBase64(s string) ([]byte, error) {
-	s = strings.TrimSpace(s)
+	s = strings.Join(strings.Fields(s), "")
 	for _, enc := range []*base64.Encoding{
 		base64.RawURLEncoding,
 		base64.URLEncoding,
