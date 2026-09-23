@@ -39,12 +39,13 @@ func cmdDump(args []string) int {
 	storagePath := fs.String("storage-path", config.StoragePath(), "Storage path/prefix (filesystem)")
 	storageProfile := fs.String("storage-profile", "", "Storage profile (resolved from -c <config>)")
 	strategy := fs.String("strategy", "full", "Backup strategy (full|incremental|differential)")
-	splitDB := fs.Bool("split-db", false, "Backup each database into its own file")
+	splitDB := fs.Bool("split-db", true, "Backup each database into its own file")
 	globalsOnly := fs.Bool("globals", false, "Backup only global objects (PostgreSQL roles, grants)")
 	withRoutines := fs.Bool("routines", true, "Include stored procedures and functions (MySQL/MariaDB)")
 	withEvents := fs.Bool("events", true, "Include scheduled events (MySQL/MariaDB)")
 	withTriggers := fs.Bool("triggers", true, "Include triggers (MySQL/MariaDB)")
 	withViews := fs.Bool("views", true, "Include views (MySQL/MariaDB)")
+	withRawBlobs := fs.Bool("raw-blobs", false, "Write BLOB/BINARY as escaped raw string (MySQL/MariaDB)")
 	tablesInclude := fs.String("tables-include", "", "Only these tables/collections (comma separated, glob supported)")
 	tablesExclude := fs.String("tables-exclude", "", "Skip these tables/collections (comma separated, glob supported)")
 	tablesSchemaOnly := fs.String("tables-schema-only", "", "Dump structure only for these tables (comma separated, * = all)")
@@ -173,6 +174,7 @@ func cmdDump(args []string) int {
 			Events:   withEvents,
 			Triggers: withTriggers,
 			Views:    withViews,
+			RawBlobs: withRawBlobs,
 		}
 		if *dbExclude != "" {
 			job.Databases.Exclude = runner.SplitCsv(*dbExclude)
@@ -182,6 +184,7 @@ func cmdDump(args []string) int {
 		job.Databases.Events = withEvents
 		job.Databases.Triggers = withTriggers
 		job.Databases.Views = withViews
+		job.Databases.RawBlobs = withRawBlobs
 	}
 	if *tablesInclude != "" || *tablesExclude != "" || *tablesSchemaOnly != "" {
 		if job.Databases == nil {

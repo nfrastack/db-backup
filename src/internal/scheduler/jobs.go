@@ -134,8 +134,8 @@ func restrictedMaintenanceOps(cfg *config.MaintenanceConfig) []string {
 func (s *Scheduler) runJob(ctx context.Context, job config.JobConfig, idx int) {
 	defer s.wg.Done()
 
-	if job.Connectivity == nil || !job.Connectivity.Enabled {
-		jlog(log.LevelWarn, "backup", job, "connectivity check disabled - backing up blindly", "status", "warn")
+	if !job.Connectivity.IsEnabled() {
+		jlog(log.LevelWarn, "backup", job, "connectivity check disabled - backing up without verification", "status", "warn")
 	}
 
 	scheduleDesc := job.Schedule.Describe()

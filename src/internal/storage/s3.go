@@ -19,6 +19,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/nfrastack/db-backup/internal/log"
 )
 
 const (
@@ -54,7 +56,9 @@ type s3ListObj struct {
 }
 
 func (s *s3Storage) Delete(ctx context.Context, filePath string) error {
-	u := s.requestURL(s.key(filePath))
+	key := s.key(filePath)
+	u := s.requestURL(key)
+	dst := s.host("") + "/" + s.bucket
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
@@ -64,12 +68,17 @@ func (s *s3Storage) Delete(ctx context.Context, filePath string) error {
 			case <-time.After(time.Duration(500*(1<<uint(attempt-1))) * time.Millisecond):
 			}
 		}
+		log.Trace("s3", "delete attempt",
+			"host", endpointHost(s.endpoint), "bucket", s.bucket, "key", key, "attempt", attempt, "status", "trace")
 		resp, err := s.do(ctx, http.MethodDelete, u, nil, 0, "")
 		if err != nil {
 			if ctx.Err() != nil {
 				return err
 			}
 			lastErr = err
+			log.Debug("s3", "delete attempt failed, retrying",
+				"host", endpointHost(s.endpoint), "bucket", s.bucket, "key", key,
+				"attempt", attempt, "error", err.Error(), "status", "debug")
 			continue
 		}
 		if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusOK {
@@ -79,9 +88,12 @@ func (s *s3Storage) Delete(ctx context.Context, filePath string) error {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		resp.Body.Close()
 		if !isRetryableStatus(resp.StatusCode) {
-			return fmt.Errorf("s3: delete: %s: %s", resp.Status, strings.TrimSpace(string(b)))
+			return fmt.Errorf("s3: delete %s: %s: %s", dst, resp.Status, strings.TrimSpace(string(b)))
 		}
-		lastErr = fmt.Errorf("s3: delete: %s: %s", resp.Status, strings.TrimSpace(string(b)))
+		lastErr = fmt.Errorf("s3: delete %s: %s: %s", dst, resp.Status, strings.TrimSpace(string(b)))
+		log.Debug("s3", "delete attempt failed, retrying",
+			"host", endpointHost(s.endpoint), "bucket", s.bucket, "key", key,
+			"attempt", attempt, "error", lastErr.Error(), "status", "debug")
 	}
 	if lastErr != nil {
 		return lastErr
@@ -90,7 +102,9 @@ func (s *s3Storage) Delete(ctx context.Context, filePath string) error {
 }
 
 func (s *s3Storage) Download(ctx context.Context, filePath string) (io.ReadCloser, int64, error) {
-	u := s.requestURL(s.key(filePath))
+	key := s.key(filePath)
+	u := s.requestURL(key)
+	dst := s.host("") + "/" + s.bucket
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
@@ -100,12 +114,17 @@ func (s *s3Storage) Download(ctx context.Context, filePath string) (io.ReadClose
 			case <-time.After(time.Duration(500*(1<<uint(attempt-1))) * time.Millisecond):
 			}
 		}
+		log.Trace("s3", "download attempt",
+			"host", endpointHost(s.endpoint), "bucket", s.bucket, "key", key, "attempt", attempt, "status", "trace")
 		resp, err := s.do(ctx, http.MethodGet, u, nil, 0, "")
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil, 0, err
 			}
 			lastErr = err
+			log.Debug("s3", "download attempt failed, retrying",
+				"host", endpointHost(s.endpoint), "bucket", s.bucket, "key", key,
+				"attempt", attempt, "error", err.Error(), "status", "debug")
 			continue
 		}
 		if resp.StatusCode == http.StatusOK {
@@ -114,14 +133,17 @@ func (s *s3Storage) Download(ctx context.Context, filePath string) (io.ReadClose
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		resp.Body.Close()
 		if !isRetryableStatus(resp.StatusCode) {
-			return nil, 0, fmt.Errorf("s3: download: %s: %s", resp.Status, strings.TrimSpace(string(b)))
+			return nil, 0, fmt.Errorf("s3: download %s: %s: %s", dst, resp.Status, strings.TrimSpace(string(b)))
 		}
-		lastErr = fmt.Errorf("s3: download: %s: %s", resp.Status, strings.TrimSpace(string(b)))
+		lastErr = fmt.Errorf("s3: download %s: %s: %s", dst, resp.Status, strings.TrimSpace(string(b)))
+		log.Debug("s3", "download attempt failed, retrying",
+			"host", endpointHost(s.endpoint), "bucket", s.bucket, "key", key,
+			"attempt", attempt, "error", lastErr.Error(), "status", "debug")
 	}
 	if lastErr != nil {
 		return nil, 0, lastErr
 	}
-	return nil, 0, fmt.Errorf("s3: download: failed after retries")
+	return nil, 0, fmt.Errorf("s3: download %s: failed after retries", dst)
 }
 
 func (s *s3Storage) List(ctx context.Context, prefix string) ([]Entry, error) {
@@ -132,6 +154,7 @@ func (s *s3Storage) List(ctx context.Context, prefix string) ([]Entry, error) {
 
 	var entries []Entry
 	continuation := ""
+	dst := s.host("") + "/" + s.bucket
 	for {
 		u := s.listURL(searchPrefix, continuation)
 		var resp *http.Response
@@ -145,24 +168,32 @@ func (s *s3Storage) List(ctx context.Context, prefix string) ([]Entry, error) {
 				case <-time.After(time.Duration(500*(1<<uint(attempt-1))) * time.Millisecond):
 				}
 			}
+			log.Trace("s3", "list attempt",
+				"host", endpointHost(s.endpoint), "bucket", s.bucket, "prefix", searchPrefix, "attempt", attempt, "status", "trace")
 			resp, err = s.do(ctx, http.MethodGet, u, nil, 0, "")
 			if err != nil {
 				if ctx.Err() != nil {
 					return nil, err
 				}
 				lastErr = err
+				log.Debug("s3", "list attempt failed, retrying",
+					"host", endpointHost(s.endpoint), "bucket", s.bucket, "prefix", searchPrefix,
+					"attempt", attempt, "error", err.Error(), "status", "debug")
 				continue
 			}
 			if resp.StatusCode != http.StatusOK {
 				if isRetryableStatus(resp.StatusCode) {
 					b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 					resp.Body.Close()
-					lastErr = fmt.Errorf("s3: list: %s: %s", resp.Status, strings.TrimSpace(string(b)))
+					lastErr = fmt.Errorf("s3: list %s: %s: %s", dst, resp.Status, strings.TrimSpace(string(b)))
+					log.Debug("s3", "list attempt failed, retrying",
+						"host", endpointHost(s.endpoint), "bucket", s.bucket, "prefix", searchPrefix,
+						"attempt", attempt, "error", lastErr.Error(), "status", "debug")
 					continue
 				}
 				b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 				resp.Body.Close()
-				return nil, fmt.Errorf("s3: list: %s: %s", resp.Status, strings.TrimSpace(string(b)))
+				return nil, fmt.Errorf("s3: list %s: %s: %s", dst, resp.Status, strings.TrimSpace(string(b)))
 			}
 			lastErr = nil
 			break
@@ -171,7 +202,7 @@ func (s *s3Storage) List(ctx context.Context, prefix string) ([]Entry, error) {
 			return nil, lastErr
 		}
 		if resp == nil {
-			return nil, fmt.Errorf("s3: list: failed after retries")
+			return nil, fmt.Errorf("s3: list %s: failed after retries", dst)
 		}
 		var result s3ListResult
 		if err := xml.NewDecoder(resp.Body).Decode(&result); err != nil {
@@ -219,17 +250,18 @@ func (s *s3Storage) Upload(ctx context.Context, filePath string, r io.Reader) (i
 
 	h := sha256.New()
 	if _, err := spool.Seek(0, io.SeekStart); err != nil {
-		return 0, fmt.Errorf("s3 spool rewind: %w", err)
+		return 0, fmt.Errorf("s3 spool: %w", err)
 	}
 	if _, err := io.Copy(h, spool); err != nil {
 		return 0, fmt.Errorf("s3 spool hash: %w", err)
 	}
-	if _, err := spool.Seek(0, io.SeekStart); err != nil {
-		return 0, fmt.Errorf("s3 spool rewind: %w", err)
-	}
+	spool.Close()
 	payloadHash := hex.EncodeToString(h.Sum(nil))
 
 	u := s.requestURL(key)
+	dst := s.host("") + "/" + s.bucket
+	log.Debug("s3", "uploading object",
+		"host", endpointHost(s.endpoint), "bucket", s.bucket, "key", key, "bytes", n, "status", "debug")
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
@@ -238,33 +270,46 @@ func (s *s3Storage) Upload(ctx context.Context, filePath string, r io.Reader) (i
 				return 0, ctx.Err()
 			case <-time.After(time.Duration(500*(1<<uint(attempt-1))) * time.Millisecond):
 			}
-			if _, err := spool.Seek(0, io.SeekStart); err != nil {
-				return 0, fmt.Errorf("s3 spool rewind: %w", err)
-			}
 		}
-		resp, err := s.do(ctx, http.MethodPut, u, spool, n, payloadHash)
+		body, err := os.Open(spoolPath)
+		if err != nil {
+			return 0, fmt.Errorf("s3: upload %s: reopen spool: %w", dst, err)
+		}
+		log.Trace("s3", "upload attempt",
+			"host", endpointHost(s.endpoint), "bucket", s.bucket, "key", key, "attempt", attempt, "status", "trace")
+		resp, err := s.do(ctx, http.MethodPut, u, body, n, payloadHash)
+		_ = body.Close()
 		if err != nil {
 			if ctx.Err() != nil {
 				return 0, err
 			}
 			lastErr = err
+			log.Debug("s3", "upload attempt failed, retrying",
+				"host", endpointHost(s.endpoint), "bucket", s.bucket, "key", key,
+				"attempt", attempt, "error", err.Error(), "status", "debug")
 			continue
 		}
 		if resp.StatusCode == http.StatusOK {
 			resp.Body.Close()
+			log.Debug("s3", "upload complete",
+				"host", endpointHost(s.endpoint), "bucket", s.bucket, "key", key,
+				"bytes", n, "attempts", attempt+1, "status", "debug")
 			return n, nil
 		}
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		resp.Body.Close()
 		if !isRetryableStatus(resp.StatusCode) {
-			return 0, fmt.Errorf("s3: upload: %s: %s", resp.Status, strings.TrimSpace(string(b)))
+			return 0, fmt.Errorf("s3: upload %s: %s: %s", dst, resp.Status, strings.TrimSpace(string(b)))
 		}
-		lastErr = fmt.Errorf("s3: upload: %s: %s", resp.Status, strings.TrimSpace(string(b)))
+		lastErr = fmt.Errorf("s3: upload %s: %s: %s", dst, resp.Status, strings.TrimSpace(string(b)))
+		log.Debug("s3", "upload attempt failed, retrying",
+			"host", endpointHost(s.endpoint), "bucket", s.bucket, "key", key,
+			"attempt", attempt, "error", lastErr.Error(), "status", "debug")
 	}
 	if lastErr != nil {
 		return 0, lastErr
 	}
-	return 0, fmt.Errorf("s3: upload: failed after retries")
+	return 0, fmt.Errorf("s3: upload %s: failed after retries", dst)
 }
 func awsEncode(s string) string {
 	var b strings.Builder
@@ -315,7 +360,7 @@ func (s *s3Storage) creds() (string, string, error) {
 		return s.keyID, s.keySec, nil
 	}
 	if s.role == "" {
-		return "", "", nil
+		return "", "", fmt.Errorf("s3: no credentials (set storage.key_id/key_secret or attach an instance role)")
 	}
 	role := s.role
 	s.role = ""
@@ -466,6 +511,11 @@ func newS3Storage(opts map[string]string) (Storage, error) {
 		return nil, fmt.Errorf("s3: bucket required")
 	}
 
+	endpoint, err := normalizeEndpoint(opts["endpoint"])
+	if err != nil {
+		return nil, err
+	}
+
 	client := &http.Client{Timeout: 3600 * time.Second}
 	if HasTLSOpts(opts) {
 		client = TLSHTTPClient(opts)
@@ -475,7 +525,7 @@ func newS3Storage(opts map[string]string) (Storage, error) {
 	s := &s3Storage{
 		bucket:   bucket,
 		prefix:   strings.Trim(strings.TrimPrefix(opts["path"], "/"), "/"),
-		endpoint: strings.TrimRight(opts["endpoint"], "/"),
+		endpoint: endpoint,
 		region:   opts["region"],
 		keyID:    opts["key_id"],
 		keySec:   opts["key_secret"],
@@ -490,7 +540,36 @@ func newS3Storage(opts map[string]string) (Storage, error) {
 			s.role = role
 		}
 	}
+	log.Debug("s3", "backend initialised",
+		"host", endpointHost(s.endpoint), "bucket", s.bucket, "region", s.region,
+		"key_id", s.keyID, "tls_verify", opts["tls_verify"], "status", "debug")
 	return s, nil
+}
+
+func normalizeEndpoint(raw string) (string, error) {
+	endpoint := strings.TrimRight(strings.TrimSpace(raw), "/")
+	if endpoint == "" {
+		return "", nil
+	}
+	if !strings.Contains(endpoint, "://") {
+		endpoint = "https://" + endpoint
+	}
+	if u, err := url.Parse(endpoint); err != nil || u.Host == "" {
+		display := raw
+		if u, err := url.Parse(endpoint); err == nil {
+			display = u.Redacted()
+		}
+		return "", fmt.Errorf("s3: invalid endpoint %q (set S3_HOST to a hostname and S3_PROTOCOL to http or https)", display)
+	}
+	return endpoint, nil
+}
+
+func endpointHost(endpoint string) string {
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return ""
+	}
+	return u.Host
 }
 
 func parseS3Time(s string) int64 {
@@ -549,6 +628,9 @@ func (s *s3Storage) sign(req *http.Request, payloadHash string) error {
 
 	scope := dateStamp + "/" + s.region + "/s3/aws4_request"
 	stringToSign := "AWS4-HMAC-SHA256\n" + amzDate + "\n" + scope + "\n" + sha256Hex(canonicalRequest)
+	log.Trace("s3", "sigv4 canonical request",
+		"host", req.Host, "method", req.Method, "path", req.URL.EscapedPath(),
+		"scope", scope, "canonical_request", canonicalRequest, "status", "trace")
 
 	signingKey := hmacSHA256([]byte("AWS4"+secretKey), dateStamp)
 	signingKey = hmacSHA256(signingKey, s.region)

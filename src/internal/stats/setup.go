@@ -40,6 +40,9 @@ func Setup(configPaths []string, sharedKey string, container bool, stateDir stri
 		tracker := NewTracker()
 		runner.SetOutcomeSink(func(o runner.Outcome) {
 			tracker.Mark(o.Engine, o.OK, o.Duration, o.Bytes, o.RawBytes)
+			if tok := ServerToken(o.Server.Engine, o.Server.Version, o.Server.Arch); tok != "" {
+				tracker.NoteServer(o.Engine, tok)
+			}
 			op := OpBackup
 			if o.Maintenance {
 				op = OpMaintenance

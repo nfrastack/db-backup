@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -24,12 +25,14 @@ type Dumper struct {
 	host       string
 	port       int
 	pass       string
+	db         int
 	client     *redis.Client
 	tlsCfg     *config.TLSConfig
 	connCfg    *config.ConnectivityConfig
 	ctx        context.Context
 	Tables     *config.TableFilter
 	SchemaOnly bool
+	server     common.ServerVersion
 }
 
 func (d *Dumper) Close() error {
@@ -42,12 +45,16 @@ func (d *Dumper) Close() error {
 func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
 	ctx := d.ctxOrBg()
 	start := time.Now()
+	if err := checkDBNames(dbNames, d.db); err != nil {
+		return err
+	}
 	log.Debug("redis", "backup start",
 		"host", d.host, "port", d.port, "tls", d.tlsCfg != nil,
-		"auth", d.authMode())
+		"auth", d.authMode(), "db", d.db)
 
-	fmt.Fprintf(w, "# dbbackup Redis dump\n")
-	fmt.Fprintf(w, "# Host: %s:%d\n#\n\n", d.host, d.port)
+	fmt.Fprint(w, common.DumpBanner("#", "Redis",
+		fmt.Sprintf("Host: %s:%d  Server: %s", d.host, d.port, d.server.Display())))
+	fmt.Fprintf(w, "# Database: %d\n#\n\n", d.db)
 	var cursor uint64
 	var scanned, dumped, skipped int
 	var skippedKeys []string
@@ -92,6 +99,29 @@ func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
 	return nil
 }
 
+func checkDBNames(dbNames []string, selected int) error {
+	var names []string
+	for _, n := range dbNames {
+		if strings.TrimSpace(n) != "" {
+			names = append(names, n)
+		}
+	}
+	if len(names) > 1 {
+		return fmt.Errorf("redis supports a single database index per backup, got %q", strings.Join(names, ","))
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	idx, err := ParseDBIndex(names[0])
+	if err != nil {
+		return err
+	}
+	if idx != selected {
+		return fmt.Errorf("redis database mismatch: requested %d but connected to %d", idx, selected)
+	}
+	return nil
+}
+
 func NewDumper(host string, port int, pass string, tlsCfg ...*config.TLSConfig) *Dumper {
 	if port == 0 {
 		port = 6379
@@ -101,6 +131,22 @@ func NewDumper(host string, port int, pass string, tlsCfg ...*config.TLSConfig) 
 		d.tlsCfg = tlsCfg[0]
 	}
 	return d
+}
+
+func ParseDBIndex(name string) (int, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return 0, nil
+	}
+	n, err := strconv.Atoi(name)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("invalid redis database %q: must be a numeric database index (e.g. --name 3)", name)
+	}
+	return n, nil
+}
+
+func strconvFormatFloat(f float64) string {
+	return strconv.FormatFloat(f, 'f', -1, 64)
 }
 
 func (d *Dumper) Open() error {
@@ -117,6 +163,7 @@ func (d *Dumper) OpenContext(ctx context.Context) error {
 		opts := &redis.Options{
 			Addr:        net.JoinHostPort(d.host, fmt.Sprintf("%d", d.port)),
 			Password:    d.pass,
+			DB:          d.db,
 			DialTimeout: 10 * time.Second,
 		}
 		if tc, err := common.BuildTLSConfig(d.tlsCfg); err == nil && tc != nil {
@@ -129,9 +176,15 @@ func (d *Dumper) OpenContext(ctx context.Context) error {
 		if err := d.client.Ping(ctx).Err(); err != nil {
 			return fmt.Errorf("ping: %w", err)
 		}
+		info, err := d.client.Info(ctx, "server").Result()
+		if err != nil {
+			log.Trace("redis", "server version unavailable", "host", d.host, "error", err.Error())
+		} else {
+			d.server = ParseServerVersion(info)
+		}
 		log.Debug("redis", "connected",
 			"host", d.host, "port", d.port, "tls", d.tlsCfg != nil,
-			"auth", d.authMode())
+			"auth", d.authMode(), "server", d.server.Display())
 		return nil
 	}
 	return common.WithConnectivity(ctx, "redis", d.connCfg, probe, connect, ping)
@@ -212,7 +265,15 @@ func (d *Dumper) dumpKey(ctx context.Context, w io.Writer, key string) error {
 		log.Trace("redis", "key vanished mid-scan", "key", key)
 		return nil
 	case "stream":
-		return fmt.Errorf("unsupported type %q", typ)
+		msgs, err := d.xRangeAll(ctx, key)
+		if err != nil {
+			return fmt.Errorf("xrange: %w", err)
+		}
+		groups, err := d.client.XInfoGroups(ctx, key).Result()
+		if err != nil {
+			return fmt.Errorf("xinfo groups: %w", err)
+		}
+		d.writeRestoreStream(w, qKey, msgs, groups, ttl)
 	default:
 
 		val, err := d.client.Get(ctx, key).Result()
@@ -249,17 +310,63 @@ func (d *Dumper) getKeyValue(ctx context.Context, key string) (string, error) {
 		return d.client.Get(ctx, key).Result()
 	}
 }
-func strconvFormatFloat(f float64) string {
-	return strconv.FormatFloat(f, 'f', -1, 64)
-}
+
 func (d *Dumper) writeRestoreCmd(w io.Writer, parts []string, ttl time.Duration) {
 	fmt.Fprintln(w, strings.Join(parts, " "))
+	writeKeyTTL(w, parts[1], ttl)
+}
+
+func writeKeyTTL(w io.Writer, qKey string, ttl time.Duration) {
 	switch ttlSec := int64(ttl.Seconds()); {
 	case ttlSec > 0:
-		fmt.Fprintf(w, "EXPIRE %s %d\n", parts[1], ttlSec)
+		fmt.Fprintf(w, "EXPIRE %s %d\n", qKey, ttlSec)
 	case ttl > 0:
-		fmt.Fprintf(w, "PEXPIREAT %s %d\n", parts[1], time.Now().Add(ttl).UnixMilli())
+		fmt.Fprintf(w, "PEXPIREAT %s %d\n", qKey, time.Now().Add(ttl).UnixMilli())
 	}
+}
+func (d *Dumper) writeRestoreStream(w io.Writer, qKey string, msgs []redis.XMessage, groups []redis.XInfoGroup, ttl time.Duration) {
+	for _, m := range msgs {
+		parts := make([]string, 0, len(m.Values)*2+3)
+		parts = append(parts, "XADD", qKey, QuoteRedis(m.ID))
+		keys := make([]string, 0, len(m.Values))
+		for k := range m.Values {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			sv, _ := m.Values[k].(string)
+			if sv == "" {
+				sv = fmt.Sprintf("%v", m.Values[k])
+			}
+			parts = append(parts, QuoteRedis(k), QuoteRedis(sv))
+		}
+		fmt.Fprintln(w, strings.Join(parts, " "))
+	}
+	for _, g := range groups {
+		fmt.Fprintf(w, "XGROUP CREATE %s %s %s MKSTREAM\n",
+			qKey, QuoteRedis(g.Name), QuoteRedis(g.LastDeliveredID))
+	}
+	writeKeyTTL(w, qKey, ttl)
+}
+
+func (d *Dumper) xRangeAll(ctx context.Context, key string) ([]redis.XMessage, error) {
+	var out []redis.XMessage
+	start := "-"
+	for {
+		msgs, err := d.client.XRangeN(ctx, key, start, "+", 1000).Result()
+		if err != nil {
+			return nil, err
+		}
+		if len(msgs) == 0 {
+			break
+		}
+		out = append(out, msgs...)
+		if len(msgs) < 1000 {
+			break
+		}
+		start = "(" + msgs[len(msgs)-1].ID
+	}
+	return out, nil
 }
 func (d *Dumper) writeRestoreHash(w io.Writer, qKey string, entries map[string]string, ttl time.Duration) {
 	if len(entries) == 0 {

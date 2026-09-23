@@ -29,6 +29,7 @@ type Dumper struct {
 	tlsCfg  *config.TLSConfig
 	connCfg *config.ConnectivityConfig
 	ctx     context.Context
+	server  common.ServerVersion
 }
 
 func (d *Dumper) Close() error { return nil }
@@ -39,7 +40,9 @@ func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
 		"host", d.host, "port", d.port, "scheme", d.scheme(),
 		"auth", d.authMode(),
 		"databases", strings.Join(dbNames, ","))
-	fmt.Fprintf(w, "// db-backup CouchDB dump\n// Host: %s:%d\n//\n\n", d.host, d.port)
+	fmt.Fprint(w, common.DumpBanner("//", "CouchDB",
+		fmt.Sprintf("Host: %s:%d  Server: %s", d.host, d.port, d.server.Display())))
+	fmt.Fprintf(w, "//\n\n")
 
 	if len(dbNames) == 1 && strings.ToLower(dbNames[0]) == "all" {
 		names, err := d.listDatabases()
@@ -68,6 +71,7 @@ func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
 		"elapsed", time.Since(start).Round(time.Millisecond).String())
 	return nil
 }
+
 func NewDumper(host string, port int, user, pass string, tlsCfg ...*config.TLSConfig) *Dumper {
 	if port == 0 {
 		port = 5984
@@ -105,15 +109,22 @@ func (d *Dumper) OpenContext(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("ping: %w", err)
 		}
-		defer resp.Body.Close()
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		resp.Body.Close()
 		if resp.StatusCode >= 300 {
 			log.Trace("couch", "ping failed",
 				"host", d.host, "port", d.port, "status", resp.StatusCode)
 			return fmt.Errorf("ping: couch responded %d", resp.StatusCode)
 		}
+		var hello struct {
+			Version string `json:"version"`
+		}
+		if err := json.Unmarshal(body, &hello); err == nil && hello.Version != "" {
+			d.server = ParseServerVersion(hello.Version)
+		}
 		log.Debug("couch", "connected",
 			"host", d.host, "port", d.port, "scheme", d.scheme(),
-			"auth", d.authMode())
+			"auth", d.authMode(), "server", d.server.Display())
 		return nil
 	}
 	return common.WithConnectivity(ctx, "couch", d.connCfg, probe, func() error { return nil }, ping)

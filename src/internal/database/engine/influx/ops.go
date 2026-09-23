@@ -25,7 +25,7 @@ func ListDatabases(host string, port int, user, pass, authSource string, tlsCfg 
 	_ = authSource
 	d := NewDumper(host, port, user, pass, "", 0, tlsCfg)
 	d.SetConnectivity(&config.ConnectivityConfig{
-		Enabled:       true,
+		Enabled:       config.BoolPtr(true),
 		Method:        config.MethodFull,
 		RetryInterval: 2,
 		Timeout:       30,
@@ -48,7 +48,7 @@ func Restore(r io.Reader, host string, port int, user, pass, dbName, authSource 
 
 	d := NewDumper(host, port, user, pass, dbName, 0, tlsCfg)
 	d.SetConnectivity(&config.ConnectivityConfig{
-		Enabled:       true,
+		Enabled:       config.BoolPtr(true),
 		Method:        config.MethodFull,
 		RetryInterval: 2,
 		Timeout:       30,

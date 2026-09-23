@@ -21,6 +21,7 @@ import (
 
 	"github.com/nfrastack/db-backup/internal/config"
 	"github.com/nfrastack/db-backup/internal/database"
+	"github.com/nfrastack/db-backup/internal/database/common"
 	"github.com/nfrastack/db-backup/internal/database/registry"
 	"github.com/nfrastack/db-backup/internal/license"
 	"github.com/nfrastack/db-backup/internal/log"
@@ -72,6 +73,7 @@ func cmdRestore(args []string) int {
 	storagePath := fs.String("storage-path", config.StoragePath(), "Storage path/prefix (filesystem)")
 	storageProfile := fs.String("storage-profile", "", "Storage profile (resolved from -c <config>)")
 	restoreProfile := fs.String("profile", "", "Restore profile (resolved from -c <config>, profiles.restore)")
+	createDB := fs.Bool("create-db", true, "Create the target database if it does not exist")
 	compressType := fs.String("compress", "", "Compression type (auto-detect from filename if empty)")
 	encryptionType := fs.String("encryption", "auto", "Encryption type (auto|age|gpg|openssl) - auto detects from magic bytes or the sidecar")
 	agePass := fs.String("age-passphrase", "", "Age passphrase for decryption")
@@ -84,6 +86,8 @@ func cmdRestore(args []string) int {
 
 	log.Info("startup", bannerLine(),
 		"host", runner.Hostname())
+
+	common.CreateDBOnRestore = *createDB
 
 	explicitFlags := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { explicitFlags[f.Name] = true })
@@ -121,6 +125,9 @@ func cmdRestore(args []string) int {
 				fmt.Fprintf(os.Stderr, "  Community restores support AGE encryption and filesystem/S3/webDAV storage only\n")
 				fmt.Fprintf(os.Stderr, "  Pass --type/--host/--name/--file on the command line to skip the restore profile\n")
 				return 1
+			}
+			if !explicitFlags["create-db"] && r.CreateDB != nil {
+				common.CreateDBOnRestore = *r.CreateDB
 			}
 		}
 		if r != nil {
@@ -351,6 +358,8 @@ func cmdRestore(args []string) int {
 		log.Debug("restore", "chain resolved", "depth", len(order), "order", strings.Join(order, " -> "))
 	}
 
+	warnRestoreServerCompat(st, order[len(order)-1], *dbType, *dbHost, *dbPort, *dbUser, pass, *dbName, restoreAuthSource, restoreTLS)
+
 	opts := retention.DecryptOpts{
 		EncryptionType: *encryptionType,
 		AgePass:        *agePass,
@@ -518,6 +527,39 @@ func cmdRestore(args []string) int {
 	manualOpDetail = manualDetail{engine: *dbType, bytes: restoredBytes, checksum: restoreChecksum}
 	fmt.Fprintf(os.Stderr, "Restore complete (%d backup(s))\n", len(order))
 	return 0
+}
+
+func warnRestoreServerCompat(st storage.Storage, file, dbType, host string, port int, user, pass, dbName, authSource string, tlsCfg *config.TLSConfig) {
+	sc, err := retention.ReadSidecar(st, file)
+	if err != nil || sc == nil || sc.Server == nil {
+		return
+	}
+	probeDB := dbName
+	switch strings.ToLower(dbType) {
+	case "postgres", "postgresql", "cockroach", "cockroachdb":
+		probeDB = "postgres"
+	case "mysql", "mariadb":
+		probeDB = "information_schema"
+	case "mongo", "mongodb":
+		probeDB = authSource
+		if probeDB == "" {
+			probeDB = "admin"
+		}
+	case "mssql", "sqlserver":
+		probeDB = "master"
+	}
+	target, err := database.ServerVersion(context.Background(), dbType, host, port, user, pass, probeDB, authSource, tlsCfg)
+	if err != nil || (target.Engine == "" && target.Version == "") {
+		return
+	}
+	if w := common.ServerCompatWarning(sc.Server.Engine, sc.Server.Version, target.Engine, target.Version); w != "" {
+		fmt.Fprintf(os.Stderr, "WARNING: restore target mismatch: %s (backup server %s %s, target %s %s)\n",
+			w, sc.Server.Engine, sc.Server.Version, target.Engine, target.Version)
+		log.Warn("restore", "target server mismatch",
+			"status", "warn", "warning", w,
+			"backup_server", sc.Server.Engine+" "+sc.Server.Version,
+			"target_server", target.Engine+" "+target.Version)
+	}
 }
 
 func checksumTypeFromSidecar(sc *retention.Sidecar) string {

@@ -47,24 +47,26 @@ type Log struct {
 
 // decoded 15 field job entry
 type Job struct {
-	Database       string `json:"database"`
-	Strategy       string `json:"strategy"`
-	Compression    string `json:"compression"`
-	Encryption     string `json:"encryption"`
-	EncryptionMode string `json:"encryption_mode"`
-	Storage        string `json:"storage"`
-	Schedule       string `json:"schedule"`
-	Maintenance    bool   `json:"maintenance"`
-	Archive        bool   `json:"archive"`
-	Successes      int    `json:"successes"`
-	Failures       int    `json:"failures"`
-	RetentionTiers string `json:"retention_tiers,omitempty"`
-	DurationMs     int64  `json:"duration_ms"`
-	Pruned         int    `json:"pruned"`
-	Archived       int    `json:"archived"`
-	KB             int64  `json:"kb,omitempty"`
-	RawKB          int64  `json:"raw_kb,omitempty"`
-	Checksum       string `json:"checksum,omitempty"`
+	Database         string   `json:"database"`
+	Strategy         string   `json:"strategy"`
+	Compression      string   `json:"compression"`
+	CompressionLevel int      `json:"compression_level,omitempty"`
+	Encryption       string   `json:"encryption"`
+	EncryptionMode   string   `json:"encryption_mode"`
+	Storage          string   `json:"storage"`
+	Schedule         string   `json:"schedule"`
+	Maintenance      bool     `json:"maintenance"`
+	Archive          bool     `json:"archive"`
+	Successes        int      `json:"successes"`
+	Failures         int      `json:"failures"`
+	RetentionTiers   string   `json:"retention_tiers,omitempty"`
+	DurationMs       int64    `json:"duration_ms"`
+	Pruned           int      `json:"pruned"`
+	Archived         int      `json:"archived"`
+	KB               int64    `json:"kb,omitempty"`
+	RawKB            int64    `json:"raw_kb,omitempty"`
+	Checksum         string   `json:"checksum,omitempty"`
+	Servers          []string `json:"servers,omitempty"`
 }
 
 var (
@@ -243,7 +245,7 @@ func (d *Decoded) String() string {
 		fmt.Fprintf(&b, "job %d:\n", i+1)
 		fmt.Fprintf(&b, "  database      %s\n", j.Database)
 		fmt.Fprintf(&b, "  strategy      %s\n", j.Strategy)
-		fmt.Fprintf(&b, "  compression   %s\n", j.Compression)
+		fmt.Fprintf(&b, "  compression   %s\n", compressionLabel(j))
 		fmt.Fprintf(&b, "  encryption    %s (%s)\n", j.Encryption, j.EncryptionMode)
 		fmt.Fprintf(&b, "  storage       %s\n", j.Storage)
 		fmt.Fprintf(&b, "  schedule      %s\n", j.Schedule)
@@ -262,6 +264,9 @@ func (d *Decoded) String() string {
 		}
 		if j.Checksum != "" {
 			fmt.Fprintf(&b, "  checksum      %s\n", j.Checksum)
+		}
+		for _, s := range j.Servers {
+			fmt.Fprintf(&b, "  server        %s\n", s)
 		}
 		if j.Pruned > 0 {
 			fmt.Fprintf(&b, "  pruned        %d\n", j.Pruned)
@@ -287,6 +292,15 @@ func humanKB(kb int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %ciB", float64(kb)/float64(div), "MGTP"[exp])
+}
+
+// compressionLabel renders type with its level ("zstd level 3"); the level
+// is omitted for pre-sv=4 rows that never carried one.
+func compressionLabel(j Job) string {
+	if j.CompressionLevel > 0 {
+		return fmt.Sprintf("%s level %d", j.Compression, j.CompressionLevel)
+	}
+	return j.Compression
 }
 
 // parse integers and return 0 on junk
@@ -346,9 +360,47 @@ func decodeJobs(val string) []Job {
 		if len(f) >= 18 {
 			j.Checksum = decodeName(f[17], checksumNames)
 		}
+		if len(f) >= 19 {
+			j.CompressionLevel = atoiCode(f[18])
+		}
+		if len(f) >= 20 {
+			j.Servers = decodeServers(f[19])
+		}
 		jobs = append(jobs, j)
 	}
 	return jobs
+}
+
+func decodeServers(field string) []string {
+	var out []string
+	for _, tok := range strings.Split(field, ",") {
+		tok = strings.TrimSpace(tok)
+		if tok == "" {
+			continue
+		}
+		parts := strings.Split(tok, "/")
+		if len(parts) != 3 {
+			continue
+		}
+		out = append(out, decodeServerToken(parts[0], parts[1], parts[2]))
+	}
+	return out
+}
+
+func decodeServerToken(db, version, arch string) string {
+	name := decodeName(db, dbTypeNames)
+	switch arch {
+	case archAmd64:
+		arch = "amd64"
+	case archArm64:
+		arch = "arm64"
+	case "0", "":
+		arch = ""
+	}
+	if arch == "" {
+		return name + " " + version
+	}
+	return name + " " + version + " " + arch
 }
 
 func decodeLog(code string) Log {

@@ -11,8 +11,10 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/nfrastack/db-backup/internal/stats"
+	versionPkg "github.com/nfrastack/db-backup/internal/version"
 )
 
 func cmdVersion(args []string) int {
@@ -77,6 +79,9 @@ func cmdVersion(args []string) int {
 		fmt.Printf("note:    %s\n", note)
 	}
 	fmt.Printf("license: %s\n", licenseLabel())
+	if stale, age := versionPkg.StaleDevBuild(time.Now()); stale {
+		fmt.Printf("warning: develop build is %d days old (built %s) and is likely stale. move to a stable relelease or rebuild from develop for latest fixes\n", age, buildDate)
+	}
 	return 0
 }
 
@@ -126,6 +131,11 @@ func versionCheckCmd(format string) int {
 	}
 	if img := stats.ImageVersion(); stats.IsImageStale(img, resp.ImageLatest) {
 		fmt.Printf("New container image available: %s (running %s)\n", resp.ImageLatest, img)
+	}
+	if resp.Stable != nil && resp.Stable.Latest != "" && resp.Stable.Latest != resp.Latest &&
+		stats.IsNewer(Version, resp.Stable.Latest) {
+		fmt.Printf("Stable release available: %s (released %s) - you are running %s on the %s channel\n",
+			resp.Stable.Latest, resp.Stable.DateReleased, Version, resp.Channel)
 	}
 	return 0
 }

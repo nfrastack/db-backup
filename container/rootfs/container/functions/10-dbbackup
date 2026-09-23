@@ -59,7 +59,7 @@ dbbackup_generate_configuration() {
         DEFAULT_GCS_BUCKET DEFAULT_GCS_KEY DEFAULT_GCS_PATH DEFAULT_GZ_RSYNCABLE \
         DEFAULT_LOG_LEVEL DEFAULT_MAINTENANCE DEFAULT_MAINTENANCE_ANALYZE DEFAULT_MAINTENANCE_CHECK_TABLES DEFAULT_MAINTENANCE_COMPACT \
         DEFAULT_MAINTENANCE_MEMORY_PURGE DEFAULT_MAINTENANCE_OPTIMIZE DEFAULT_MAINTENANCE_REINDEX DEFAULT_MAINTENANCE_SCHEDULE DEFAULT_MAINTENANCE_VACUUM \
-        DEFAULT_S3_BUCKET DEFAULT_S3_HOST DEFAULT_S3_KEY_ID DEFAULT_S3_KEY_SECRET DEFAULT_S3_PATH DEFAULT_S3_PROTOCOL DEFAULT_S3_REGION \
+        DEFAULT_S3_BUCKET DEFAULT_S3_CERT_CA_FILE DEFAULT_S3_CERT_SKIP_VERIFY DEFAULT_S3_HOST DEFAULT_S3_KEY_ID DEFAULT_S3_KEY_SECRET DEFAULT_S3_PATH DEFAULT_S3_PROTOCOL DEFAULT_S3_REGION \
         DEFAULT_TLS_CA_FILE DEFAULT_TLS_CERT_FILE DEFAULT_TLS_ENABLE DEFAULT_TLS_KEY_FILE DEFAULT_TLS_VERIFY DEFAULT_TLS_VERSION \
         DEFAULT_WEBDAV_PASS DEFAULT_WEBDAV_PATH DEFAULT_WEBDAV_URL DEFAULT_WEBDAV_USER; do
         _dbbackup_dnorm "${_dbb_d}"
@@ -140,9 +140,27 @@ dbbackup_generate_configuration() {
             if [ -n "${DEFAULT_S3_BUCKET}" ]; then DBB_V="${DEFAULT_S3_BUCKET}"; yq -i '.defaults.storage.bucket = strenv(DBB_V)' "${CONFIG_FILE_PATH}"; fi
             if [ -n "${DEFAULT_S3_PATH}" ]; then DBB_V="${DEFAULT_S3_PATH}"; yq -i '.defaults.storage.path = strenv(DBB_V)' "${CONFIG_FILE_PATH}"; fi
             if [ -n "${DEFAULT_S3_REGION}" ]; then DBB_V="${DEFAULT_S3_REGION}"; yq -i '.defaults.storage.region = strenv(DBB_V)' "${CONFIG_FILE_PATH}"; fi
-            if [ -n "${DEFAULT_S3_HOST}" ]; then DBB_V="${DEFAULT_S3_HOST}"; if [ -n "${DEFAULT_S3_PROTOCOL}" ]; then DBB_V="${DEFAULT_S3_PROTOCOL}://${DEFAULT_S3_HOST}"; fi; yq -i '.defaults.storage.endpoint = strenv(DBB_V)' "${CONFIG_FILE_PATH}"; fi
+            if [ -n "${DEFAULT_S3_HOST}" ]; then DBB_V="${DEFAULT_S3_HOST}"; case "${DBB_V}" in *://*) ;; *) if [ -n "${DEFAULT_S3_PROTOCOL}" ]; then DBB_V="${DEFAULT_S3_PROTOCOL}://${DEFAULT_S3_HOST}"; else DBB_V="https://${DEFAULT_S3_HOST}"; fi;; esac; yq -i '.defaults.storage.endpoint = strenv(DBB_V)' "${CONFIG_FILE_PATH}"; fi
             if [ -n "${DEFAULT_S3_KEY_ID}" ]; then DBB_V="${DEFAULT_S3_KEY_ID}"; yq -i '.defaults.storage.key_id = strenv(DBB_V)' "${CONFIG_FILE_PATH}"; fi
             if [ -n "${DEFAULT_S3_KEY_SECRET}" ]; then DBB_V="${DEFAULT_S3_KEY_SECRET}"; yq -i '.defaults.storage.key_secret = strenv(DBB_V)' "${CONFIG_FILE_PATH}"; fi
+            if [ -n "${DEFAULT_S3_CERT_CA_FILE}" ] || [ -n "${DEFAULT_S3_CERT_SKIP_VERIFY}" ]; then
+                yq -i '.defaults.storage.tls = {"enable": true}' "${CONFIG_FILE_PATH}"
+                if [ -n "${DEFAULT_S3_CERT_CA_FILE}" ]; then DBB_V="${DEFAULT_S3_CERT_CA_FILE}"; yq -i '.defaults.storage.tls.ca_file = strenv(DBB_V)' "${CONFIG_FILE_PATH}"; fi
+                if [ -n "${DEFAULT_S3_CERT_SKIP_VERIFY}" ]; then
+                    case "${DEFAULT_S3_CERT_SKIP_VERIFY,,}" in
+                        true | 1 | yes )
+                            yq -i '.defaults.storage.tls.verify = false' "${CONFIG_FILE_PATH}"
+                        ;;
+                        false | 0 | no )
+                            yq -i '.defaults.storage.tls.verify = true' "${CONFIG_FILE_PATH}"
+                        ;;
+                        * )
+                            print_warn "DEFAULT_S3_CERT_SKIP_VERIFY=${DEFAULT_S3_CERT_SKIP_VERIFY} is not a valid boolean - defaulting to verify=true"
+                            yq -i '.defaults.storage.tls.verify = true' "${CONFIG_FILE_PATH}"
+                        ;;
+                    esac
+                fi
+            fi
         ;;
         webdav )
             if [ -n "${DEFAULT_WEBDAV_URL}" ]; then DBB_V="${DEFAULT_WEBDAV_URL}"; yq -i '.defaults.storage.url = strenv(DBB_V)' "${CONFIG_FILE_PATH}"; fi
@@ -514,7 +532,7 @@ dbbackup_generate_configuration() {
             fi
 
             # MYSQL_STORED_PROCEDURES is the 4.x alias for routines
-            local mysql_events mysql_routines mysql_triggers mysql_views mysql_sp_alias
+            local mysql_events mysql_routines mysql_triggers mysql_views mysql_sp_alias mysql_raw_blobs
             mysql_events="$(_dbbackup_getv "${inst}" MYSQL_EVENTS TRUE)"
             mysql_routines="$(_dbbackup_getv "${inst}" MYSQL_ROUTINES "")"
             if [ -z "${mysql_routines}" ]; then
@@ -527,6 +545,7 @@ dbbackup_generate_configuration() {
             fi
             mysql_triggers="$(_dbbackup_getv "${inst}" MYSQL_TRIGGERS TRUE)"
             mysql_views="$(_dbbackup_getv "${inst}" MYSQL_VIEWS TRUE)"
+            mysql_raw_blobs="$(_dbbackup_getv "${inst}" MYSQL_RAW_BLOBS FALSE)"
             if [ "$(_dbbackup_tyone "${mysql_events}")" = "false" ]; then
                 yq -i '.profiles.databases[strenv(DBB_REF)].events = false' "${CONFIG_FILE_PATH}"
             fi
@@ -538,6 +557,9 @@ dbbackup_generate_configuration() {
             fi
             if [ "$(_dbbackup_tyone "${mysql_views}")" = "false" ]; then
                 yq -i '.profiles.databases[strenv(DBB_REF)].views = false' "${CONFIG_FILE_PATH}"
+            fi
+            if [ "$(_dbbackup_tyone "${mysql_raw_blobs}")" = "true" ]; then
+                yq -i '.profiles.databases[strenv(DBB_REF)].raw_blobs = true' "${CONFIG_FILE_PATH}"
             fi
         fi
     done
@@ -623,7 +645,7 @@ dbbackup_generate_configuration() {
         local backup_location="$(_dbbackup_getv "${inst}" BACKUP_LOCATION "${d_storage}")"
         backup_location="${backup_location,,}"
         local cleanup_time="$(_dbbackup_getv "${inst}" CLEANUP_TIME "")"
-        local split_db="$(_dbbackup_getv "${inst}" SPLIT_DB FALSE)"
+        local split_db="$(_dbbackup_getv "${inst}" SPLIT_DB TRUE)"
         split_db="${split_db,,}"
         local create_latest="$(_dbbackup_getv "${inst}" CREATE_LATEST_SYMLINK FALSE)"
         create_latest="${create_latest,,}"
@@ -662,6 +684,8 @@ dbbackup_generate_configuration() {
         local s3_protocol="$(_dbbackup_getv "${inst}" S3_PROTOCOL "${DEFAULT_S3_PROTOCOL}")"
         local s3_key_id="$(_dbbackup_getv "${inst}" S3_KEY_ID "${DEFAULT_S3_KEY_ID}")"
         local s3_key_secret="$(_dbbackup_getv "${inst}" S3_KEY_SECRET "${DEFAULT_S3_KEY_SECRET}")"
+        local s3_cert_ca_file="$(_dbbackup_getv "${inst}" S3_CERT_CA_FILE "${DEFAULT_S3_CERT_CA_FILE}")"
+        local s3_cert_skip_verify="$(_dbbackup_getv "${inst}" S3_CERT_SKIP_VERIFY "${DEFAULT_S3_CERT_SKIP_VERIFY}")"
 
         # storage: webdav
         local webdav_url="$(_dbbackup_getv "${inst}" WEBDAV_URL "${DEFAULT_WEBDAV_URL}")"
@@ -990,9 +1014,16 @@ dbbackup_generate_configuration() {
                     fi
                     if [ -n "${s3_host}" ]; then
                         DBB_V="${s3_host}"
-                        if [ -n "${s3_protocol}" ]; then
-                            DBB_V="${s3_protocol}://${s3_host}"
-                        fi
+                        case "${DBB_V}" in
+                            *://*) ;;
+                            *)
+                                if [ -n "${s3_protocol}" ]; then
+                                    DBB_V="${s3_protocol}://${s3_host}"
+                                else
+                                    DBB_V="https://${s3_host}"
+                                fi
+                            ;;
+                        esac
                         yq -i '.jobs[strenv(DBB_JNUM) | tonumber].storage.endpoint = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
                     fi
                     if [ -n "${s3_key_id}" ]; then
@@ -1004,22 +1035,28 @@ dbbackup_generate_configuration() {
                         yq -i '.jobs[strenv(DBB_JNUM) | tonumber].storage.key_secret = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
                     fi
                     local s3_tls_ca s3_tls_skip
-                    s3_tls_ca="$(_dbbackup_explicit_env "${inst}" S3_CERT_CA_FILE)"
-                    s3_tls_skip="$(_dbbackup_explicit_env "${inst}" S3_CERT_SKIP_VERIFY)"; s3_tls_skip="${s3_tls_skip,,}"
+                    s3_tls_ca="${s3_cert_ca_file}"
+                    s3_tls_skip="${s3_cert_skip_verify,,}"
                     if [ -n "$s3_tls_ca" ] || [ -n "$s3_tls_skip" ]; then
-                        yq -i '.jobs[strenv(DBB_JNUM) | tonumber].tls = {"enable": true}' "${CONFIG_FILE_PATH}"
+                        yq -i '.jobs[strenv(DBB_JNUM) | tonumber].storage.tls = {"enable": true}' "${CONFIG_FILE_PATH}"
                         if [ -n "$s3_tls_ca" ]; then
                             DBB_V="$s3_tls_ca"
-                            yq -i '.jobs[strenv(DBB_JNUM) | tonumber].tls.ca_file = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+                            yq -i '.jobs[strenv(DBB_JNUM) | tonumber].storage.tls.ca_file = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
                         fi
-                        case "${s3_tls_skip,,}" in
-                            false | 0 |no )
-                                yq -i '.jobs[strenv(DBB_JNUM) | tonumber].tls.verify = true' "${CONFIG_FILE_PATH}"
-                            ;;
-                            * )
-                                yq -i '.jobs[strenv(DBB_JNUM) | tonumber].tls.verify = false' "${CONFIG_FILE_PATH}"
-                            ;;
-                        esac
+                        if [ -n "$s3_tls_skip" ]; then
+                            case "${s3_tls_skip,,}" in
+                                true | 1 | yes )
+                                    yq -i '.jobs[strenv(DBB_JNUM) | tonumber].storage.tls.verify = false' "${CONFIG_FILE_PATH}"
+                                ;;
+                                false | 0 | no )
+                                    yq -i '.jobs[strenv(DBB_JNUM) | tonumber].storage.tls.verify = true' "${CONFIG_FILE_PATH}"
+                                ;;
+                                * )
+                                    print_warn "DB${inst}_S3_CERT_SKIP_VERIFY=${s3_cert_skip_verify} is not a valid boolean - defaulting to verify=true"
+                                    yq -i '.jobs[strenv(DBB_JNUM) | tonumber].storage.tls.verify = true' "${CONFIG_FILE_PATH}"
+                                ;;
+                            esac
+                        fi
                     fi
                 ;;
                 webdav )
@@ -1134,9 +1171,10 @@ dbbackup_generate_configuration() {
             yq -i '.jobs[strenv(DBB_JNUM) | tonumber].maintenance = strenv(DBB_M)' "${CONFIG_FILE_PATH}"
         fi
 
+        # split_db defaults to true built-in - only an explicit false needs writing
         case "${split_db,,}" in
-            true | 1 | yes )
-                yq -i '.jobs[strenv(DBB_JNUM) | tonumber].split_db = true' "${CONFIG_FILE_PATH}"
+            false | 0 | no )
+                yq -i '.jobs[strenv(DBB_JNUM) | tonumber].split_db = false' "${CONFIG_FILE_PATH}"
             ;;
         esac
 
@@ -1385,6 +1423,7 @@ _dbbackup_log_level() {
         error ) echo "error" ;;
         warn* ) echo "warn" ;;
         debug ) echo "debug" ;;
+        trace ) echo "trace" ;;
         * ) echo "info" ;;
     esac
 }
@@ -1494,6 +1533,8 @@ _dbbackup_warn_bare_aliases() {
                     FILESYSTEM_PERMISSION \
                     FILESYSTEM_PATH_PERMISSION \
                     S3_BUCKET \
+                    S3_CERT_CA_FILE \
+                    S3_CERT_SKIP_VERIFY \
                     S3_PATH \
                     S3_REGION \
                     S3_HOST \

@@ -53,6 +53,7 @@ func IsDiscoveryPath(p string) bool {
 	}
 	return false
 }
+
 func Load() (*License, error) {
 	for _, p := range CandidatePaths() {
 		raw, err := resolveLicenseValue(p, 0)
@@ -108,6 +109,35 @@ func looksLikeArtifact(v string) bool {
 	}
 	return true
 }
+
+func looksLikeCompressedLicense(v string) bool {
+	if len(v) < 20 {
+		return false
+	}
+	s := strings.Join(strings.Fields(v), "")
+	if s == "" {
+		return false
+	}
+	decoded, err := decodeAnyBase64(s)
+	if err != nil {
+		return false
+	}
+	return hasCompressedMagic(decoded)
+}
+
+func hasCompressedMagic(b []byte) bool {
+	if len(b) < 2 {
+		return false
+	}
+	if b[0] == magicGzip[0] && b[1] == magicGzip[1] {
+		return true
+	}
+	if len(b) >= 4 && b[0] == magicZstd[0] && b[1] == magicZstd[1] && b[2] == magicZstd[2] && b[3] == magicZstd[3] {
+		return true
+	}
+	return false
+}
+
 func resolveLicenseValue(value string, depth int) (string, error) {
 	if depth > 5 {
 		return "", errors.New("license value resolution too deep")
@@ -138,9 +168,13 @@ func resolveLicenseValue(value string, depth int) (string, error) {
 		if looksLikeArtifact(value) {
 			return value, nil
 		}
+		if looksLikeCompressedLicense(value) {
+			return value, nil
+		}
 		return "", nil
 	}
 }
+
 func systemLicensePaths() []string {
 	switch runtime.GOOS {
 	case "darwin":

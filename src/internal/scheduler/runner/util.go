@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -76,6 +77,24 @@ func SplitCsv(s string) []string {
 func StorageOpts(cfg *config.StorageConfig) map[string]string {
 	return cfg.Options()
 }
+
+func storageEndpointHost(cfg *config.StorageConfig) string {
+	if cfg == nil {
+		return ""
+	}
+	raw := cfg.Endpoint
+	if raw == "" {
+		raw = cfg.URL
+	}
+	if raw == "" {
+		return ""
+	}
+	if u, err := url.Parse(raw); err == nil && u.Host != "" {
+		return u.Host
+	}
+	return raw
+}
+
 func formatSize(n int64, unit string) string {
 	unit = strings.ToLower(strings.TrimSpace(unit))
 	human := strings.HasSuffix(unit, "_human")

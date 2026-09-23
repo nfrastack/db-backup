@@ -22,18 +22,19 @@ import (
 const initialReportDelay = 5 * time.Minute
 
 type Manager struct {
-	cfg        			*config.StatsConfig
-	vc         			*config.CheckNewVersionConfig
-	state      			*config.StatsState
-	vstate     			*config.VersionState
-	client     			*Client
-	key        			string
-	start      			time.Time
-	warnedOnce 			bool
-	container  			bool
-	stateDir   			string
-	nextVersionRetry 	time.Time
-	nextStatsRetry   	time.Time
+	cfg              *config.StatsConfig
+	vc               *config.CheckNewVersionConfig
+	state            *config.StatsState
+	vstate           *config.VersionState
+	client           *Client
+	key              string
+	start            time.Time
+	warnedOnce       bool
+	container        bool
+	channel          string
+	stateDir         string
+	nextVersionRetry time.Time
+	nextStatsRetry   time.Time
 }
 
 // snapshot of ok/failed counts for jobs for stats
@@ -142,9 +143,9 @@ func (m *Manager) LogStartup() {
 		now = now.In(loc)
 	}
 	log.Info("version-check", "version check enabled - you will be notified when a new version is available.",
-		"frequency", versionCheckFrequency(m.vc),
+		"frequency", m.versionCheckFrequency(),
 		"last_check", lastActivityInLoc(m.vstate.LastCheckAt),
-		"next_check", m.nextDue(m.vstate.LastCheckAt, versionCheckFrequency(m.vc), now))
+		"next_check", m.nextDue(m.vstate.LastCheckAt, m.versionCheckFrequency(), now))
 }
 
 // manager for stats usage and version checking. reads config and state, creates client, sets up dump dir and retention
@@ -239,6 +240,13 @@ func (m *Manager) SetContainer(inContainer bool) {
 	}
 }
 
+// release channel this binary belongs to (stable | beta | edge)
+func (m *Manager) SetChannel(channel string) {
+	if m != nil {
+		m.channel = strings.ToLower(strings.TrimSpace(channel))
+	}
+}
+
 // manage the reporting frequency for stats and version checks
 func (m *Manager) TryReport(ctx context.Context, opts Options, cfg *config.Config, jobs OutcomesRecorder) {
 	if m == nil || m.client == nil {
@@ -253,7 +261,7 @@ func (m *Manager) TryReport(ctx context.Context, opts Options, cfg *config.Confi
 		if m.versionDue(now) {
 			log.Debug("version-check", "starting version check")
 			if resp, err := m.checkVersion(ctx, opts.Version, opts); err != nil {
-				m.nextVersionRetry = time.Now().Add(frequencyDuration(versionCheckFrequency(m.vc)))
+				m.nextVersionRetry = time.Now().Add(frequencyDuration(m.versionCheckFrequency()))
 				log.Debug("version-check", fmt.Sprintf("version check failed: %s", DescribeError(err)), "next_check", formatDue(m.nextVersionRetry))
 			} else if resp != nil {
 				m.notifyVersion(opts.Version, opts, resp)
@@ -266,13 +274,13 @@ func (m *Manager) TryReport(ctx context.Context, opts Options, cfg *config.Confi
 				if loc := log.Location(); loc != nil {
 					doneAt = doneAt.In(loc)
 				}
-				log.Debug("version-check", "check complete", "next_check", m.nextDue(m.vstate.LastCheckAt, versionCheckFrequency(m.vc), doneAt))
+				log.Debug("version-check", "check complete", "next_check", m.nextDue(m.vstate.LastCheckAt, m.versionCheckFrequency(), doneAt))
 			} else {
-				m.nextVersionRetry = time.Now().Add(frequencyDuration(versionCheckFrequency(m.vc)))
+				m.nextVersionRetry = time.Now().Add(frequencyDuration(m.versionCheckFrequency()))
 				log.Debug("version-check", "no release information returned", "next_check", formatDue(m.nextVersionRetry))
 			}
 		} else {
-			log.Trace("version-check", "not due - skipping", "next_due", m.nextDue(m.vstate.LastCheckAt, versionCheckFrequency(m.vc), now))
+			log.Trace("version-check", "not due - skipping", "next_due", m.nextDue(m.vstate.LastCheckAt, m.versionCheckFrequency(), now))
 		}
 	}
 
@@ -411,7 +419,7 @@ func (m *Manager) versionDue(now time.Time) bool {
 	if m == nil || m.vstate == nil {
 		return true
 	}
-	return m.due(m.vstate.LastCheckAt, versionCheckFrequency(m.vc), now)
+	return m.due(m.vstate.LastCheckAt, m.versionCheckFrequency(), now)
 }
 
 // swhether a usage stats report should run now
@@ -441,7 +449,7 @@ func (m *Manager) NextVersionDue(now time.Time) (time.Time, bool) {
 	if m == nil || m.vstate == nil {
 		return now.Add(initialReportDelay), true
 	}
-	t, _ := m.dueTime(m.vstate.LastCheckAt, versionCheckFrequency(m.vc), now)
+	t, _ := m.dueTime(m.vstate.LastCheckAt, m.versionCheckFrequency(), now)
 	if !m.nextVersionRetry.IsZero() && m.nextVersionRetry.After(t) {
 		t = m.nextVersionRetry
 	}
@@ -490,6 +498,8 @@ func (m *Manager) eventAckAt() time.Time {
 }
 func frequencyDuration(freq string) time.Duration {
 	switch freq {
+	case "hourly":
+		return time.Hour
 	case "weekly":
 		return 7 * 24 * time.Hour
 	case "monthly":
@@ -612,6 +622,24 @@ func (m *Manager) notifyVersion(current string, opts Options, resp *VersionRespo
 		}
 		log.Debug("version-check", fmt.Sprintf("up to date - running %s, server reports %s", current, resp.Latest))
 	}
+
+	// let beta/edge know a stable has also been released
+	if resp.Stable != nil && resp.Stable.Latest != "" && resp.Stable.Latest != resp.Latest {
+		if IsNewer(current, resp.Stable.Latest) {
+			msg := fmt.Sprintf("stable release available: %s", resp.Stable.Latest)
+			if resp.Stable.DateReleased != "" {
+				msg += fmt.Sprintf(" (released %s)", resp.Stable.DateReleased)
+			}
+			if resp.Stable.Critical {
+				msg += " - marked critical"
+			}
+			fields := []any{"current", current, "channel", opts.Channel}
+			if resp.Stable.DownloadURL != "" {
+				fields = append(fields, "download_url", resp.Stable.DownloadURL)
+			}
+			log.Info("version-check", msg, fields...)
+		}
+	}
 }
 func parseImageTag(path string) string {
 	data, err := os.ReadFile(path)
@@ -685,12 +713,15 @@ func statsFrequency(cfg *config.StatsConfig) string {
 	return config.DefaultStatsFrequency
 }
 
-// version check interval
-func versionCheckFrequency(vc *config.CheckNewVersionConfig) string {
-	if vc == nil || vc.Frequency == "" {
-		return config.DefaultCheckNewVersionFrequency
+// develop moves fast
+func (m *Manager) versionCheckFrequency() string {
+	if m != nil && m.vc != nil && m.vc.Frequency != "" {
+		return m.vc.Frequency
 	}
-	return vc.Frequency
+	if m != nil && m.channel == "edge" {
+		return "hourly"
+	}
+	return config.DefaultCheckNewVersionFrequency
 }
 
 // don't nag - only warn once when no state dir

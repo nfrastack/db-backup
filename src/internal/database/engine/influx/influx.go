@@ -109,6 +109,7 @@ type Dumper struct {
 	ctx             context.Context
 	lastPingVersion string
 	mode            string
+	server          common.ServerVersion
 }
 
 func resolveBackupMode(requested string) string {
@@ -188,6 +189,8 @@ func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
 
 	var total dumpStats
 	bw := bufio.NewWriterSize(w, 1<<20)
+	fmt.Fprint(bw, common.DumpBanner("#", "InfluxDB",
+		fmt.Sprintf("Host: %s:%d  Server: %s", d.host, d.port, d.server.Display())))
 	for _, db := range dbNames {
 		st, err := d.dumpDatabase(bw, db, "", "")
 		if err != nil {
@@ -1068,6 +1071,7 @@ func (d *Dumper) probeV1(ctx context.Context) error {
 		return fmt.Errorf("ping: influx responded %d", resp.StatusCode)
 	}
 	d.lastPingVersion = verHeader
+	d.server = ParseServerVersion(verHeader)
 	return nil
 }
 
@@ -1098,6 +1102,14 @@ func (d *Dumper) probeV2(ctx context.Context) error {
 	}
 	if n, ok := parseMajorVersion(verHeader); ok && n != 2 {
 		return fmt.Errorf("health: server reports version v%d, not v2", n)
+	}
+	var health struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal(body, &health); err == nil && health.Version != "" {
+		d.server = ParseServerVersion(health.Version)
+	} else if verHeader != "" {
+		d.server = ParseServerVersion(verHeader)
 	}
 	return nil
 }
@@ -1367,7 +1379,7 @@ func (d *Dumper) baseURL() string {
 }
 
 func (d *Dumper) scheme() string {
-	if d.tlsCfg != nil {
+	if d.tlsCfg != nil && d.tlsCfg.Enable {
 		return "https"
 	}
 	return "http"

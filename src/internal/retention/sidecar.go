@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -43,6 +44,7 @@ type Sidecar struct {
 	Type            string            `json:"type"`
 	DB              string            `json:"db"`
 	Host            string            `json:"host"`
+	Server          *ServerMeta       `json:"server,omitempty"`
 	Timestamp       string            `json:"timestamp"`
 	Checksums       map[string]string `json:"checksums"`
 	Size            int64             `json:"size"`
@@ -72,6 +74,12 @@ type JobMeta struct {
 	Schedule string `json:"schedule,omitempty"`
 }
 
+type ServerMeta struct {
+	Engine  string `json:"engine"`
+	Version string `json:"version"`
+	Arch    string `json:"arch,omitempty"`
+}
+
 type EncryptionMeta struct {
 	Type       string   `json:"type"`
 	Recipients []string `json:"recipients,omitempty"`
@@ -84,8 +92,35 @@ var dumpFormatExts = []string{".sql", ".mongo", ".redis", ".influx", ".couch"}
 
 func BuildFilename(dbType, dbName, host, strategy string) string {
 	ts := TimestampString()
-	return fmt.Sprintf("%s-%s-%s-%s-%s%s", dbType, dbName, host, strategy, ts, database.FormatExtension(dbType))
+	dbTok, hostTok := defaultFilenameTokens(dbType, dbName, host)
+	return joinNonEmpty("-", dbType, dbTok, hostTok, strategy, ts) + database.FormatExtension(dbType)
 }
+
+func defaultFilenameTokens(dbType, dbName, host string) (string, string) {
+	if strings.EqualFold(dbType, "sqlite") || strings.EqualFold(dbType, "sqlite3") {
+		effective := dbName
+		if effective == "" {
+			effective = host
+		}
+		if effective == "" {
+			return "", ""
+		}
+		base := filepath.Base(effective)
+		return strings.TrimSuffix(base, filepath.Ext(base)), ""
+	}
+	return dbName, host
+}
+
+func joinNonEmpty(sep string, parts ...string) string {
+	kept := parts[:0]
+	for _, p := range parts {
+		if p != "" {
+			kept = append(kept, p)
+		}
+	}
+	return strings.Join(kept, sep)
+}
+
 func ParseTimestamp(filename string) (time.Time, bool) {
 	base := strings.TrimSuffix(filename, ".gpg")
 	base = strings.TrimSuffix(base, ".zst")
@@ -132,8 +167,8 @@ func StrategyFromFilename(filename string) string {
 	base = stripFormatExt(base)
 	parts := strings.Split(base, "-")
 
-	if len(parts) >= 6 {
-		switch parts[3] {
+	if len(parts) >= 4 {
+		switch parts[len(parts)-3] {
 		case "incr":
 			return "incremental"
 		case "diff":

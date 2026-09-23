@@ -64,9 +64,9 @@ build-all:
 	@echo "==> all platforms built"
 
 test:
-	@if [ -d ../dbb/unit-tests ]; then \
+	@if [ -d ../dbb-test/unit-tests ]; then \
 		rsync -a --include='*/' --include='*_test.go' --exclude='*' \
-			../dbb/unit-tests/ src/; \
+			../dbb-test/unit-tests/ src/; \
 	fi
 	cd $(SRC_DIR) && $(GO) test -count=1 -short ./internal/... ./supported/... ./cmd/dbb/...
 	@find src -name "*_test.go" -delete 2>/dev/null || true
@@ -74,8 +74,8 @@ test:
 test-all: test
 
 test-integration:
-	@if [ -x ../dbb/matrix/run-all.sh ]; then \
-		../dbb/matrix/run-all.sh; \
+	@if [ -x ../dbb-test/matrix/run-all.sh ]; then \
+		../dbb-test/matrix/run-all.sh; \
 	else \
 		echo "no dbb repo"; \
 		exit 2; \

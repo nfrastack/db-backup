@@ -7,6 +7,7 @@
 .github/
 .gitignore
 CHANGELOG.md
+!CHANGELOG.md
 NOTICE
 TRADEMARKS.md
 dbb

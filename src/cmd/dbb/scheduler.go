@@ -15,6 +15,7 @@ import (
 	"github.com/nfrastack/db-backup/internal/log"
 	sched "github.com/nfrastack/db-backup/internal/scheduler"
 	"github.com/nfrastack/db-backup/internal/scheduler/runner"
+	versionPkg "github.com/nfrastack/db-backup/internal/version"
 )
 
 func cmdScheduler(args []string) int {
@@ -71,6 +72,12 @@ func cmdScheduler(args []string) int {
 	}
 
 	logSupporterNudge(len(cfg.Jobs))
+
+	if stale, age := versionPkg.StaleDevBuild(time.Now()); stale {
+		log.Warn("startup",
+			fmt.Sprintf("dbb develop build is %d days old (built %s) and is likely stale - move to a stable release or rebuild from develop for latest fixes", age, versionPkg.BuildDate),
+			"build_date", versionPkg.BuildDate, "age_days", age)
+	}
 
 	run := func(job config.JobConfig) error {
 		return runner.Run(ctx, job, "scheduled")

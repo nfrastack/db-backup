@@ -62,7 +62,7 @@ func IncrementalDump(ctx context.Context, w io.Writer, host string, port int, us
 	}
 	d := influx.NewDumper(host, port, user, pass, dbName, 0, tlsCfg)
 	d.SetConnectivity(&config.ConnectivityConfig{
-		Enabled:       true,
+		Enabled:       config.BoolPtr(true),
 		Method:        config.MethodFull,
 		RetryInterval: 2,
 		Timeout:       30,

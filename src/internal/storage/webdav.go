@@ -10,11 +10,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/nfrastack/db-backup/internal/log"
 )
 
 type webdavStorage struct {
@@ -58,12 +61,17 @@ func (s *webdavStorage) Delete(ctx context.Context, filePath string) error {
 			return fmt.Errorf("webdav: delete req: %w", err)
 		}
 		s.setAuth(req)
+		log.Trace("webdav", "delete attempt",
+			"host", endpointHost(s.baseURL), "path", filePath, "attempt", attempt, "status", "trace")
 		resp, err := s.client.Do(req)
 		if err != nil {
 			if ctx.Err() != nil {
 				return err
 			}
 			lastErr = err
+			log.Debug("webdav", "delete attempt failed, retrying",
+				"host", endpointHost(s.baseURL), "path", filePath,
+				"attempt", attempt, "error", err.Error(), "status", "debug")
 			continue
 		}
 		resp.Body.Close()
@@ -74,6 +82,9 @@ func (s *webdavStorage) Delete(ctx context.Context, filePath string) error {
 			return fmt.Errorf("webdav: delete %s: %s", url, resp.Status)
 		}
 		lastErr = fmt.Errorf("webdav: delete %s: %s", url, resp.Status)
+		log.Debug("webdav", "delete attempt failed, retrying",
+			"host", endpointHost(s.baseURL), "path", filePath,
+			"attempt", attempt, "error", lastErr.Error(), "status", "debug")
 	}
 	if lastErr != nil {
 		return lastErr
@@ -97,12 +108,17 @@ func (s *webdavStorage) Download(ctx context.Context, filePath string) (io.ReadC
 			return nil, 0, fmt.Errorf("webdav: get req: %w", err)
 		}
 		s.setAuth(req)
+		log.Trace("webdav", "download attempt",
+			"host", endpointHost(s.baseURL), "path", filePath, "attempt", attempt, "status", "trace")
 		resp, err := s.client.Do(req)
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil, 0, err
 			}
 			lastErr = err
+			log.Debug("webdav", "download attempt failed, retrying",
+				"host", endpointHost(s.baseURL), "path", filePath,
+				"attempt", attempt, "error", err.Error(), "status", "debug")
 			continue
 		}
 		if resp.StatusCode < 300 {
@@ -114,6 +130,9 @@ func (s *webdavStorage) Download(ctx context.Context, filePath string) (io.ReadC
 			return nil, 0, fmt.Errorf("webdav: get %s: %s: %s", url, resp.Status, strings.TrimSpace(string(b)))
 		}
 		lastErr = fmt.Errorf("webdav: get %s: %s: %s", url, resp.Status, strings.TrimSpace(string(b)))
+		log.Debug("webdav", "download attempt failed, retrying",
+			"host", endpointHost(s.baseURL), "path", filePath,
+			"attempt", attempt, "error", lastErr.Error(), "status", "debug")
 	}
 	if lastErr != nil {
 		return nil, 0, lastErr
@@ -139,12 +158,17 @@ func (s *webdavStorage) List(ctx context.Context, prefix string) ([]Entry, error
 		}
 		s.setAuth(req)
 		req.Header.Set("Depth", "1")
+		log.Trace("webdav", "list attempt",
+			"host", endpointHost(s.baseURL), "prefix", prefix, "attempt", attempt, "status", "trace")
 		resp, err = s.client.Do(req)
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil, err
 			}
 			lastErr = err
+			log.Debug("webdav", "list attempt failed, retrying",
+				"host", endpointHost(s.baseURL), "prefix", prefix,
+				"attempt", attempt, "error", err.Error(), "status", "debug")
 			continue
 		}
 		if resp.StatusCode < 300 {
@@ -156,6 +180,9 @@ func (s *webdavStorage) List(ctx context.Context, prefix string) ([]Entry, error
 			return nil, fmt.Errorf("webdav: propfind %s: %s: %s", url, resp.Status, strings.TrimSpace(string(b)))
 		}
 		lastErr = fmt.Errorf("webdav: propfind %s: %s: %s", url, resp.Status, strings.TrimSpace(string(b)))
+		log.Debug("webdav", "list attempt failed, retrying",
+			"host", endpointHost(s.baseURL), "prefix", prefix,
+			"attempt", attempt, "error", lastErr.Error(), "status", "debug")
 	}
 	if lastErr != nil && resp == nil {
 		return nil, lastErr
@@ -223,10 +250,10 @@ func (s *webdavStorage) Upload(ctx context.Context, filePath string, r io.Reader
 	if err != nil {
 		return 0, fmt.Errorf("webdav spool: %w", err)
 	}
-	if _, err := spool.Seek(0, io.SeekStart); err != nil {
-		return 0, fmt.Errorf("webdav spool rewind: %w", err)
-	}
+	spool.Close()
 
+	log.Debug("webdav", "uploading object",
+		"host", endpointHost(s.baseURL), "path", filePath, "bytes", n, "status", "debug")
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
@@ -235,12 +262,16 @@ func (s *webdavStorage) Upload(ctx context.Context, filePath string, r io.Reader
 				return 0, ctx.Err()
 			case <-time.After(time.Duration(500*(1<<uint(attempt-1))) * time.Millisecond):
 			}
-			if _, err := spool.Seek(0, io.SeekStart); err != nil {
-				return 0, fmt.Errorf("webdav spool rewind: %w", err)
-			}
 		}
-		req, err := http.NewRequestWithContext(ctx, "PUT", url, spool)
+		body, err := os.Open(spoolPath)
 		if err != nil {
+			return 0, fmt.Errorf("webdav: put %s: reopen spool: %w", url, err)
+		}
+		log.Trace("webdav", "upload attempt",
+			"host", endpointHost(s.baseURL), "path", filePath, "attempt", attempt, "status", "trace")
+		req, err := http.NewRequestWithContext(ctx, "PUT", url, body)
+		if err != nil {
+			_ = body.Close()
 			return 0, fmt.Errorf("webdav: put req: %w", err)
 		}
 		s.setAuth(req)
@@ -248,15 +279,22 @@ func (s *webdavStorage) Upload(ctx context.Context, filePath string, r io.Reader
 		req.ContentLength = n
 
 		resp, err := s.client.Do(req)
+		_ = body.Close()
 		if err != nil {
 			if ctx.Err() != nil {
 				return 0, err
 			}
 			lastErr = err
+			log.Debug("webdav", "upload attempt failed, retrying",
+				"host", endpointHost(s.baseURL), "path", filePath,
+				"attempt", attempt, "error", err.Error(), "status", "debug")
 			continue
 		}
 		if resp.StatusCode < 300 {
 			resp.Body.Close()
+			log.Debug("webdav", "upload complete",
+				"host", endpointHost(s.baseURL), "path", filePath,
+				"bytes", n, "attempts", attempt+1, "status", "debug")
 			return n, nil
 		}
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
@@ -265,6 +303,9 @@ func (s *webdavStorage) Upload(ctx context.Context, filePath string, r io.Reader
 			return 0, fmt.Errorf("webdav: put %s: %s: %s", url, resp.Status, strings.TrimSpace(string(b)))
 		}
 		lastErr = fmt.Errorf("webdav: put %s: %s: %s", url, resp.Status, strings.TrimSpace(string(b)))
+		log.Debug("webdav", "upload attempt failed, retrying",
+			"host", endpointHost(s.baseURL), "path", filePath,
+			"attempt", attempt, "error", lastErr.Error(), "status", "debug")
 	}
 	if lastErr != nil {
 		return 0, lastErr
@@ -285,12 +326,20 @@ func init() {
 }
 
 func newWebDAVStorage(opts map[string]string) (Storage, error) {
-	baseURL := opts["url"]
+	baseURL := strings.TrimRight(strings.TrimSpace(opts["url"]), "/")
 	if baseURL == "" {
 		return nil, fmt.Errorf("webdav: url required")
 	}
-	baseURL = strings.TrimRight(baseURL, "/")
+	if !strings.Contains(baseURL, "://") {
+		baseURL = "https://" + baseURL
+	}
+	if u, err := url.Parse(baseURL); err != nil || u.Host == "" {
+		return nil, fmt.Errorf("webdav: invalid url %q (set webdav.url to a URL such as https://host/path)", opts["url"])
+	}
 
+	log.Debug("webdav", "backend initialised",
+		"host", endpointHost(baseURL), "path", strings.Trim(strings.TrimPrefix(opts["path"], "/"), "/"),
+		"user", opts["user"], "tls_verify", opts["tls_verify"], "status", "debug")
 	return &webdavStorage{
 		baseURL: baseURL,
 		prefix:  strings.Trim(strings.TrimPrefix(opts["path"], "/"), "/"),

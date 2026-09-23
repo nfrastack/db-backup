@@ -17,13 +17,10 @@ func IsImageStale(running, available string) bool {
 }
 
 func IsNewer(current, candidate string) bool {
-	curCore, curTag, ok := splitVersion(current)
-	if !ok {
-		return false
-	}
-	candCore, candTag, ok := splitVersion(candidate)
-	if !ok {
-		return false
+	curCore, curTag, curOK := splitVersion(current)
+	candCore, candTag, candOK := splitVersion(candidate)
+	if !curOK || !candOK {
+		return !strings.EqualFold(strings.TrimSpace(current), strings.TrimSpace(candidate))
 	}
 	switch compareCores(curCore, candCore) {
 	case 1:
@@ -31,7 +28,6 @@ func IsNewer(current, candidate string) bool {
 	case -1:
 		return true
 	}
-	// equal cores: plain release beats any prerelease
 	switch {
 	case curTag == "" && candTag != "":
 		return false
@@ -57,6 +53,7 @@ func compareCores(a, b string) int {
 		if i < len(bs) {
 			bv, _ = strconv.Atoi(bs[i])
 		}
+		// equal cores: plain release beats any prerelease
 		switch {
 		case av < bv:
 			return -1

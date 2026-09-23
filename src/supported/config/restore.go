@@ -43,6 +43,9 @@ func mergeRestore(dst, src *config.RestoreConfig) {
 	if dst.Passphrase == "" {
 		dst.Passphrase = src.Passphrase
 	}
+	if dst.CreateDB == nil {
+		dst.CreateDB = src.CreateDB
+	}
 }
 
 func resolveRestore(c *config.Config, r *config.RestoreConfig) {

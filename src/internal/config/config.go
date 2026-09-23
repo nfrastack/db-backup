@@ -95,10 +95,9 @@ type RestoreConfig struct {
 	Connection string `yaml:"connection"`
 	StorageRef string `yaml:"storage"`
 	ProfileRef string `yaml:"profile,omitempty"`
-
 	Identity   string `yaml:"identity,omitempty"`
 	Passphrase string `yaml:"passphrase,omitempty"`
-
+	CreateDB *bool `yaml:"create_db,omitempty"`
 	Type       string         `yaml:"-"`
 	Host       string         `yaml:"-"`
 	Port       int            `yaml:"-"`
@@ -179,10 +178,39 @@ type HooksConfig struct {
 }
 
 type ConnectivityConfig struct {
-	Enabled       bool   `yaml:"enabled"`
+	Enabled       *bool  `yaml:"enabled"`
 	Method        string `yaml:"method"`
 	RetryInterval int    `yaml:"retry_interval"`
 	Timeout       int    `yaml:"timeout"`
+}
+
+func (c *ConnectivityConfig) IsEnabled() bool {
+	return c != nil && (c.Enabled == nil || *c.Enabled)
+}
+
+func (c *ConnectivityConfig) UnmarshalYAML(value *yaml.Node) error {
+	type plain ConnectivityConfig
+	var p plain
+	if err := value.Decode(&p); err != nil {
+		return err
+	}
+	var fields map[string]any
+	if err := value.Decode(&fields); err != nil {
+		return err
+	}
+	for k := range fields {
+		switch k {
+		case "enabled", "method", "retry_interval", "timeout":
+		default:
+			return fmt.Errorf("connectivity: unknown field %q (want enabled|method|retry_interval|timeout)", k)
+		}
+	}
+	*c = ConnectivityConfig(p)
+	return nil
+}
+
+func BoolPtr(b bool) *bool {
+	return &b
 }
 
 const (
@@ -470,15 +498,16 @@ func StatsStatePath(stateDir string) string {
 	}
 	return filepath.Join(stateDir, "stats.json")
 }
+
 func (v *CheckNewVersionConfig) Validate() error {
 	if v == nil {
 		return nil
 	}
 	switch v.Frequency {
-	case "", "daily", "weekly", "monthly":
+	case "", "hourly", "daily", "weekly", "monthly":
 		return nil
 	}
-	return fmt.Errorf("check_new_version.frequency must be daily, weekly or monthly (got %q)", v.Frequency)
+	return fmt.Errorf("check_new_version.frequency must be hourly, daily, weekly or monthly (got %q)", v.Frequency)
 }
 
 func (c *ConnectivityConfig) Validate() error {
@@ -670,6 +699,9 @@ func (c *Config) resolveJob(job *JobConfig) {
 				if job.Databases.Views == nil && prof.Views != nil && !job.unsetKey("databases") {
 					job.Databases.Views = prof.Views
 				}
+				if job.Databases.RawBlobs == nil && prof.RawBlobs != nil && !job.unsetKey("databases") {
+					job.Databases.RawBlobs = prof.RawBlobs
+				}
 				if job.Databases.Tables == nil && prof.Tables != nil && !job.unsetKey("tables") {
 					t := *prof.Tables
 					job.Databases.Tables = &t
@@ -724,6 +756,10 @@ func (c *Config) resolveJob(job *JobConfig) {
 		} else if job.Databases == nil {
 			job.Databases = &DatabaseList{Include: []string{job.DatabaseRef}}
 		}
+	}
+
+	if !job.splitDBSet {
+		job.SplitDB = true
 	}
 
 	if job.Blackout != nil && len(*job.Blackout) > 0 {
@@ -797,6 +833,15 @@ func (c *Config) resolveJob(job *JobConfig) {
 			job.Compression = &CompressionConfig{Type: "zstd", Level: 3, Threads: 1}
 		}
 	}
+
+	if !job.unsetKey("compression") {
+		if job.Compression.Type == "" {
+			job.Compression.Type = "zstd"
+		}
+		if job.Compression.Level == 0 {
+			job.Compression.Level = 3
+		}
+	}
 	if job.unsetKey("compression") {
 		job.Compression = &CompressionConfig{}
 	}
@@ -854,7 +899,7 @@ func (c *Config) resolveJob(job *JobConfig) {
 			job.Connectivity = &cp
 		default:
 			job.Connectivity = &ConnectivityConfig{
-				Enabled:       true,
+				Enabled:       BoolPtr(true),
 				Method:        MethodFull,
 				RetryInterval: 5,
 				Timeout:       30,

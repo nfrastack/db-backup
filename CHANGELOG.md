@@ -1,3 +1,83 @@
+## 5.0.3 2026-09-23 <code at nfrastack dot com>
+
+   ### Added
+      - add additional version detail in dump bannner comments
+      - add %dbs% filename tag to expand database names when ALL+split_db:false
+      - add warning if running a stale develop build
+      - add restore.create_db and cli create-db variable to control auto db creation
+      - add engine version/arch detection routines
+      - fail spectacularly when encountering an error in restore
+      - record database server version in sidecars and usage stats
+      - default connectivity.enabled to true on partial blocks
+      - default compression type/level on partial blocks
+      - warn when engine version is different when restoring
+      - (container) support undocumented trace log level
+      - (mysql) experimental dump raw_blobs option to write blobs as escaped raw strings
+      - (postgres) additional trace output
+      - (postgres) avoid server timeout with long operations
+      - (storage/azure) add additional debug and trace verbosity
+      - (storage/s3) add aditional debug and trace verbosity
+      - (storage/webdav) add additional debug and trace verbosity
+
+   ### Changed
+      - change name: ALL database backups with split_db: false to be filename _all_
+      - default backup filename tag omits empty db/host components
+      - split_db revert to default true
+      - update stats schema to 5
+      - version check on beta/edge also notifies if stable updated
+      - (backup) create_latest strips empty parameters when naming
+      - (container) wasn't reading DBBACKUP_LICENSE in certain cases
+      - (container) halt container and output error code value when manual_run_forever=false
+      - (container) s3 tls configuration properly generates in config
+      - (influx) use http as default
+      - (mysql) refine auto detection to solve dump and restore variances
+      - (mysql) dump parity
+        - dump escape null bytes
+        - dump verify max_allowed_packet
+      - (mysql) restore parity
+        - add explicit USE statements if missing
+        - enforce binlog session for incremental/differential
+        - split inserts into 1mb batches
+        - strip DEFINER and own by restoring user
+        - shrink insert batches on small max_allowed_packet
+      - (postgres) pg_dump parity
+        - dump partitions as CREATE plus ATTACH with one COPY/partition
+        - dump comments, constraints, extensions, grants, materialized views, rules, statistics
+        - dump custom collations and per column COLLATE
+        - dump default privileges
+        - dump domain CHECKs after functions
+        - dump encode geometric types explicitly
+        - dump exclusion constraints post data dump
+        - dump extensions in dependency order
+        - dump functions before tables
+        - dump inherited tables with inline INHERITS, parents first
+        - dump create multiranges via multirange_type_name
+        - dump partition and inheritance data with ONLY statements
+        - dump PUBLCIATIONS with tables and options and skip SUBSCRIPTIONs
+        - dump user aggregates as CREATE AGGREGATE
+        - dump named not NULLs
+        - dump referenced largeobjects from oid columns
+        - dump skip auto generatied columns
+        - dump quoting rules for json data
+        - dump encode (var)bit, bytea, (multi)range, uuid as plain text
+        - dump seperate a constraint per transaction
+        - dump warn on COPY fall back columns
+      - (postgres) restore parity
+        - allow jsonb values properly
+        - change order of foreign key creation
+        - compatibility with pg_restore --clean
+        - create empty tables with strange dump characters
+        - don't precreate identity backed sequences
+        - truncation on json rows wider than 1mb
+      - (redis) hard error on ALL
+      - (redis) allow name: int for backup and restore
+      - (redis) dump streams
+      - (sqlite) normalize NAME/HOST file path into a single filename token
+      - (storage) fixes
+        - (azure/s3/webdav) open new handle on each connection attempt
+        - (s3) default to https if url is not passed
+
+
 ## 5.0.2 2026-09-12 <code at nfrastack dot com>
 
    ### Added

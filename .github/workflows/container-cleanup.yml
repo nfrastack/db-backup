@@ -1,4 +1,4 @@
-# prune old develop-<sha> container tags
+# prune previous generation develop-<sha> container tags once per release (current generation is always kept - old generation goes 7 days after new release tag lands)
 
 name: Container Cleanup
 
@@ -12,11 +12,6 @@ on:
         required: false
         type: boolean
         default: true
-      keep_n:
-        description: 'How many develop-<sha> tags to keep'
-        required: false
-        type: number
-        default: 5
 
 permissions:
   contents: read
@@ -28,10 +23,26 @@ jobs:
     permissions:
       packages: write
     env:
-      KEEP_N: ${{ inputs.keep_n || 5 }}
       DRY_RUN: ${{ github.event_name == 'schedule' && 'false' || inputs.dry_run }}
+      ORPHAN_GRACE_HOURS: '48'
+      ROLLOVER_GRACE_DAYS: '7'
     steps:
-      - name: Delete old develop-<sha> versions (keep newest N)
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Delete previous-generation develop-<sha> versions
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -39,8 +50,31 @@ jobs:
           repo="${GITHUB_REPOSITORY}"
           owner="${repo%%/*}"
           pkg="${repo##*/}"
-          keep="${KEEP_N}"
-          echo "GHCR cleanup: package=${pkg} keep=${keep} dry_run=${DRY_RUN}"
+          echo "GHCR cleanup: package=${pkg} dry_run=${DRY_RUN}"
+          LATEST_RELEASE=$(git tag --list --sort=-creatordate | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true)
+          RELEASE_TS=0
+          if [ -n "$LATEST_RELEASE" ]; then
+            RELEASE_TS=$(git log -1 --format=%ct "$LATEST_RELEASE" 2>/dev/null || echo 0)
+          fi
+          now=$(date +%s)
+          ROLLOVER_OPEN=0
+          if [ -n "$LATEST_RELEASE" ] && [ "$RELEASE_TS" -gt 0 ] && \
+             [ $((now - RELEASE_TS)) -gt $(( ${ROLLOVER_GRACE_DAYS:-7} * 86400 )) ]; then
+            ROLLOVER_OPEN=1
+          fi
+          echo "Latest release: ${LATEST_RELEASE:-none}, old-generation deletable: $([ "$ROLLOVER_OPEN" = 1 ] && echo yes || echo "no (within grace)")"
+
+          commit_generation() { 
+            sha="${1#develop-}"
+            cts=$(git log -1 --format=%ct "$sha" 2>/dev/null || echo "")
+            if [ -z "$LATEST_RELEASE" ] || [ -z "$cts" ]; then
+              echo current
+            elif [ "$cts" -lt "$RELEASE_TS" ]; then
+              echo old
+            else
+              echo current
+            fi
+          }
 
           versions_json=$(mktemp)
           if ! gh api -H "Accept: application/vnd.github+json" \
@@ -65,17 +99,19 @@ jobs:
 
           total="${#candidates[@]}"
           echo "Found ${total} develop-<sha> versions."
-          if [ "$total" -le "$keep" ]; then
-            echo "Nothing to prune (total <= keep)."
-            exit 0
-          fi
-
-          delete_count=$((total - keep))
-          echo "Deleting ${delete_count} oldest (keeping newest ${keep})."
-          for ((i = 0; i < delete_count; i++)); do
-            line="${candidates[$i]}"
+          for line in ${candidates[@]+"${candidates[@]}"}; do
+            updated=$(echo "$line" | awk '{print $1}')
             vid=$(echo "$line" | awk '{print $2}')
             tag=$(echo "$line" | awk '{print $3}')
+            fallback=$(date -u -d "$updated" +%s 2>/dev/null || echo "")
+            if [ "$(commit_generation "$tag" "$fallback")" != "old" ]; then
+              echo "Keeping current-generation version ${vid} (tag ${tag})"
+              continue
+            fi
+            if [ "$ROLLOVER_OPEN" != "1" ]; then
+              echo "Keeping old-generation version ${vid} (tag ${tag}, release within grace)"
+              continue
+            fi
             if [ "$DRY_RUN" = "true" ]; then
               echo "[DRY RUN] Would delete version ${vid} (tag ${tag})"
               continue
@@ -88,27 +124,105 @@ jobs:
             echo "WARN Failed to delete version ${vid} (tag ${tag})"
           done
 
+          echo "Resolving child digests of surviving tagged versions (orphan protection)"
+          protected=$(mktemp)
+          while read -r digest; do
+            [ -n "$digest" ] || continue
+            echo "$digest" >> "$protected"
+            raw=$(docker buildx imagetools inspect --raw "ghcr.io/${repo}@${digest}" 2>/dev/null) || {
+              echo "ERROR Cannot inspect ghcr.io/${repo}@${digest}, deleting no orphans."
+              exit 1
+            }
+            echo "$raw" | jq -r '.manifests // empty | .[].digest' >> "$protected" || {
+              echo "ERROR Cannot parse manifest for ${digest}, deleting no orphans."
+              exit 1
+            }
+          done < <(jq -r '.[] | select((.metadata.container.tags // []) | length > 0) | .name' "$versions_json" | sort -u || true)
+
+          cutoff=$(date -u -d "${ORPHAN_GRACE_HOURS:-48} hours ago" +%s)
+          mapfile -t orphans < <(jq -r \
+            '.[] | select((.metadata.container.tags // []) | length == 0) | "\(.updated_at) \(.name) \(.id)"' \
+            "$versions_json" | sort || true)
+
+          orphan_total="${#orphans[@]}"
+          echo "Found ${orphan_total} untagged versions."
+          for line in ${orphans[@]+"${orphans[@]}"}; do
+            updated=$(echo "$line" | awk '{print $1}')
+            digest=$(echo "$line" | awk '{print $2}')
+            vid=$(echo "$line" | awk '{print $3}')
+            if grep -qxF "$digest" "$protected" 2>/dev/null; then
+              continue
+            fi
+            age=$(date -u -d "$updated" +%s 2>/dev/null || echo "")
+            if [ -z "$age" ]; then
+              echo "WARN Cannot parse date ${updated} for untagged ${digest}, keeping it."
+              continue
+            fi
+            if [ "$age" -ge "$cutoff" ]; then
+              echo "Keeping recent untagged ${digest} (younger than grace window)."
+              continue
+            fi
+            if [ "$DRY_RUN" = "true" ]; then
+              echo "[DRY RUN] Would delete orphan version ${vid} (digest ${digest})"
+              continue
+            fi
+            echo "Deleting orphan version ${vid} (digest ${digest})"
+            gh api --method DELETE -H "Accept: application/vnd.github+json" \
+              "/orgs/${owner}/packages/container/${pkg}/versions/${vid}" 2>/dev/null || \
+            gh api --method DELETE -H "Accept: application/vnd.github+json" \
+              "/user/packages/container/${pkg}/versions/${vid}" 2>/dev/null || \
+            echo "WARN Failed to delete orphan version ${vid} (digest ${digest})"
+          done
+
   dockerhub:
     name: Prune Docker Hub develop-<sha> tags
     runs-on: ubuntu-latest
     env:
-      KEEP_N: ${{ inputs.keep_n || 5 }}
       DRY_RUN: ${{ github.event_name == 'schedule' && 'false' || inputs.dry_run }}
+      ROLLOVER_GRACE_DAYS: '7'
     steps:
-      - name: Delete old develop-<sha> tags (keep newest N)
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Delete old-generation develop-<sha> tags
         env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKER_PASSWORD }}
         run: |
           set -euo pipefail
           repo="${GITHUB_REPOSITORY}"
           ns="${repo%%/*}"
           dh_repo="$(echo "${repo##*/}" | sed 's/^container-//')"
-          keep="${KEEP_N}"
-          echo "Docker Hub cleanup: ${ns}/${dh_repo} keep=${keep} dry_run=${DRY_RUN}"
+          echo "Docker Hub cleanup: ${ns}/${dh_repo} dry_run=${DRY_RUN}"
+          LATEST_RELEASE=$(git tag --list --sort=-creatordate | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true)
+          RELEASE_TS=0
+          if [ -n "$LATEST_RELEASE" ]; then
+            RELEASE_TS=$(git log -1 --format=%ct "$LATEST_RELEASE" 2>/dev/null || echo 0)
+          fi
+          now=$(date +%s)
+          ROLLOVER_OPEN=0
+          if [ -n "$LATEST_RELEASE" ] && [ "$RELEASE_TS" -gt 0 ] && \
+             [ $((now - RELEASE_TS)) -gt $(( ${ROLLOVER_GRACE_DAYS:-7} * 86400 )) ]; then
+            ROLLOVER_OPEN=1
+          fi
+          echo "Latest release: ${LATEST_RELEASE:-none}, old-generation deletable: $([ "$ROLLOVER_OPEN" = 1 ] && echo yes || echo "no (within grace)")"
+
+          commit_generation() {
+            sha="${1#develop-}"
+            cts=$(git log -1 --format=%ct "$sha" 2>/dev/null || echo "")
+            if [ -z "$LATEST_RELEASE" ] || [ -z "$cts" ]; then
+              echo current
+            elif [ "$cts" -lt "$RELEASE_TS" ]; then
+              echo old
+            else
+              echo current
+            fi
+          }
 
           if [ -z "${DOCKERHUB_USERNAME:-}" ] || [ -z "${DOCKERHUB_TOKEN:-}" ]; then
-            echo "WARN DOCKERHUB_USERNAME/DOCKERHUB_TOKEN not set, deleting nothing."
+            echo "WARN DOCKER_USERNAME/DOCKER_PASSWORD not set, deleting nothing."
             exit 0
           fi
 
@@ -125,7 +239,7 @@ jobs:
           while :; do
             resp=$(curl -sS -H "Authorization: Bearer ${jwt}" \
               "https://hub.docker.com/v2/namespaces/${ns}/repositories/${dh_repo}/tags?page_size=100&page=${page}")
-            echo "$resp" | jq -r '.results[]? | "\(.last_updated) \(.name)"' >> "$all_tags" || {
+            echo "$resp" | jq -r '.results[]? | "\(.last_updated) \(.name) \(.digest // "")"' >> "$all_tags" || {
               echo "WARN Could not list Docker Hub tags, deleting nothing."
               exit 0
             }
@@ -135,20 +249,40 @@ jobs:
             [ "$page" -gt 50 ] && break
           done
 
-          mapfile -t candidates < <(grep -E ' develop-[0-9a-f]{7,12}$' "$all_tags" | sort || true)
-          total="${#candidates[@]}"
-          echo "Found ${total} develop-<sha> tags."
-          if [ "$total" -le "$keep" ]; then
-            echo "Nothing to prune (total <= keep)."
-            exit 0
-          fi
+          keep_digests=$(mktemp)
+          pending=$(mktemp)
+          while read -r updated name digest; do
+            [ -n "$name" ] || continue
+            if ! echo "$name" | grep -qE '^develop-[0-9a-f]{7,12}$'; then
+              [ -n "$digest" ] && echo "$digest" >> "$keep_digests"
+              continue
+            fi
+            fallback=$(date -u -d "$updated" +%s 2>/dev/null || echo "")
+            if [ "$(commit_generation "$name" "$fallback")" != "old" ]; then
+              echo "Keeping current-generation tag ${name}"
+              [ -n "$digest" ] && echo "$digest" >> "$keep_digests"
+              continue
+            fi
+            if [ "$ROLLOVER_OPEN" != "1" ]; then
+              echo "Keeping old-generation tag ${name} (release within grace)"
+              [ -n "$digest" ] && echo "$digest" >> "$keep_digests"
+              continue
+            fi
+            echo "${updated} ${name} ${digest}" >> "$pending"
+          done < <(sort -u "$all_tags" || true)
 
-          delete_count=$((total - keep))
-          echo "Deleting ${delete_count} oldest (keeping newest ${keep})."
-          for ((i = 0; i < delete_count; i++)); do
-            tag=$(echo "${candidates[$i]}" | awk '{print $2}')
+          while read -r updated tag digest; do
+            [ -n "$tag" ] || continue
             if ! echo "$tag" | grep -qE '^develop-[0-9a-f]{7,12}$'; then
               echo "WARN Skipping non-matching tag: $tag"
+              continue
+            fi
+            if [ -z "$digest" ]; then
+              echo "WARN No digest recorded for tag ${tag}, keeping it."
+              continue
+            fi
+            if grep -qxF "$digest" "$keep_digests" 2>/dev/null; then
+              echo "Keeping tag ${tag} (digest shared with a kept tag)"
               continue
             fi
             if [ "$DRY_RUN" = "true" ]; then
@@ -162,4 +296,4 @@ jobs:
             if [ "$code" != "204" ] && [ "$code" != "200" ]; then
               echo "WARN Delete of ${tag} returned HTTP ${code}"
             fi
-          done
+          done < "$pending"

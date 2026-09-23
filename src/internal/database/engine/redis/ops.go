@@ -21,9 +21,14 @@ import (
 )
 
 func ClientFor(host string, port int, pass string, tlsCfg *config.TLSConfig) *redis.Client {
+	return ClientForDB(host, port, pass, 0, tlsCfg)
+}
+
+func ClientForDB(host string, port int, pass string, db int, tlsCfg *config.TLSConfig) *redis.Client {
 	opts := &redis.Options{
 		Addr:        fmt.Sprintf("%s:%d", host, port),
 		Password:    pass,
+		DB:          db,
 		DialTimeout: 10 * time.Second,
 	}
 	if tc, err := common.BuildTLSConfig(tlsCfg); err == nil && tc != nil {
@@ -36,8 +41,12 @@ func Maintain(host string, port int, pass string, cfg *common.MaintenanceCfg) ([
 	return nil, nil
 }
 
-func Restore(r io.Reader, host string, port int, pass string, tlsCfg *config.TLSConfig) error {
-	rdb := ClientFor(host, port, pass, tlsCfg)
+func Restore(r io.Reader, host string, port int, pass, dbName string, tlsCfg *config.TLSConfig) error {
+	db, err := ParseDBIndex(dbName)
+	if err != nil {
+		return err
+	}
+	rdb := ClientForDB(host, port, pass, db, tlsCfg)
 	defer rdb.Close()
 	ctx := context.Background()
 
@@ -45,7 +54,7 @@ func Restore(r io.Reader, host string, port int, pass string, tlsCfg *config.TLS
 		return fmt.Errorf("ping: %w", err)
 	}
 	restoreStart := time.Now()
-	log.Debug("redis", "restore start", "host", host, "port", port)
+	log.Debug("redis", "restore start", "host", host, "port", port, "db", db)
 
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
@@ -147,6 +156,26 @@ func restoreLine(ctx context.Context, rdb *redis.Client, parts []string) error {
 			members = append(members, redis.Z{Score: score, Member: args[i+1]})
 		}
 		return rdb.ZAdd(ctx, args[0], members...).Err()
+	case "XADD":
+		if len(args) < 4 || len(args)%2 != 0 {
+			return fmt.Errorf("XADD needs key, id and field/value pairs")
+		}
+		vals := make(map[string]any, (len(args)-2)/2)
+		for i := 2; i+1 < len(args); i += 2 {
+			vals[args[i]] = args[i+1]
+		}
+		return rdb.XAdd(ctx, &redis.XAddArgs{Stream: args[0], ID: args[1], Values: vals}).Err()
+	case "XGROUP":
+		if len(args) < 4 || !strings.EqualFold(args[0], "CREATE") {
+			return fmt.Errorf("XGROUP only supports CREATE key group id [MKSTREAM]")
+		}
+		if len(args) > 5 || (len(args) == 5 && !strings.EqualFold(args[4], "MKSTREAM")) {
+			return fmt.Errorf("XGROUP CREATE supports only MKSTREAM, got %q", args[4:])
+		}
+		if len(args) == 5 {
+			return rdb.XGroupCreateMkStream(ctx, args[1], args[2], args[3]).Err()
+		}
+		return rdb.XGroupCreate(ctx, args[1], args[2], args[3]).Err()
 	case "EXPIRE":
 		if len(args) != 2 {
 			return fmt.Errorf("EXPIRE needs key and seconds")

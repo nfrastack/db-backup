@@ -56,6 +56,7 @@ type DatabaseList struct {
 	Events   *bool        `yaml:"events,omitempty"`
 	Triggers *bool        `yaml:"triggers,omitempty"`
 	Views    *bool        `yaml:"views,omitempty"`
+	RawBlobs *bool        `yaml:"raw_blobs,omitempty"`
 }
 
 type DbProfile struct {
@@ -68,6 +69,7 @@ type DbProfile struct {
 	Events     *bool        `yaml:"events,omitempty"`
 	Triggers   *bool        `yaml:"triggers,omitempty"`
 	Views      *bool        `yaml:"views,omitempty"`
+	RawBlobs   *bool        `yaml:"raw_blobs,omitempty"`
 }
 
 type EncryptionConfig struct {
@@ -118,6 +120,7 @@ type JobConfig struct {
 	MaintenanceCfg       *MaintenanceConfig  `yaml:"-"`
 	RunID                string              `yaml:"-"`
 	unsetKeys            map[string]bool
+	splitDBSet           bool
 }
 
 type MaintenanceConfig struct {
@@ -136,6 +139,7 @@ type MysqlObjects struct {
 	Events   bool
 	Triggers bool
 	Views    bool
+	RawBlobs bool
 }
 
 type RetentionConfig struct {
@@ -229,6 +233,9 @@ func (d *DatabaseList) ResolveMysqlObjects() MysqlObjects {
 	}
 	if d.Views != nil {
 		o.Views = *d.Views
+	}
+	if d.RawBlobs != nil {
+		o.RawBlobs = *d.RawBlobs
 	}
 	return o
 }
@@ -333,6 +340,9 @@ func (j *JobConfig) UnmarshalYAML(value *yaml.Node) error {
 			clone.Content[i+1] = &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!null", Value: "null"}
 			continue
 		}
+		if key == "split_db" {
+			r.splitDBSet = true
+		}
 		if key == "backup" || key == "storage" || key == "archive" {
 			clone.Content[i+1] = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
 			switch key {
@@ -404,6 +414,15 @@ func (j *JobConfig) Validate() error {
 	case "", "none", "age", "gpg", "openpgp", "pgp", "openssl":
 
 	default:
+		return fmt.Errorf("job %q has unknown encryption type %q (want none|age|gpg|openssl)", j.Name, j.Encryption)
+	}
+	if j.Compression != nil && !j.unsetKey("compression") {
+		switch strings.ToLower(j.Compression.Type) {
+		case "", "none", "gz", "gzip", "bz", "bzip", "bzip2", "xz", "xzip", "zst", "zstd":
+
+		default:
+			return fmt.Errorf("job %q has unknown compression type %q (want none|gz|bz|xz|zstd)", j.Name, j.Compression.Type)
+		}
 	}
 	if j.Schedule != nil {
 		if err := j.Schedule.enforceCommunityLimits(); err != nil {

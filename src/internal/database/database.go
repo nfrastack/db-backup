@@ -141,6 +141,35 @@ func RestoreTo(r io.Reader, dbType, host string, port int, user, pass, dbName, a
 	return spec.Restore(r, host, port, user, pass, dbName, authSource, tlsCfg)
 }
 
+func ServerVersion(ctx context.Context, dbType, host string, port int, user, pass, dbName, authSource string, tlsCfg *config.TLSConfig) (common.ServerVersion, error) {
+	eng, err := New(Options{
+		Type: dbType, Host: host, Port: port,
+		User: user, Pass: pass, DB: dbName,
+		AuthSource: authSource, TLS: tlsCfg,
+	})
+	if err != nil {
+		return common.ServerVersion{}, err
+	}
+	type ctxOpener interface {
+		OpenContext(context.Context) error
+	}
+	if c, ok := eng.(ctxOpener); ok {
+		if err := c.OpenContext(ctx); err != nil {
+			return common.ServerVersion{}, err
+		}
+	} else if err := eng.Open(); err != nil {
+		return common.ServerVersion{}, err
+	}
+	defer eng.Close()
+	type versioner interface {
+		ServerVersion() common.ServerVersion
+	}
+	if v, ok := eng.(versioner); ok {
+		return v.ServerVersion(), nil
+	}
+	return common.ServerVersion{}, nil
+}
+
 func SupportedTypes() []string {
 	return registry.Engines()
 }
@@ -152,6 +181,7 @@ func TypeLabel(dbType string) string {
 func TypeList() string {
 	return strings.Join(SupportedTypes(), "|")
 }
+
 func UniqueBackupName(name string, taken func(string) bool) string {
 	return common.UniqueBackupName(name, taken)
 }

@@ -24,6 +24,7 @@ import (
 	"github.com/nfrastack/db-backup/internal/log"
 	"github.com/nfrastack/db-backup/internal/retention"
 	"github.com/nfrastack/db-backup/internal/storage"
+	versionPkg "github.com/nfrastack/db-backup/internal/version"
 )
 
 type connectivitySetter interface {
@@ -48,6 +49,7 @@ type Outcome struct {
 	Bytes       int64
 	RawBytes    int64
 	Checksum    string
+	Server      common.ServerVersion
 }
 
 var (
@@ -89,11 +91,18 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 		job.RunID = RandomID(4)
 	}
 
+	if stale, age := versionPkg.StaleDevBuild(time.Now()); stale {
+		JLog(log.LevelWarn, job,
+			fmt.Sprintf("dbb develop build is %d days old (built %s) and is likely stale. move to a stable release or rebuild from develop for latest fixes", age, versionPkg.BuildDate),
+			"status", "warn", "build_date", versionPkg.BuildDate, "age_days", age)
+	}
+
 	ctx = common.WithLogFields(ctx, jobRunFields(job)...)
 	start := time.Now()
 	outcome := recordOutcome
 	var outcomeBytes, outcomeRaw int64
 	outcomeChecksum := ""
+	var outcomeServer common.ServerVersion
 	defer func() {
 		if outcome != nil {
 			outcome(Outcome{
@@ -105,6 +114,7 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 				Bytes:       outcomeBytes,
 				RawBytes:    outcomeRaw,
 				Checksum:    outcomeChecksum,
+				Server:      outcomeServer,
 			})
 		}
 	}()
@@ -151,23 +161,26 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 		RunHooks(job, "pre", "backup", dbName, nil)
 	}
 
-	if job.SplitDB && job.Databases != nil && hasAllToken(job.Databases.Include) {
-		JLog(log.LevelDebug, job, "listing databases",
-			"status", "debug", "step", "list", "target", fmt.Sprintf("%s://%s:%d", job.Type, job.Host, port))
-		dbs, err := database.ListDatabases(job.Type, job.Host, port, job.User, pass, job.AuthSource, job.TLS)
-		if err != nil {
-			return LogFail(job, "backup failed", "list", err)
-		}
-		JLog(log.LevelDebug, job, "listed databases",
-			"status", "debug", "step", "list", "count", len(dbs))
-		dbs = expandAllInclude(dbs, job.Databases)
-		if len(job.Databases.Exclude) > 0 {
-			JLog(log.LevelInfo, job, "applied database exclusions",
-				"status", "skipped", "step", "list", "excluded", strings.Join(job.Databases.Exclude, ","))
-		}
-		if len(dbs) == 0 {
-			JLog(log.LevelWarn, job, "no databases left to back up after exclusions",
-				"status", "warn", "step", "list")
+	if job.SplitDB && job.Databases != nil && shouldSplitDatabases(job.Databases.Include) {
+		dbs := splitDatabaseList(job.Databases.Include)
+		if hasAllToken(job.Databases.Include) {
+			JLog(log.LevelDebug, job, "listing databases",
+				"status", "debug", "step", "list", "target", fmt.Sprintf("%s://%s:%d", job.Type, job.Host, port))
+			allDBs, err := database.ListDatabases(job.Type, job.Host, port, job.User, pass, job.AuthSource, job.TLS)
+			if err != nil {
+				return LogFail(job, "backup failed", "list", err)
+			}
+			JLog(log.LevelDebug, job, "listed databases",
+				"status", "debug", "step", "list", "count", len(allDBs))
+			dbs = expandAllInclude(allDBs, job.Databases)
+			if len(job.Databases.Exclude) > 0 {
+				JLog(log.LevelInfo, job, "applied database exclusions",
+					"status", "skipped", "step", "list", "excluded", strings.Join(job.Databases.Exclude, ","))
+			}
+			if len(dbs) == 0 {
+				JLog(log.LevelWarn, job, "no databases left to back up after exclusions",
+					"status", "warn", "step", "list")
+			}
 		}
 		JLog(log.LevelInfo, job, "splitting into per-database backups",
 			"status", "starting", "split", "true", "dbs", len(dbs))
@@ -179,6 +192,7 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 				Events:   job.Databases.Events,
 				Triggers: job.Databases.Triggers,
 				Views:    job.Databases.Views,
+				RawBlobs: job.Databases.RawBlobs,
 			}
 			sub.SplitDB = false
 			if err := Run(ctx, sub, trigger); err != nil {
@@ -186,7 +200,7 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 			}
 		}
 
-		if strings.HasPrefix(strings.ToLower(job.Type), "postgres") {
+		if hasAllToken(job.Databases.Include) && strings.HasPrefix(strings.ToLower(job.Type), "postgres") {
 			globJob := job
 			globJob.Databases = &config.DatabaseList{Include: []string{"__globals__"}}
 			globJob.SplitDB = false
@@ -243,7 +257,9 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 				"status", "warn", "step", "list")
 			return nil
 		}
-		job.Databases.Include = kept
+		cp := *job.Databases
+		cp.Include = kept
+		job.Databases = &cp
 	}
 
 	configuredStrat := strat
@@ -449,14 +465,14 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 	go func() {
 		encWriter, err := enc.Encrypt(pw)
 		if err != nil {
-			pw.CloseWithError(fmt.Errorf("encrypt: %w", err))
+			pw.CloseWithError(withStage(fmt.Errorf("encrypt: %w", err), "encrypt"))
 			return
 		}
 		encMW := io.MultiWriter(encWriter, encHasher)
 
 		compWriter, err := comp.Compress(encMW, job.Compression.Level, compOpts)
 		if err != nil {
-			pw.CloseWithError(fmt.Errorf("compress: %w", err))
+			pw.CloseWithError(withStage(fmt.Errorf("compress: %w", err), "compress"))
 			return
 		}
 		rawCounter := &countingWriter{}
@@ -496,14 +512,14 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 				Objects:    job.Databases.ResolveMysqlObjects(),
 				HasObjects: job.Databases != nil,
 			}); err != nil {
-				pw.CloseWithError(fmt.Errorf("incremental %s: %w", strat, err))
+				pw.CloseWithError(withStage(fmt.Errorf("incremental %s: %w", strat, err), "dump"))
 				return
 			}
 		}
 		tDumpEnd := time.Now()
 
 		if err := compWriter.Close(); err != nil {
-			pw.CloseWithError(fmt.Errorf("compress close: %w", err))
+			pw.CloseWithError(withStage(fmt.Errorf("compress close: %w", err), "compress"))
 			return
 		}
 		tCompEnd := time.Now()
@@ -513,7 +529,7 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 		}
 
 		if err := encWriter.Close(); err != nil {
-			pw.CloseWithError(fmt.Errorf("encrypt close: %w", err))
+			pw.CloseWithError(withStage(fmt.Errorf("encrypt close: %w", err), "encrypt"))
 			return
 		}
 		tEncEnd := time.Now()
@@ -536,13 +552,24 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 	var n int64
 	if dryRun.Load() {
 		cr := &countingReader{r: prog.reader(pr)}
-		_, _ = io.Copy(io.Discard, cr)
+		_, copyErr := io.Copy(io.Discard, cr)
 		n = cr.n
+		if copyErr != nil {
+			pr.Close()
+			prog.finish()
+			select {
+			case <-timingCh:
+			case <-ctx.Done():
+			default:
+			}
+			return LogFail(job, "backup failed", errorStage(copyErr), copyErr)
+		}
 		JLog(log.LevelInfo, job, "dry-run: skipped upload",
 			"status", "complete", "step", "upload", "target", storagePath+"/"+filename, "bytes", n)
 	} else {
 		JLog(log.LevelDebug, job, "writing backup to storage",
-			"status", "debug", "step", "upload", "target", storagePath+"/"+filename)
+			"status", "debug", "step", "upload", "target", storagePath+"/"+filename,
+			"backend", storageBackend, "bucket", job.Storage.Bucket, "endpoint", storageEndpointHost(job.Storage))
 		cr := &countingReader{r: prog.reader(pr)}
 		var err error
 		n, err = st.Upload(ctx, filename, cr)
@@ -554,10 +581,10 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 			prog.finish()
 			select {
 			case <-timingCh:
-			case <-time.After(2 * time.Second):
 			case <-ctx.Done():
+			default:
 			}
-			return LogFail(job, "backup failed", "upload", err)
+			return LogFail(job, "backup failed", errorStage(err), err)
 		}
 	}
 	uploadTime := time.Since(uploadStart)
@@ -631,6 +658,15 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 		backupProtocol := common.TakeBackupProtocol(
 			common.ProtocolKey(job.Host, port, job.User, dbName))
 
+		var serverMeta *retention.ServerMeta
+		if sv, serr := database.ServerVersion(ctx, job.Type, job.Host, port, job.User, pass, dbName, job.AuthSource, job.TLS); serr == nil && (sv.Engine != "" || sv.Version != "") {
+			outcomeServer = sv
+			serverMeta = &retention.ServerMeta{Engine: sv.Engine, Version: sv.Version, Arch: sv.Arch}
+		} else if serr != nil {
+			JLog(log.LevelTrace, job, "server version unavailable",
+				"status", "debug", "error", serr.Error())
+		}
+
 		sc := &retention.Sidecar{
 			Base:          baseFile,
 			Format:        retention.FormatName,
@@ -652,6 +688,7 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 			Type:            job.Type,
 			DB:              dbName,
 			Host:            job.Host,
+			Server:          serverMeta,
 			Timestamp:       now.Format(time.RFC3339),
 			Checksums:       chks,
 			Size:            n,

@@ -19,6 +19,7 @@ import (
 	"github.com/nfrastack/db-backup/internal/log"
 	"github.com/nfrastack/db-backup/internal/scheduler/runner"
 	"github.com/nfrastack/db-backup/internal/storage"
+	"github.com/nfrastack/db-backup/internal/version"
 )
 
 var Version = "dev"
@@ -167,6 +168,7 @@ func main() {
 	globalSystemd = invocation || journal
 
 	runner.SetVersion(Version)
+	version.Apply(Version, buildChannel, buildCommit, buildDate)
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, `Usage: dbb <command> [flags] [args]
@@ -635,6 +637,9 @@ Commands:
 	log.SetTimeQuoted(timeQuoted)
 
 	statsMgr, statsTracker = stats.Setup(globalConfigPaths, stats.SharedKey(), globalContainer, globalStateDir)
+	if statsMgr != nil {
+		statsMgr.SetChannel(resolveChannel(Version))
+	}
 	startEditionBackgroundServices()
 	setupLicenseWatch()
 

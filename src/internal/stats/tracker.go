@@ -5,6 +5,7 @@
 package stats
 
 import (
+	"sort"
 	"sync"
 	"time"
 )
@@ -14,7 +15,8 @@ type Tracker struct {
 	mu       sync.Mutex
 	now      func() time.Time
 	byTs     map[string]map[int64]*counts
-	activity map[string]map[string]int64
+	activity map[string]map[int64]map[string]int64 // dbType -> hour -> op -> n
+	servers  map[string]map[string]int64           // dbType -> server token -> hour
 }
 type counts struct {
 	success  int
@@ -60,6 +62,21 @@ func NewTracker() *Tracker {
 	return &Tracker{now: time.Now}
 }
 
+func (t *Tracker) NoteServer(dbType, token string) {
+	if t == nil || token == "" {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.servers == nil {
+		t.servers = make(map[string]map[string]int64)
+	}
+	if t.servers[dbType] == nil {
+		t.servers[dbType] = make(map[string]int64)
+	}
+	t.servers[dbType][token] = t.now().Unix() / 3600
+}
+
 // increment prune or archive counter
 func (t *Tracker) RecordActivity(dbType, op string, n int) {
 	if t == nil || n <= 0 {
@@ -68,15 +85,19 @@ func (t *Tracker) RecordActivity(dbType, op string, n int) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.activity == nil {
-		t.activity = make(map[string]map[string]int64)
+		t.activity = make(map[string]map[int64]map[string]int64)
 	}
 	if t.activity[dbType] == nil {
-		t.activity[dbType] = make(map[string]int64)
+		t.activity[dbType] = make(map[int64]map[string]int64)
 	}
-	t.activity[dbType][op] += int64(n)
+	hour := t.now().Unix() / 3600
+	if t.activity[dbType][hour] == nil {
+		t.activity[dbType][hour] = make(map[string]int64)
+	}
+	t.activity[dbType][hour][op] += int64(n)
 }
 
-// returns per database type successes, failures, run duration and retention activity over rolling 24h window
+// per database type successes, failures, run duration and retention activity over rolling 24h window
 func (t *Tracker) Snapshot() []JobOutcome {
 	if t == nil {
 		return nil
@@ -89,6 +110,14 @@ func (t *Tracker) Snapshot() []JobOutcome {
 	var out []JobOutcome
 	for dbType, buckets := range t.byTs {
 		o := JobOutcome{Type: dbType}
+		for tok, h := range t.servers[dbType] {
+			if h < minHour {
+				delete(t.servers[dbType], tok)
+				continue
+			}
+			o.Servers = append(o.Servers, tok)
+		}
+		sort.Strings(o.Servers)
 		var bytes, rawBytes int64
 		for hour, c := range buckets {
 			if hour < minHour {
@@ -107,11 +136,18 @@ func (t *Tracker) Snapshot() []JobOutcome {
 			out = append(out, o)
 		}
 	}
-	for dbType, ops := range t.activity {
-		o := JobOutcome{Type: dbType}
-		o.Pruned = int(ops["prune"])
-		o.Archived = int(ops["archive"])
-		if o.Pruned > 0 || o.Archived > 0 {
+	for dbType, hours := range t.activity {
+		var pruned, archived int64
+		for hour, ops := range hours {
+			if hour < minHour {
+				delete(hours, hour)
+				continue
+			}
+			pruned += ops["prune"]
+			archived += ops["archive"]
+		}
+		if pruned > 0 || archived > 0 {
+			o := JobOutcome{Type: dbType, Pruned: int(pruned), Archived: int(archived)}
 			if i := outcomeIndex(out, dbType); i >= 0 {
 				out[i].Pruned = o.Pruned
 				out[i].Archived = o.Archived

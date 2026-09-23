@@ -108,8 +108,17 @@ func TCPDialContext(ctx context.Context, host string, port int) error {
 
 func WithConnectivity(ctx context.Context, name string, cfg *config.ConnectivityConfig, probe, connect, ping func() error) error {
 	extra := LogFieldsFromContext(ctx)
-	if cfg == nil || !cfg.Enabled || MethodOf(cfg) == config.MethodNone {
-		if cfg != nil && (!cfg.Enabled || MethodOf(cfg) == config.MethodNone) {
+	if cfg == nil {
+		if err := connect(); err != nil {
+			return err
+		}
+		if ping == nil {
+			return nil
+		}
+		return ping()
+	}
+	if !cfg.IsEnabled() || MethodOf(cfg) == config.MethodNone {
+		if cfg != nil && (!cfg.IsEnabled() || MethodOf(cfg) == config.MethodNone) {
 			log.Warn("connectivity", "check disabled - backing up blindly", append(append([]any{}, extra...), "engine", name, "status", "warn")...)
 		}
 		return connect()
