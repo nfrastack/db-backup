@@ -53,7 +53,7 @@ jobs:
           CHANNEL=stable
           SUFFIX=""
           if [ "${{ matrix.goos }}" = "windows" ]; then SUFFIX=".exe"; fi
-          if echo "${{ github.ref_name }}" | grep -qE '(b|rc)[0-9]+$'; then
+          if echo "${{ github.ref_name }}" | grep -qiE '[-._]?(beta|rc|pre|preview)[-._]?[0-9]*$|(b|rc)[0-9]+$'; then
             CHANNEL=beta
           fi
           COMMIT=$(git rev-parse --short=7 HEAD)

@@ -17,7 +17,7 @@ var (
 	buildCommit  = ""
 )
 
-var betaRe = regexp.MustCompile(`(b|rc)\d+$`)
+var betaRe = regexp.MustCompile(`(?i)(?:[-._]?(?:beta|rc|pre|preview)[-._]?\d*$|(?:b|rc)\d+$)`)
 
 func bannerLine() string {
 	s := fmt.Sprintf("db-backup %s | build=%s mode=%s", Version, buildEdition, runtimeMode())
@@ -36,9 +36,11 @@ func displayCommit() string {
 
 func resolveChannel(version string) string {
 	if buildChannel != "" {
-		switch strings.ToLower(buildChannel) {
+		switch c := strings.ToLower(strings.TrimSpace(buildChannel)); c {
 		case "stable", "beta", "edge":
-			return strings.ToLower(buildChannel)
+			return c
+		case "", "auto":
+		default:
 		}
 	}
 	lower := strings.ToLower(version)

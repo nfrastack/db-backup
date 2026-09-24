@@ -1,3 +1,8 @@
+## 5.0.4 2026-09-24 <code at nfrastack dot com>
+
+   ### Changed
+      - Fixed version_check channel defaulting to edge on stable versions
+
 ## 5.0.3 2026-09-23 <code at nfrastack dot com>
 
    ### Added
