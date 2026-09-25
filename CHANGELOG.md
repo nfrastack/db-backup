@@ -1,18 +1,17 @@
 ## development
 
-   ### Added
    ### Changed
-      - (mssql) - fix trailing GO statements leaking into another batch
       - dump modifications
          - (mongo) chunk large operations
+         - (mssql) - fix trailing GO statements leaking into another batch
       - restore modifications
          - add progress meter for chained incremental restores
          - seperate progress meter from operations to avoid hanging
+         - (influx) change buffer to 16mb
          - (mysql) switch to streaming
          - (mssql) switch to streaming
          - (sqlite) switch to streaming
 
-   ### Removed
 
 ## 5.0.4 2026-09-24 <code at nfrastack dot com>
 
