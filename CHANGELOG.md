@@ -6,6 +6,8 @@
       - dump modifications
          - (mongo) chunk large operations
       - restore modifications
+         - add progress meter for chained incremental restores
+         - seperate progress meter from operations to avoid hanging
          - (mysql) switch to streaming
          - (mssql) switch to streaming
          - (sqlite) switch to streaming
