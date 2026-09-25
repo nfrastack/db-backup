@@ -8,8 +8,8 @@
          - add progress meter for chained incremental restores
          - seperate progress meter from operations to avoid hanging
          - (influx) change buffer to 16mb
-         - (mysql) switch to streaming
          - (mssql) switch to streaming
+         - (mysql) switch to streaming
          - (sqlite) switch to streaming
 
 
