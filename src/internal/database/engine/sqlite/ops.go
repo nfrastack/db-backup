@@ -5,6 +5,7 @@
 package sqlite
 
 import (
+	"bufio"
 	"database/sql"
 	"fmt"
 	"io"
@@ -44,20 +45,60 @@ func Restore(r io.Reader, dbPath string) error {
 	defer db.Close()
 
 	db.Exec("PRAGMA foreign_keys = OFF;")
-	data, err := io.ReadAll(r)
-	if err != nil {
-		return fmt.Errorf("read dump: %w", err)
-	}
 
-	for _, stmt := range common.SplitSQL(string(data)) {
+	err = restoreStream(r, func(stmt string) error {
 		stmt = strings.TrimSpace(stmt)
 		if stmt == "" || strings.HasPrefix(stmt, "--") {
-			continue
+			return nil
 		}
 		if _, err := db.Exec(stmt); err != nil {
 			return fmt.Errorf("exec: %w (%.80s)", err, stmt)
 		}
+		return nil
+	})
+	if err != nil {
+		return err
 	}
+
 	db.Exec("PRAGMA foreign_keys = ON;")
+	return nil
+}
+
+func restoreStream(r io.Reader, yield func(stmt string) error) error {
+	var cur strings.Builder
+	flush := func() error {
+		if cur.Len() == 0 {
+			return nil
+		}
+		stmt := cur.String()
+		cur.Reset()
+		return yield(stmt)
+	}
+
+	br := bufio.NewReader(r)
+	for {
+		line, err := br.ReadString('\n')
+		if line != "" {
+			noline := strings.TrimSuffix(line, "\n")
+			if trimmed := strings.TrimSpace(noline); !strings.HasPrefix(trimmed, "--") {
+				cur.WriteString(noline)
+				cur.WriteByte('\n')
+				if strings.HasSuffix(trimmed, ";") {
+					if err := flush(); err != nil {
+						return err
+					}
+				}
+			}
+		}
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return fmt.Errorf("read dump: %w", err)
+		}
+	}
+	if cur.Len() > 0 {
+		return yield(cur.String())
+	}
 	return nil
 }

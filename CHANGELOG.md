@@ -7,6 +7,7 @@
       - restore changes
          - switch mysql to streaming
          - switch mssql to streaming
+         - switch sqlite to streaming
 
    ### Removed
 
