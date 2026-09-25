@@ -2,9 +2,11 @@
 
    ### Added
    ### Changed
-
+      - (mssql) - fix trailing GO statements leaking into another batch
+      
       - restore changes
          - switch mysql to streaming
+         - switch mssql to streaming
 
    ### Removed
 
