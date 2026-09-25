@@ -189,7 +189,7 @@ func TimestampString() string {
 }
 
 func WriteSidecar(st storage.Storage, filename string, sc *Sidecar) error {
-	data, err := json.Marshal(sc)
+	data, err := json.MarshalIndent(sc, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal sidecar: %w", err)
 	}

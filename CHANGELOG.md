@@ -1,6 +1,7 @@
 ## development
 
    ### Changed
+      - pretty print sidecars
       - dump modifications
          - (mongo) chunk large operations
          - (mssql) - fix trailing GO statements leaking into another batch
