@@ -5,6 +5,7 @@
 package mysql
 
 import (
+	"bufio"
 	"database/sql"
 	"fmt"
 	"io"
@@ -14,6 +15,15 @@ import (
 	"github.com/nfrastack/db-backup/internal/config"
 	"github.com/nfrastack/db-backup/internal/database/common"
 	"github.com/nfrastack/db-backup/internal/log"
+)
+
+var (
+	reDefiner    = regexp.MustCompile("(?i)\\s*DEFINER\\s*=\\s*(`[^`]*`|'[^']*'|\"[^\"]*\"|[A-Za-z0-9_.$-]+)(\\s*@\\s*(`[^`]*`|'[^']*'|\"[^\"]*\"|[A-Za-z0-9_.$%-]+))?")
+	reInsertQual = regexp.MustCompile("(?i)INSERT\\s+INTO\\s+`[^`]+`\\.")
+	reOtherQual  = regexp.MustCompile("(?i)(FROM|UPDATE|DELETE\\s+FROM|TRUNCATE\\s+TABLE|RENAME\\s+TABLE|DROP\\s+TABLE|ALTER\\s+TABLE|CREATE\\s+TABLE)\\s+`[^`]+`\\.")
+	rePlainQual  = regexp.MustCompile("(?i)(INSERT\\s+INTO|UPDATE|DELETE\\s+FROM|TRUNCATE\\s+TABLE|RENAME\\s+TABLE|DROP\\s+TABLE|ALTER\\s+TABLE|CREATE\\s+TABLE)\\s+([A-Za-z0-9_]+)\\.")
+	reUseSrc     = regexp.MustCompile("(?i)USE\\s+`([^`]+)`")
+	reUseStmt    = regexp.MustCompile("(?i)USE\\s+`[^`]+`\\s*;")
 )
 
 func ListDatabases(host string, port int, user, pass string, tlsCfg *config.TLSConfig) ([]string, error) {
@@ -41,21 +51,6 @@ func ListDatabases(host string, port int, user, pass string, tlsCfg *config.TLSC
 		}
 	}
 	return dbs, rows.Err()
-}
-
-func listMySQLTables(db *sql.DB, dbName string) ([]string, error) {
-	rows, err := db.Query("SHOW TABLES FROM `" + dbName + "`")
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var tables []string
-	for rows.Next() {
-		var t string
-		rows.Scan(&t)
-		tables = append(tables, t)
-	}
-	return tables, rows.Err()
 }
 
 func Maintain(host string, port int, user, pass, dbName string, cfg *common.MaintenanceCfg, tlsCfg *config.TLSConfig) ([]common.OpResult, error) {
@@ -108,58 +103,183 @@ func Restore(r io.Reader, host string, port int, user, pass, dbName string, tlsC
 		log.Info("mysql", "database created", "database", firstDB)
 	}
 
-	data, err := io.ReadAll(r)
-	if err != nil {
-		return fmt.Errorf("read dump: %w", err)
+	target := ""
+	if firstDB != "" {
+		if targets := strings.Split(firstDB, ","); len(targets) == 1 && targets[0] != "" {
+			target = targets[0]
+		}
 	}
 
-	targets := strings.Split(firstDB, ",")
-	if len(targets) == 1 && targets[0] != "" {
-		reUSE := regexp.MustCompile("(?i)USE\\s+`[^`]+`\\s*;")
-		data = reUSE.ReplaceAll(data, []byte("USE `"+targets[0]+"`;"))
-		reInsert := regexp.MustCompile("(?i)INSERT\\s+INTO\\s+`[^`]+`\\.")
-		data = reInsert.ReplaceAll(data, []byte("INSERT INTO `"+targets[0]+"`."))
-		reOther := regexp.MustCompile("(?i)(FROM|UPDATE|DELETE\\s+FROM|TRUNCATE\\s+TABLE|RENAME\\s+TABLE|DROP\\s+TABLE|ALTER\\s+TABLE|CREATE\\s+TABLE)\\s+`[^`]+`\\.")
-		data = reOther.ReplaceAll(data, []byte("$1 `"+targets[0]+"`."))
-		if firstDB != "" {
-			rePlain := regexp.MustCompile("(?i)(INSERT\\s+INTO|UPDATE|DELETE\\s+FROM|TRUNCATE\\s+TABLE|RENAME\\s+TABLE|DROP\\s+TABLE|ALTER\\s+TABLE|CREATE\\s+TABLE)\\s+([A-Za-z0-9_]+)\\.")
-			data = rePlain.ReplaceAll(data, []byte("${1} "+firstDB+"."))
+	var reUseTarget *regexp.Regexp
+	if target != "" {
+		reUseTarget = regexp.MustCompile("(?i)USE\\s+`" + regexp.QuoteMeta(target) + "`\\s*;")
+	}
+
+	sources := map[string]bool{}
+	sp := newStmtSplitter()
+	definerCount := 0
+	useEnsured := false
+	execStmt := func(raw string) error {
+		if strings.TrimSpace(raw) == "" {
+			return nil
 		}
-		sources := map[string]bool{}
-		reMarker := regexp.MustCompile(`(?m)^-- Database: (\S+)\s*$`)
-		for _, m := range reMarker.FindAllSubmatch(data, -1) {
-			sources[string(m[1])] = true
+		out, n := rewriteStatement(raw, target, sources)
+		definerCount += n
+		isTargetUse := reUseTarget != nil && reUseTarget.MatchString(out)
+		if reUseTarget != nil && !useEnsured && !isTargetUse {
+			if _, err := db.Exec("USE `" + target + "`"); err != nil {
+				return fmt.Errorf("exec: %w", err)
+			}
+			useEnsured = true
 		}
-		reUseSrc := regexp.MustCompile("(?i)USE\\s+`([^`]+)`")
-		for _, m := range reUseSrc.FindAllSubmatch(data, -1) {
-			sources[string(m[1])] = true
+		if _, err := db.Exec(out); err != nil {
+			return fmt.Errorf("exec: %w", err)
 		}
+		if isTargetUse {
+			useEnsured = true
+		}
+		return nil
+	}
+
+	br := bufio.NewReader(r)
+	for {
+		line, err := br.ReadString('\n')
+		if line != "" {
+			noline := strings.TrimSuffix(line, "\n")
+			noteMarkerSource(noline, target, sources)
+			for _, done := range sp.pushLine(noline) {
+				if err := execStmt(done); err != nil {
+					return err
+				}
+			}
+		}
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return fmt.Errorf("read dump: %w", err)
+		}
+	}
+	if s := sp.flush(); s != "" {
+		if err := execStmt(s); err != nil {
+			return err
+		}
+	}
+	if definerCount > 0 {
+		log.Debug("mysql", "definers stripped", "count", definerCount)
+	}
+	return nil
+}
+
+func insertHeaderEnd(stmt string) int {
+	upper := strings.ToUpper(stmt)
+	for i := 0; i+6 <= len(upper); i++ {
+		if upper[i:i+6] != "VALUES" {
+			continue
+		}
+		if i > 0 && isWordChar(upper[i-1]) {
+			continue
+		}
+		if i+6 < len(upper) && isWordChar(upper[i+6]) {
+			continue
+		}
+		return i
+	}
+	return -1
+}
+
+func isInsertStmt(stmt string) bool {
+	s := stmt
+	for {
+		t := strings.TrimLeft(s, " \t\r\n")
+		if strings.HasPrefix(t, "--") || strings.HasPrefix(t, "#") {
+			i := strings.IndexByte(t, '\n')
+			if i < 0 {
+				return false
+			}
+			s = t[i+1:]
+			continue
+		}
+		if strings.HasPrefix(t, "/*") {
+			i := strings.Index(t[2:], "*/")
+			if i < 0 {
+				return false
+			}
+			s = t[2+i+2:]
+			continue
+		}
+		return len(t) >= 6 && strings.ToUpper(t[:6]) == "INSERT" &&
+			(len(t) == 6 || !isWordChar(t[6]))
+	}
+}
+
+func isWordChar(c byte) bool {
+	return c == '_' || c == '$' ||
+		(c >= 'a' && c <= 'z') ||
+		(c >= 'A' && c <= 'Z') ||
+		(c >= '0' && c <= '9')
+}
+
+func listMySQLTables(db *sql.DB, dbName string) ([]string, error) {
+	rows, err := db.Query("SHOW TABLES FROM `" + dbName + "`")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var tables []string
+	for rows.Next() {
+		var t string
+		rows.Scan(&t)
+		tables = append(tables, t)
+	}
+	return tables, rows.Err()
+}
+
+func noteMarkerSource(line, target string, sources map[string]bool) {
+	trimmed := strings.TrimSpace(line)
+	rest, ok := strings.CutPrefix(trimmed, "-- Database:")
+	if !ok {
+		return
+	}
+	if fields := strings.Fields(strings.TrimSpace(rest)); len(fields) == 1 {
+		if fields[0] != "" && fields[0] != target {
+			sources[fields[0]] = true
+		}
+	}
+}
+
+func rewriteStatement(stmt, target string, sources map[string]bool) (string, int) {
+	isInsert := isInsertStmt(stmt)
+	scope, tail := stmt, ""
+	if isInsert && target != "" {
+		if idx := insertHeaderEnd(stmt); idx >= 0 {
+			scope, tail = stmt[:idx], stmt[idx:]
+		}
+	}
+	stripped := 0
+	if target != "" {
+		if m := reUseSrc.FindStringSubmatch(scope); m != nil {
+			if m[1] != "" && m[1] != target {
+				sources[m[1]] = true
+			}
+		}
+		scope = reUseStmt.ReplaceAllString(scope, "USE `"+target+"`;")
+		scope = reInsertQual.ReplaceAllString(scope, "INSERT INTO `"+target+"`.")
+		scope = reOtherQual.ReplaceAllString(scope, "$1 `"+target+"`.")
+		scope = rePlainQual.ReplaceAllString(scope, "${1} "+target+".")
 		for src := range sources {
-			if src != "" && src != targets[0] {
-				data = []byte(strings.ReplaceAll(string(data), "`"+src+"`.", "`"+targets[0]+"`."))
+			if src != "" && src != target {
+				scope = strings.ReplaceAll(scope, "`"+src+"`.", "`"+target+"`.")
 			}
 		}
 	}
-
-	reDefiner := regexp.MustCompile("(?i)\\s*DEFINER\\s*=\\s*(`[^`]*`|'[^']*'|\"[^\"]*\"|[A-Za-z0-9_.$-]+)(\\s*@\\s*(`[^`]*`|'[^']*'|\"[^\"]*\"|[A-Za-z0-9_.$%-]+))?")
-	if stripped := reDefiner.FindAll(data, -1); len(stripped) > 0 {
-		log.Debug("mysql", "definers stripped", "count", len(stripped))
-		data = reDefiner.ReplaceAll(data, []byte(""))
-	}
-
-	if len(targets) == 1 && targets[0] != "" {
-		reUseTarget := regexp.MustCompile("(?i)USE\\s+`" + regexp.QuoteMeta(targets[0]) + "`\\s*;")
-		if !reUseTarget.Match(data) {
-			data = append([]byte("USE `"+targets[0]+"`;\n"), data...)
+	if !isInsert {
+		if found := reDefiner.FindAllString(scope, -1); len(found) > 0 {
+			stripped = len(found)
+			scope = reDefiner.ReplaceAllString(scope, "")
 		}
 	}
-
-	for _, s := range splitSQLStatements(string(data)) {
-		if _, err := db.Exec(s); err != nil {
-			return fmt.Errorf("exec: %w", err)
-		}
-	}
-	return nil
+	return scope + tail, stripped
 }
 
 func runMySQLOp(db *sql.DB, op, dbName string) *common.OpResult {
@@ -191,110 +311,133 @@ func runMySQLOp(db *sql.DB, op, dbName string) *common.OpResult {
 
 func splitSQLStatements(data string) []string {
 	var out []string
-	var buf strings.Builder
-	delimiter := ";"
-	var inSingle, inDouble, inBacktick, inLineComment, inBlockComment bool
-	scan := func(line string) {
-		for i := 0; i < len(line); i++ {
-			c := line[i]
-			if inLineComment {
-				continue
-			}
-			if inBlockComment {
-				if c == '*' && i+1 < len(line) && line[i+1] == '/' {
-					inBlockComment = false
-					i++
-				}
-				continue
-			}
-			if inSingle {
-				if c == '\\' {
-					i++
-				} else if c == '\'' {
-					if i+1 < len(line) && line[i+1] == '\'' {
-						i++
-					} else {
-						inSingle = false
-					}
-				}
-				continue
-			}
-			if inDouble {
-				if c == '\\' {
-					i++
-				} else if c == '"' {
-					inDouble = false
-				}
-				continue
-			}
-			if inBacktick {
-				if c == '`' {
-					inBacktick = false
-				}
-				continue
-			}
-			switch {
-			case c == '\'':
-				inSingle = true
-			case c == '"':
-				inDouble = true
-			case c == '`':
-				inBacktick = true
-			case c == '#' || (c == '-' && i+1 < len(line) && line[i+1] == '-' &&
-				(i+2 >= len(line) || line[i+2] == ' ' || line[i+2] == '\t' || line[i+2] == '\r')):
-				inLineComment = true
-			case c == '/' && i+1 < len(line) && line[i+1] == '*':
-				inBlockComment = true
+	sp := newStmtSplitter()
+	for _, line := range strings.Split(data, "\n") {
+		out = append(out, sp.pushLine(line)...)
+	}
+	if s := sp.flush(); s != "" {
+		out = append(out, s)
+	}
+	return out
+}
+
+type stmtSplitter struct {
+	buf                            strings.Builder
+	delimiter                      string
+	inSingle, inDouble, inBacktick bool
+	inLineComment, inBlockComment  bool
+}
+
+func (sp *stmtSplitter) endsStatement() bool {
+	if sp.delimiter == "" || !sp.neutral() || sp.inLineComment {
+		return false
+	}
+	s := strings.TrimSpace(sp.buf.String())
+	if !strings.HasSuffix(s, sp.delimiter) {
+		return false
+	}
+	return true
+}
+
+func (sp *stmtSplitter) flush() string {
+	s := strings.TrimSpace(sp.buf.String())
+	sp.buf.Reset()
+	if s == "" {
+		return ""
+	}
+	if sp.delimiter != "" && strings.HasSuffix(s, sp.delimiter) {
+		s = strings.TrimSpace(strings.TrimSuffix(s, sp.delimiter))
+	}
+	return s
+}
+
+func (sp *stmtSplitter) neutral() bool {
+	return !sp.inSingle && !sp.inDouble && !sp.inBacktick && !sp.inBlockComment
+}
+
+func newStmtSplitter() *stmtSplitter {
+	return &stmtSplitter{delimiter: ";"}
+}
+
+func (sp *stmtSplitter) pushLine(line string) []string {
+	var done []string
+	trimmed := strings.TrimSpace(line)
+	upper := strings.ToUpper(trimmed)
+	if sp.neutral() && !sp.inLineComment && strings.HasPrefix(upper, "DELIMITER ") {
+		if s := sp.flush(); s != "" {
+			done = append(done, s)
+		}
+		sp.delimiter = strings.TrimSpace(trimmed[len("DELIMITER "):])
+		return done
+	}
+	if trimmed == "" && sp.buf.Len() == 0 {
+		sp.inLineComment = false
+		return done
+	}
+	sp.scan(line)
+	sp.buf.WriteString(line)
+	sp.buf.WriteString("\n")
+	sp.inLineComment = false
+	if sp.endsStatement() {
+		if s := sp.flush(); s != "" {
+			done = append(done, s)
+		}
+	}
+	return done
+}
+
+func (sp *stmtSplitter) scan(line string) {
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		if sp.inLineComment {
+			continue
+		}
+		if sp.inBlockComment {
+			if c == '*' && i+1 < len(line) && line[i+1] == '/' {
+				sp.inBlockComment = false
 				i++
 			}
-		}
-	}
-	neutral := func() bool {
-		return !inSingle && !inDouble && !inBacktick && !inBlockComment
-	}
-	endsStatement := func() bool {
-		if delimiter == "" || !neutral() || inLineComment {
-			return false
-		}
-		s := strings.TrimSpace(buf.String())
-		if !strings.HasSuffix(s, delimiter) {
-			return false
-		}
-		return true
-	}
-	flush := func() {
-		s := strings.TrimSpace(buf.String())
-		buf.Reset()
-		if s == "" {
-			return
-		}
-		if delimiter != "" && strings.HasSuffix(s, delimiter) {
-			s = strings.TrimSpace(strings.TrimSuffix(s, delimiter))
-		}
-		if s != "" {
-			out = append(out, s)
-		}
-	}
-	for _, line := range strings.Split(data, "\n") {
-		trimmed := strings.TrimSpace(line)
-		upper := strings.ToUpper(trimmed)
-		if neutral() && !inLineComment && strings.HasPrefix(upper, "DELIMITER ") {
-			flush()
-			delimiter = strings.TrimSpace(trimmed[len("DELIMITER "):])
 			continue
 		}
-		if trimmed == "" && buf.Len() == 0 {
-			inLineComment = false
+		if sp.inSingle {
+			if c == '\\' {
+				i++
+			} else if c == '\'' {
+				if i+1 < len(line) && line[i+1] == '\'' {
+					i++
+				} else {
+					sp.inSingle = false
+				}
+			}
 			continue
 		}
-		scan(line)
-		buf.WriteString(line)
-		buf.WriteString("\n")
-		inLineComment = false
-		if endsStatement() {
-			flush()
+		if sp.inDouble {
+			if c == '\\' {
+				i++
+			} else if c == '"' {
+				sp.inDouble = false
+			}
+			continue
+		}
+		if sp.inBacktick {
+			if c == '`' {
+				sp.inBacktick = false
+			}
+			continue
+		}
+		switch {
+		case c == '\'':
+			sp.inSingle = true
+		case c == '"':
+			sp.inDouble = true
+		case c == '`':
+			sp.inBacktick = true
+		case c == '#' || (c == '-' && i+1 < len(line) && line[i+1] == '-' &&
+			(i+2 >= len(line) || line[i+2] == ' ' || line[i+2] == '\t' || line[i+2] == '\r')):
+			sp.inLineComment = true
+		case c == '/' && i+1 < len(line) && line[i+1] == '*':
+			sp.inBlockComment = true
+			i++
 		}
 	}
-	flush()
-	return out
 }

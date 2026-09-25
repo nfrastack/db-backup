@@ -1,7 +1,11 @@
-## development 
+## development
 
    ### Added
    ### Changed
+
+      - restore changes
+         - switch mysql to streaming
+
    ### Removed
 
 ## 5.0.4 2026-09-24 <code at nfrastack dot com>
