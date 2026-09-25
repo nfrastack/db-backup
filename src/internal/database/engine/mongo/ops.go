@@ -20,6 +20,11 @@ import (
 	"github.com/nfrastack/db-backup/internal/database/common"
 )
 
+const (
+	mongoMaxLineBytes = 16 * 1024 * 1024
+	mongoRestoreBatchSize = 1000
+)
+
 func ListDatabases(host string, port int, user, pass, authSource string, tlsCfg *config.TLSConfig) ([]string, error) {
 	uri := URI(user, pass, host, port, authSource, tlsCfg)
 	if user == "" && pass == "" {
@@ -77,9 +82,19 @@ func Restore(r io.Reader, host string, port int, user, pass, dbName, authSource 
 	}
 
 	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 64*1024), mongoMaxLineBytes)
 	var collection string
-	var docs []bson.M
+	batcher := &docBatcher{size: mongoRestoreBatchSize}
 	inInsert := false
+	insert := func(docs []bson.M) error {
+		if len(docs) == 0 {
+			return nil
+		}
+		if _, err := client.Database(firstDB).Collection(collection).InsertMany(ctx, toInsertEntries(docs)); err != nil {
+			return fmt.Errorf("insert %s: %w", collection, err)
+		}
+		return nil
+	}
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -90,37 +105,55 @@ func Restore(r io.Reader, host string, port int, user, pass, dbName, authSource 
 		if strings.HasPrefix(line, "db.") && strings.Contains(line, ".insertMany([") {
 			collection = extractCollection(line)
 			inInsert = true
-			docs = nil
+			batcher.take()
 			continue
 		}
 
 		if inInsert {
 			if strings.HasPrefix(line, "]);") || line == "]);" {
 				inInsert = false
-				if len(docs) > 0 {
-					entries := make([]interface{}, len(docs))
-					for i := range docs {
-						entries[i] = docs[i]
-					}
-					if _, err := client.Database(firstDB).Collection(collection).InsertMany(ctx, entries); err != nil {
-						return fmt.Errorf("insert %s: %w", collection, err)
-					}
+				if err := insert(batcher.take()); err != nil {
+					return err
 				}
 				continue
 			}
-			line = strings.TrimSuffix(line, ",")
-			line = strings.TrimSpace(line)
-			if line == "" {
+			doc, ok, err := parseDocLine(line)
+			if err != nil {
+				return err
+			}
+			if !ok {
 				continue
 			}
-			var doc bson.M
-			if err := json.Unmarshal([]byte(line), &doc); err != nil {
-				return fmt.Errorf("parse doc: %w", err)
+			if full := batcher.add(doc); full != nil {
+				if err := insert(full); err != nil {
+					return err
+				}
 			}
-			docs = append(docs, doc)
 		}
 	}
 	return scanner.Err()
+}
+
+type docBatcher struct {
+	docs []bson.M
+	size int
+}
+
+func (b *docBatcher) add(doc bson.M) []bson.M {
+	b.docs = append(b.docs, doc)
+	if len(b.docs) >= b.size {
+		return b.take()
+	}
+	return nil
+}
+
+func (b *docBatcher) take() []bson.M {
+	if len(b.docs) == 0 {
+		return nil
+	}
+	full := b.docs
+	b.docs = nil
+	return full
 }
 
 func extractCollection(line string) string {
@@ -130,4 +163,25 @@ func extractCollection(line string) string {
 		return "unknown"
 	}
 	return rest[:idx]
+}
+
+func parseDocLine(line string) (doc bson.M, ok bool, err error) {
+	line = strings.TrimSuffix(line, ",")
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return nil, false, nil
+	}
+	var d bson.M
+	if err := json.Unmarshal([]byte(line), &d); err != nil {
+		return nil, false, fmt.Errorf("parse doc: %w", err)
+	}
+	return d, true, nil
+}
+
+func toInsertEntries(docs []bson.M) []interface{} {
+	entries := make([]interface{}, len(docs))
+	for i := range docs {
+		entries[i] = docs[i]
+	}
+	return entries
 }

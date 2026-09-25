@@ -3,11 +3,12 @@
    ### Added
    ### Changed
       - (mssql) - fix trailing GO statements leaking into another batch
-      
-      - restore changes
-         - switch mysql to streaming
-         - switch mssql to streaming
-         - switch sqlite to streaming
+      - dump modifications
+         - (mongo) chunk large operations
+      - restore modifications
+         - (mysql) switch to streaming
+         - (mssql) switch to streaming
+         - (sqlite) switch to streaming
 
    ### Removed
 
