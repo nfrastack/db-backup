@@ -1,0 +1,78 @@
+#
+# Example for PostgreSQL
+#
+
+services:
+  db-backup:
+    image: tiredofit/db-backup:latest
+    container_name: db-backup
+    restart: unless-stopped
+    volumes:
+      - ${HOST_BACKUP_PATH}:${CONTAINER_BACKUP_PATH:-/backup}
+      - ${HOST_LOG_PATH}:${CONTAINER_LOG_PATH:-/logs}
+      - ${HOST_TEMP_PATH}:${CONTAINER_TEMP_PATH:-/tmp/backups}
+    environment:
+      # ─── Basic ──────────────────────────────────────────────────
+      TZ: ${TZ}
+      TIMEZONE: ${TIMEZONE}
+      CONTAINER_ENABLE_MONITORING: ${CONTAINER_ENABLE_MONITORING:-FALSE}
+      BACKUP_JOB_CONCURRENCY: ${BACKUP_JOB_CONCURRENCY:-1}
+      DEBUG_MODE: ${DEBUG_MODE:-FALSE}
+
+      # ─── Notification ───────────────────────────────────────────
+      ENABLE_NOTIFICATIONS: ${ENABLE_NOTIFICATIONS}
+      NOTIFICATION_TYPE: ${NOTIFICATION_TYPE}
+      SMTP_HOST: ${SMTP_HOST}
+      SMTP_PORT: ${SMTP_PORT}
+      SMTP_DOMAIN: ${SMTP_DOMAIN}
+      SMTP_MAILDOMAIN: ${SMTP_MAILDOMAIN}
+      SMTP_TLS: ${SMTP_TLS}
+      SMTP_STARTTLS: ${SMTP_STARTTLS}
+      SMTP_TLSCERTCHECK: ${SMTP_TLSCERTCHECK:-off}
+      MAIL_FROM: ${MAIL_FROM}
+      MAIL_TO: ${MAIL_TO}
+      DEBUG_NOTIFY: ${DEBUG_NOTIFY:-FALSE}
+
+      # ─── Global Default ─────────────────────────────────────────
+      DEFAULT_BACKUP_LOCATION: ${DEFAULT_BACKUP_LOCATION}
+      DEFAULT_CREATE_LATEST_SYMLINK: ${DEFAULT_CREATE_LATEST_SYMLINK}
+      DEFAULT_COMPRESSION: ${DEFAULT_COMPRESSION}
+      DEFAULT_COMPRESSION_LEVEL: ${DEFAULT_COMPRESSION_LEVEL}
+      DEFAULT_CLEANUP_TIME: ${DEFAULT_CLEANUP_TIME}
+      DEFAULT_LOG_LEVEL: ${DEFAULT_LOG_LEVEL}
+      DEFAULT_BACKUP_GLOBALS: ${DEFAULT_BACKUP_GLOBALS}
+      DEFAULT_SIZE_VALUE: ${DEFAULT_SIZE_VALUE}
+      DEFAULT_FILESYSTEM_PATH: ${DEFAULT_FILESYSTEM_PATH}
+
+      # ─── DB01 ────────────────────────────────────────────────────
+      DB01_FILESYSTEM_PATH: ${DB01_FILESYSTEM_PATH}
+      DB01_TYPE: ${DB01_TYPE}
+      DB01_HOST: ${DB01_HOST}
+      DB01_PORT: ${DB01_PORT}
+      DB01_USER: ${DB01_USER}
+      DB01_PASS: ${DB01_PASS}
+      DB01_NAME: ${DB01_NAME}
+      DB01_SPLIT_DB: ${DB01_SPLIT_DB}
+      DB01_BACKUP_BEGIN: ${DB01_BACKUP_BEGIN}
+
+      # ─── DB02 ────────────────────────────────────────────────────
+      DB02_FILESYSTEM_PATH: ${DB02_FILESYSTEM_PATH}
+      DB02_TYPE: ${DB02_TYPE}
+      DB02_HOST: ${DB02_HOST}
+      DB02_PORT: ${DB02_PORT}
+      DB02_USER: ${DB02_USER}
+      DB02_PASS: ${DB02_PASS}
+      DB02_NAME: ${DB02_NAME}
+      DB02_SPLIT_DB: ${DB02_SPLIT_DB}
+      DB02_BACKUP_BEGIN: ${DB02_BACKUP_BEGIN}
+
+      # ─── DB03 ────────────────────────────────────────────────────
+      DB03_FILESYSTEM_PATH: ${DB03_FILESYSTEM_PATH}
+      DB03_TYPE: ${DB03_TYPE}
+      DB03_HOST: ${DB03_HOST}
+      DB03_PORT: ${DB03_PORT}
+      DB03_USER: ${DB03_USER}
+      DB03_PASS: ${DB03_PASS}
+      DB03_NAME: ${DB03_NAME}
+      DB03_SPLIT_DB: ${DB03_SPLIT_DB}
+      DB03_BACKUP_BEGIN: ${DB03_BACKUP_BEGIN}
