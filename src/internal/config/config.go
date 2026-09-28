@@ -275,7 +275,7 @@ func LoadConfig(paths ...string) (*Config, error) {
 
 	for i := range cfg.Jobs {
 		cfg.resolveJob(&cfg.Jobs[i])
-		if err := cfg.Jobs[i].Validate(); err != nil {
+		if err := cfg.Jobs[i].ValidateWithEncryptionProfiles(cfg.EncryptionProfiles); err != nil {
 			return nil, err
 		}
 	}

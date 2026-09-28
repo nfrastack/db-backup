@@ -1,6 +1,7 @@
 ## development
 
    ### Changed
+      - fix encryption profile refs rejected as uknown type
       - pretty print sidecars
       - dump modifications
          - (mongo) chunk large operations
