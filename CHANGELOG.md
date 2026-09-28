@@ -3,6 +3,7 @@
    ### Changed
       - fix encryption profile refs rejected as uknown type
       - pretty print sidecars
+      - (container) fix default scheduling begin and interval configuration generation
       - dump modifications
          - (mongo) chunk large operations
          - (mssql) - fix trailing GO statements leaking into another batch
