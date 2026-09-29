@@ -4,6 +4,8 @@
       - fix encryption profile refs rejected as uknown type
       - pretty print sidecars
       - (container) fix default scheduling begin and interval configuration generation
+      - (scheduler) time interval repeats are anchored to clock start not finish
+      - (scheduler) warn on every missed scheduled slot when overrun
       - dump modifications
          - (mongo) chunk large operations
          - (mssql) - fix trailing GO statements leaking into another batch

@@ -80,6 +80,9 @@ func nextJobDuration(s *config.Schedule) time.Duration {
 		return nextCron(s.Cron)
 	}
 	if s.Interval > 0 {
+		if !s.Time.Empty() {
+			return nextAnchoredDuration(s.Time, s.Interval, time.Now())
+		}
 		return time.Duration(s.Interval) * time.Minute
 	}
 	if s.Begin != "" {
@@ -158,4 +161,72 @@ func timeAnchorWait(s *config.Schedule, now time.Time) (time.Duration, bool) {
 		return 0, false
 	}
 	return next.Sub(now), true
+}
+
+func nextAnchoredDuration(anchors config.TimeList, intervalMin int, now time.Time) time.Duration {
+	if len(anchors) == 0 || intervalMin <= 0 {
+		return 0
+	}
+	step := time.Duration(intervalMin) * time.Minute
+	best := time.Duration(0)
+	for _, a := range anchors {
+		epoch := time.Date(now.Year(), now.Month(), now.Day(), a/60, a%60, 0, 0, now.Location())
+		rem := now.Sub(epoch) % step
+		if rem < 0 {
+			rem += step
+		}
+		var d time.Duration
+		if rem == 0 {
+			d = step
+		} else {
+			d = step - rem
+		}
+		if best == 0 || d < best {
+			best = d
+		}
+	}
+	return best
+}
+
+func missedGridPoints(anchors config.TimeList, intervalMin int, prev, end time.Time) (int, []time.Time) {
+	if len(anchors) == 0 || intervalMin <= 0 || !end.After(prev) {
+		return 0, nil
+	}
+	step := time.Duration(intervalMin) * time.Minute
+	var samples []time.Time
+	seen := map[int64]bool{}
+	count := 0
+	for _, a := range anchors {
+		epoch := time.Date(prev.Year(), prev.Month(), prev.Day(), a/60, a%60, 0, 0, prev.Location())
+		diff := prev.Sub(epoch)
+		rem := diff % step
+		if rem < 0 {
+			rem += step
+		}
+		for g := prev.Add(step - rem); g.Before(end); g = g.Add(step) {
+			if seen[g.Unix()] {
+				continue
+			}
+			seen[g.Unix()] = true
+			count++
+			if len(samples) < 3 {
+				samples = append(samples, g)
+			}
+		}
+	}
+	return count, samples
+}
+
+func formatMissedTimes(times []time.Time, now time.Time) string {
+	parts := make([]string, 0, len(times))
+	ny, nm, nd := now.Date()
+	for _, t := range times {
+		ty, tm, td := t.Date()
+		if ty == ny && tm == nm && td == nd {
+			parts = append(parts, t.Format("15:04"))
+		} else {
+			parts = append(parts, t.Format("Mon 15:04"))
+		}
+	}
+	return strings.Join(parts, ", ")
 }
