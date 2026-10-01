@@ -19,6 +19,8 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nfrastack/db-backup/internal/log"
@@ -29,10 +31,11 @@ const (
 	s3IMDSv2Creds = "http://169.254.169.254/latest/meta-data/iam/security-credentials/"
 )
 
-var (
-	s3MultipartThreshold = 100 * 1024 * 1024
-	s3MultipartPartSize  = 64 * 1024 * 1024
-	s3MultipartMaxParts  = 10000
+const (
+	s3MultipartThreshold   = 8 * 1024 * 1024
+	s3MultipartPartSize    = 8 * 1024 * 1024
+	s3MultipartConcurrency = 10
+	s3MultipartMaxParts    = 10000
 )
 
 var nowFunc = time.Now
@@ -755,9 +758,13 @@ func (s *s3Storage) uploadMultipart(ctx context.Context, key, spoolPath string, 
 		partSize = minPart
 	}
 	numParts := int((size + partSize - 1) / partSize)
+	numWorkers := s3MultipartConcurrency
+	if numWorkers > numParts {
+		numWorkers = numParts
+	}
 	log.Debug("s3", "uploading object via multipart",
 		"host", endpointHost(s.endpoint), "bucket", s.bucket, "key", key,
-		"bytes", size, "parts", numParts, "part_size", partSize, "status", "debug")
+		"bytes", size, "parts", numParts, "part_size", partSize, "workers", numWorkers, "status", "debug")
 
 	uploadID, err := s.createMultipartUpload(ctx, key)
 	if err != nil {
@@ -779,35 +786,78 @@ func (s *s3Storage) uploadMultipart(ctx context.Context, key, spoolPath string, 
 	}
 	defer func() { _ = f.Close() }()
 
-	buf := make([]byte, partSize)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	etags := make([]string, numParts)
+	jobs := make(chan int, numWorkers)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var firstErr error
+	var done int64
+	setErr := func(err error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if firstErr == nil {
+			firstErr = err
+			cancel()
+		}
+	}
+	for w := 0; w < numWorkers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			buf := make([]byte, partSize)
+			for i := range jobs {
+				off := int64(i) * partSize
+				curLen := partSize
+				if off+curLen > size {
+					curLen = size - off
+				}
+				if _, err := f.ReadAt(buf[:curLen], off); err != nil {
+					setErr(fmt.Errorf("s3: multipart part %d: read: %w", i+1, err))
+					return
+				}
+				start := time.Now()
+				etag, err := s.uploadMultipartPart(ctx, key, uploadID, i+1, buf[:curLen])
+				elapsed := time.Since(start)
+				if err != nil {
+					setErr(err)
+					return
+				}
+				etags[i] = etag
+				n := atomic.AddInt64(&done, 1)
+				rate := "-"
+				if elapsed > 0 {
+					rate = fmt.Sprintf("%.1f MiB/s", float64(curLen)/1048576/elapsed.Seconds())
+				}
+				log.Debug("s3", "multipart part complete",
+					"host", endpointHost(s.endpoint), "bucket", s.bucket, "key", key,
+					"upload_id", uploadID, "part", i+1, "parts", numParts, "bytes", curLen,
+					"elapsed", elapsed.Round(time.Millisecond).String(), "rate", rate, "status", "debug")
+				if n%10 == 0 || n == int64(numParts) {
+					log.Debug("s3", "multipart progress",
+						"host", endpointHost(s.endpoint), "bucket", s.bucket, "key", key,
+						"upload_id", uploadID, "parts_done", n, "parts", numParts, "status", "debug")
+				}
+			}
+		}()
+	}
+feed:
 	for i := 0; i < numParts; i++ {
 		select {
 		case <-ctx.Done():
-			return 0, ctx.Err()
-		default:
+			break feed
+		case jobs <- i:
 		}
-		off := int64(i) * partSize
-		curLen := partSize
-		if off+curLen > size {
-			curLen = size - off
-		}
-		if _, err := f.Seek(off, io.SeekStart); err != nil {
-			return 0, fmt.Errorf("s3: multipart part %d: seek: %w", i+1, err)
-		}
-		if _, err := io.ReadFull(f, buf[:curLen]); err != nil {
-			return 0, fmt.Errorf("s3: multipart part %d: read: %w", i+1, err)
-		}
-		etag, err := s.uploadMultipartPart(ctx, key, uploadID, i+1, buf[:curLen])
-		if err != nil {
-			return 0, err
-		}
-		etags[i] = etag
-		if (i+1)%10 == 0 || i+1 == numParts {
-			log.Debug("s3", "multipart progress",
-				"host", endpointHost(s.endpoint), "bucket", s.bucket, "key", key,
-				"upload_id", uploadID, "part", i+1, "parts", numParts, "status", "debug")
-		}
+	}
+	close(jobs)
+	wg.Wait()
+
+	mu.Lock()
+	err = firstErr
+	mu.Unlock()
+	if err != nil {
+		return 0, err
 	}
 
 	if err := s.completeMultipartUpload(ctx, key, uploadID, etags); err != nil {

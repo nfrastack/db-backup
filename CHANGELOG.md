@@ -16,7 +16,7 @@
          - (mssql) switch to streaming
          - (mysql) switch to streaming
          - (sqlite) switch to streaming
-     - (storage/s3) chunk uploads over 100MB into 64MB pieces
+     - (storage/s3) chunk uploads into 8mb pieces and parallelize uploads
 
 
 ## 5.0.4 2026-09-24 <code at nfrastack dot com>
