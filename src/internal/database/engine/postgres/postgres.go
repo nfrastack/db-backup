@@ -2048,7 +2048,7 @@ func (d *Dumper) dumpTypes(w io.Writer, dbName string) ([]string, error) {
 
 func (d *Dumper) dumpViews(w io.Writer, dbName string) error {
 	rows, err := d.conn.Query(d.ctxOrBg(),
-		"SELECT table_schema, table_name, view_definition FROM information_schema.views "+
+		"SELECT table_schema, table_name, COALESCE(view_definition, '') FROM information_schema.views "+
 			"WHERE table_schema NOT IN ('pg_catalog', 'information_schema')")
 	if err != nil {
 		return fmt.Errorf("query views: %w", err)

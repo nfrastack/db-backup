@@ -8,7 +8,8 @@
       - (scheduler) warn on every missed scheduled slot when overrun
       - dump modifications
          - (mongo) chunk large operations
-         - (mssql) - fix trailing GO statements leaking into another batch
+         - (mssql) fix trailing GO statements leaking into another batch
+         - (postgres) skip views with unreadable definitions instead of aborting
       - restore modifications
          - add progress meter for chained incremental restores
          - seperate progress meter from operations to avoid hanging
