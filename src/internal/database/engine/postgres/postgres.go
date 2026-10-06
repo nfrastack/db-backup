@@ -2299,6 +2299,24 @@ func encodeCopyInterval(v pgtype.Interval) string {
 	return strings.Join(parts, " ")
 }
 
+func encodeCopyTime(us int64) string {
+	neg := us < 0
+	if neg {
+		us = -us
+	}
+	h, us := us/3_600_000_000, us%3_600_000_000
+	m, us := us/60_000_000, us%60_000_000
+	s, us := us/1_000_000, us%1_000_000
+	out := fmt.Sprintf("%02d:%02d:%02d", h, m, s)
+	if us != 0 {
+		out += strings.TrimRight(fmt.Sprintf(".%06d", us), "0")
+	}
+	if neg {
+		out = "-" + out
+	}
+	return out
+}
+
 func encodeCopyUUID(b []byte) string {
 	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
 		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
@@ -2395,6 +2413,11 @@ func encodeCopyValue(val any, oid uint32) (string, bool) {
 			return "\\N", false
 		}
 		return formatCopyNumeric(v), false
+	case pgtype.Time:
+		if !v.Valid {
+			return "\\N", false
+		}
+		return encodeCopyTime(v.Microseconds), false
 	case pgtype.Bits:
 		if !v.Valid {
 			return "\\N", false

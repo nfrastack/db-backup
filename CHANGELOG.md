@@ -9,6 +9,7 @@
       - dump modifications
          - (mongo) chunk large operations
          - (mssql) fix trailing GO statements leaking into another batch
+         - (postgres) encode TIME columns in COPY format
          - (postgres) skip views with unreadable definitions instead of aborting
       - restore modifications
          - add progress meter for chained incremental restores
