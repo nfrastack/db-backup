@@ -98,6 +98,9 @@ func versionCheckCmd(format string) int {
 	resp, err := runVersionCheck()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "version check failed: %s\n", stats.DescribeError(err))
+		if stats.IsRateLimited(err) && statsOpts().LicenseID == "" {
+			fmt.Fprintln(os.Stderr, "the version check is rate limited - consider supporting the project with a Supporter license: https://www.nfrastack.com/db-backup/license/buy")
+		}
 		return 1
 	}
 	if resp == nil || resp.Latest == "" {

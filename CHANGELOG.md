@@ -3,6 +3,7 @@
    ### Changed
       - fix encryption profile refs rejected as uknown type
       - pretty print sidecars
+      - warn when limits reached on version checked on community edition
       - (container) fix default scheduling begin and interval configuration generation
       - (scheduler) time interval repeats are anchored to clock start not finish
       - (scheduler) warn on every missed scheduled slot when overrun

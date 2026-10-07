@@ -60,6 +60,22 @@ type VersionResponse struct {
 	Stable         *VersionResponse `json:"stable,omitempty"`
 }
 
+type StatusError struct {
+	Code int
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("server responded %d", e.Code)
+}
+
+func HTTPStatus(err error) (int, bool) {
+	var se *StatusError
+	if errors.As(err, &se) {
+		return se.Code, true
+	}
+	return 0, false
+}
+
 func (c *Client) CheckVersion(ctx context.Context, body string) (*VersionResponse, error) {
 	var resp VersionResponse
 	ok, err := c.post(ctx, EndpointCheck, []byte(body), &resp)
@@ -94,6 +110,9 @@ func DescribeError(err error) string {
 	}
 	if errors.Is(err, context.Canceled) {
 		return "request cancelled"
+	}
+	if IsRateLimited(err) {
+		return "rate limited by server (HTTP 429) - backing off and retrying later"
 	}
 	return err.Error()
 }
@@ -132,6 +151,11 @@ func assembledBaseURL() string {
 	return string(out)
 }
 
+func IsRateLimited(err error) bool {
+	code, ok := HTTPStatus(err)
+	return ok && code == http.StatusTooManyRequests
+}
+
 func (c *Client) post(ctx context.Context, path string, body []byte, out any) (bool, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(body))
 	if err != nil {
@@ -153,7 +177,7 @@ func (c *Client) post(ctx context.Context, path string, body []byte, out any) (b
 		return false, fmt.Errorf("reading response: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return false, fmt.Errorf("server responded %d", resp.StatusCode)
+		return false, &StatusError{Code: resp.StatusCode}
 	}
 	if out != nil && len(bytes.TrimSpace(data)) > 0 {
 		if err := json.Unmarshal(data, out); err != nil {

@@ -262,6 +262,9 @@ func (m *Manager) TryReport(ctx context.Context, opts Options, cfg *config.Confi
 			log.Debug("version-check", "starting version check")
 			if resp, err := m.checkVersion(ctx, opts.Version, opts); err != nil {
 				m.nextVersionRetry = time.Now().Add(frequencyDuration(m.versionCheckFrequency()))
+				if IsRateLimited(err) {
+					warnRateLimited("version-check", opts.LicenseID)
+				}
 				log.Debug("version-check", fmt.Sprintf("version check failed: %s", DescribeError(err)), "next_check", formatDue(m.nextVersionRetry))
 			} else if resp != nil {
 				m.notifyVersion(opts.Version, opts, resp)
@@ -713,15 +716,20 @@ func statsFrequency(cfg *config.StatsConfig) string {
 	return config.DefaultStatsFrequency
 }
 
-// develop moves fast
 func (m *Manager) versionCheckFrequency() string {
 	if m != nil && m.vc != nil && m.vc.Frequency != "" {
 		return m.vc.Frequency
 	}
-	if m != nil && m.channel == "edge" {
-		return "hourly"
-	}
 	return config.DefaultCheckNewVersionFrequency
+}
+
+// warn when we're rate limited
+func warnRateLimited(tag, licenseID string) {
+	if licenseID != "" {
+		log.Warn(tag, "request rate limited by server (HTTP 429) - backing off and retrying later")
+		return
+	}
+	log.Warn(tag, "request rate limited by server (HTTP 429) - backing off and retrying later. consider supporting the project with a Supporter license: https://www.nfrastack.com/db-backup/license/buy")
 }
 
 // don't nag - only warn once when no state dir
