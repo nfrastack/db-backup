@@ -8,6 +8,7 @@
       - (scheduler) time interval repeats are anchored to clock start not finish
       - (scheduler) warn on every missed scheduled slot when overrun
       - dump modifications
+         - (mysql) try to query server for SQL mode - fallback to writing backticks everywhere
          - (mongo) chunk large operations
          - (mssql) fix trailing GO statements leaking into another batch
          - (postgres) encode TIME columns in COPY format

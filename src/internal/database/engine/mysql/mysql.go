@@ -50,6 +50,12 @@ type querier interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }
 
+type queryExecer interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
 func (d *Dumper) Close() error {
 	if d.db != nil {
 		return d.db.Close()
@@ -279,14 +285,13 @@ func (d *Dumper) dumpTable(w io.Writer, conn *sql.DB, tx *sql.Tx, dbName, table 
 	ctx := d.ctxOrBg()
 	var createSQL string
 	q := "SHOW CREATE TABLE " + quoteMySQLIdent(dbName) + "." + quoteMySQLIdent(table)
-	if tx != nil {
-		if err := tx.QueryRowContext(ctx, q).Scan(&table, &createSQL); err != nil {
-			return fmt.Errorf("show create %s: %w", table, err)
-		}
-	} else {
-		if err := conn.QueryRowContext(ctx, q).Scan(&table, &createSQL); err != nil {
-			return fmt.Errorf("show create %s: %w", table, err)
-		}
+	sess, done, err := d.showSession(conn, tx)
+	if err != nil {
+		return fmt.Errorf("show create %s: %w", table, err)
+	}
+	defer done()
+	if err := sess.QueryRowContext(ctx, q).Scan(&table, &createSQL); err != nil {
+		return fmt.Errorf("show create %s: %w", table, err)
 	}
 	fmt.Fprintf(w, "DROP TABLE IF EXISTS %s;\n", quoteMySQLIdent(table))
 	fmt.Fprintf(w, "%s;\n\n", createSQL)
@@ -351,14 +356,13 @@ func (d *Dumper) dumpView(w io.Writer, conn *sql.DB, tx *sql.Tx, dbName, view st
 	ctx := d.ctxOrBg()
 	var name, createSQL, charset, collation string
 	q := "SHOW CREATE VIEW " + quoteMySQLIdent(dbName) + "." + quoteMySQLIdent(view)
-	if tx != nil {
-		if err := tx.QueryRowContext(ctx, q).Scan(&name, &createSQL, &charset, &collation); err != nil {
-			return fmt.Errorf("show create view %s: %w", view, err)
-		}
-	} else {
-		if err := conn.QueryRowContext(ctx, q).Scan(&name, &createSQL, &charset, &collation); err != nil {
-			return fmt.Errorf("show create view %s: %w", view, err)
-		}
+	sess, done, err := d.showSession(conn, tx)
+	if err != nil {
+		return fmt.Errorf("show create view %s: %w", view, err)
+	}
+	defer done()
+	if err := sess.QueryRowContext(ctx, q).Scan(&name, &createSQL, &charset, &collation); err != nil {
+		return fmt.Errorf("show create view %s: %w", view, err)
 	}
 	fmt.Fprintf(w, "DROP VIEW IF EXISTS %s;\n", quoteMySQLIdent(view))
 	fmt.Fprintf(w, "%s;\n\n", createSQL)
@@ -589,7 +593,30 @@ func NewDumper(host string, port int, user, pass string, tlsCfg ...*config.TLSCo
 	return d
 }
 
+func normalizeSessionSQLMode(ctx context.Context, q queryExecer) func() {
+	noop := func() {}
+	var orig string
+	if err := q.QueryRowContext(ctx, "SELECT @@SESSION.sql_mode").Scan(&orig); err != nil {
+		log.Debug("mysql", "sql_mode unreadable - SHOW CREATE output not normalized", "error", err.Error())
+		return noop
+	}
+	stripped := stripQuoteModes(orig)
+	if stripped == orig {
+		return noop
+	}
+	if _, err := q.ExecContext(ctx, "SET SESSION sql_mode='"+stripped+"'"); err != nil {
+		log.Debug("mysql", "sql_mode not normalized - SHOW CREATE may use double-quoted identifiers", "error", err.Error())
+		return noop
+	}
+	return func() {
+		if _, err := q.ExecContext(ctx, "SET SESSION sql_mode='"+orig+"'"); err != nil {
+			log.Debug("mysql", "sql_mode restore failed", "error", err.Error())
+		}
+	}
+}
+
 func (d *Dumper) Open() error {
+
 	return d.OpenContext(context.Background())
 }
 
@@ -699,13 +726,12 @@ func (d *Dumper) SetTableFilter(f *config.TableFilter, schemaOnly bool) {
 
 func (d *Dumper) showCreate(conn *sql.DB, tx *sql.Tx, query string) (string, error) {
 	ctx := d.ctxOrBg()
-	var rows *sql.Rows
-	var err error
-	if tx != nil {
-		rows, err = tx.QueryContext(ctx, query)
-	} else {
-		rows, err = conn.QueryContext(ctx, query)
+	sess, done, err := d.showSession(conn, tx)
+	if err != nil {
+		return "", err
 	}
+	defer done()
+	rows, err := sess.QueryContext(ctx, query)
 	if err != nil {
 		return "", err
 	}
@@ -765,6 +791,19 @@ func (d *Dumper) showCreate(conn *sql.DB, tx *sql.Tx, query string) (string, err
 		return "", fmt.Errorf("null create definition for: %s", query)
 	}
 	return best, rows.Err()
+}
+
+func (d *Dumper) showSession(conn *sql.DB, tx *sql.Tx) (queryExecer, func(), error) {
+	ctx := d.ctxOrBg()
+	if tx != nil {
+		return tx, normalizeSessionSQLMode(ctx, tx), nil
+	}
+	c, err := conn.Conn(ctx)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	restore := normalizeSessionSQLMode(ctx, c)
+	return c, func() { restore(); c.Close() }, nil
 }
 
 const mysqlInsertBatchBytes = 1000000
@@ -871,7 +910,24 @@ func (d *Dumper) streamRows(w io.Writer, q querier, dbName, table string, insert
 	return rows.Err()
 }
 
+func stripQuoteModes(mode string) string {
+	if mode == "" {
+		return ""
+	}
+	parts := strings.Split(mode, ",")
+	kept := parts[:0]
+	for _, p := range parts {
+		t := strings.TrimSpace(p)
+		if u := strings.ToUpper(t); u == "ANSI" || u == "ANSI_QUOTES" {
+			continue
+		}
+		kept = append(kept, t)
+	}
+	return strings.Join(kept, ",")
+}
+
 func typeMismatch(configured, detected string) bool {
+
 	configured = strings.ToLower(strings.TrimSpace(configured))
 	detected = strings.ToLower(strings.TrimSpace(detected))
 	if detected == "" || configured == "" {
