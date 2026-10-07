@@ -71,9 +71,13 @@ func guardSession(ctx context.Context, conn *pgx.Conn) {
 	}
 }
 
-func ListDatabases(host string, port int, user, pass string, tlsCfg *config.TLSConfig) ([]string, error) {
+func ListDatabases(host string, port int, user, pass, authSource string, tlsCfg *config.TLSConfig) ([]string, error) {
 	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, ConnStr(user, pass, host, port, "postgres", tlsCfg))
+	maintDB := authSource
+	if maintDB == "" {
+		maintDB = "postgres"
+	}
+	conn, err := pgx.Connect(ctx, ConnStr(user, pass, host, port, maintDB, tlsCfg))
 	if err != nil {
 		return nil, fmt.Errorf("connect: %w", err)
 	}
@@ -185,15 +189,19 @@ func pgRestoreStream(ctx context.Context, conn *pgx.Conn, r io.Reader) error {
 	return execStmtGroup(ctx, conn, &stmt)
 }
 
-func Restore(r io.Reader, host string, port int, user, pass, dbName string, tlsCfg *config.TLSConfig) error {
+func Restore(r io.Reader, host string, port int, user, pass, dbName, authSource string, tlsCfg *config.TLSConfig) error {
 	firstDB := common.FirstDBName(dbName)
 	if firstDB == "" {
 		firstDB = "postgres"
 	}
+	maintDB := authSource
+	if maintDB == "" {
+		maintDB = "postgres"
+	}
 
 	ctx := context.Background()
-	if common.CreateDBOnRestore && firstDB != "postgres" && firstDB != "template1" && firstDB != "template0" {
-		bootConn, err := pgx.Connect(ctx, ConnStr(user, pass, host, port, "postgres", tlsCfg))
+	if common.CreateDBOnRestore && firstDB != maintDB && firstDB != "template1" && firstDB != "template0" {
+		bootConn, err := pgx.Connect(ctx, ConnStr(user, pass, host, port, maintDB, tlsCfg))
 		if err != nil {
 			return fmt.Errorf("connect: %w", err)
 		}

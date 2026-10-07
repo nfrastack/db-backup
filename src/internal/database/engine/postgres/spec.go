@@ -26,13 +26,13 @@ func Spec() registry.EngineSpec {
 			return NewDumper(o.Host, o.Port, o.User, o.Pass, common.ConnDB(o.DB, fallback), o.TLS), nil
 		},
 		ListDatabases: func(host string, port int, user, pass, authSource string, tlsCfg *config.TLSConfig) ([]string, error) {
-			return ListDatabases(host, port, user, pass, tlsCfg)
+			return ListDatabases(host, port, user, pass, authSource, tlsCfg)
 		},
 		Maintain: func(host string, port int, user, pass, dbName, authSource string, cfg *common.MaintenanceCfg, tlsCfg *config.TLSConfig) ([]common.OpResult, error) {
 			return Maintain(host, port, user, pass, dbName, cfg, tlsCfg)
 		},
 		Restore: func(r io.Reader, host string, port int, user, pass, dbName, authSource string, tlsCfg *config.TLSConfig) error {
-			return Restore(r, host, port, user, pass, dbName, tlsCfg)
+			return Restore(r, host, port, user, pass, dbName, authSource, tlsCfg)
 		},
 	}
 }

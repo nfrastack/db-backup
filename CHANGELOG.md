@@ -10,6 +10,7 @@
          - (mongo) chunk large operations
          - (mssql) fix trailing GO statements leaking into another batch
          - (postgres) encode TIME columns in COPY format
+         - (postgres) allow auth-source db to be used instead of postgres for list ops
          - (postgres) skip views with unreadable definitions instead of aborting
       - restore modifications
          - add progress meter for chained incremental restores
@@ -17,6 +18,7 @@
          - (influx) change buffer to 16mb
          - (mssql) switch to streaming
          - (mysql) switch to streaming
+         - (postgres) allow auth-source db to be used instead of hardcoding postgres
          - (sqlite) switch to streaming
      - (storage/s3) chunk uploads into 8mb pieces and parallelize uploads
 
