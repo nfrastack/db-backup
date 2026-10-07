@@ -1,4 +1,4 @@
-## development
+## 5.0.5 2026-10-07 <code at nfrastack dot com>
 
    ### Changed
       - fix encryption profile refs rejected as uknown type
