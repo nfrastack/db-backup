@@ -5,6 +5,7 @@
 package mssql
 
 import (
+	"bufio"
 	"database/sql"
 	"fmt"
 	"io"
@@ -84,38 +85,78 @@ func Restore(r io.Reader, host string, port int, user, pass, dbName string, tlsC
 		return fmt.Errorf("ping: %w", err)
 	}
 
-	data, err := io.ReadAll(r)
-	if err != nil {
-		return fmt.Errorf("read dump: %w", err)
-	}
-	text := string(data)
-
-	sourceDB := extractMSSQLSourceDB(text)
-	if sourceDB != "" && sourceDB != firstDB {
-		text = strings.ReplaceAll(text, "["+sourceDB+"].", "["+firstDB+"].")
-	}
-
-	for _, stmt := range strings.Split(text, "\nGO\n") {
-		stmt = strings.TrimSpace(stmt)
-		if stmt == "" {
-			continue
+	return restoreStream(r, func(batch, sourceDB string) error {
+		stmt := rewriteBatch(batch, sourceDB, firstDB)
+		if strings.TrimSpace(stmt) == "" {
+			return nil
 		}
 		if _, err := db.Exec(stmt); err != nil {
 			return fmt.Errorf("exec: %w (%.80s)", err, stmt)
 		}
-	}
-	return nil
+		return nil
+	})
 }
 
-func extractMSSQLSourceDB(text string) string {
-	for _, line := range strings.Split(text, "\n") {
-		line = strings.TrimSpace(line)
-		if rest, ok := strings.CutPrefix(line, "-- Database:"); ok {
-			name := strings.TrimSpace(rest)
-			if name != "" {
-				return name
+func isGOSeparator(line string) bool {
+	return strings.EqualFold(strings.TrimSpace(line), "GO")
+}
+
+func markerSourceDB(line string) (string, bool) {
+	trimmed := strings.TrimSpace(line)
+	rest, ok := strings.CutPrefix(trimmed, "-- Database:")
+	if !ok {
+		return "", false
+	}
+	if name := strings.TrimSpace(rest); name != "" {
+		return name, true
+	}
+	return "", false
+}
+
+func restoreStream(r io.Reader, yield func(batch, sourceDB string) error) error {
+	var pending strings.Builder
+	sourceDB := ""
+	flush := func() error {
+		batch := strings.TrimSpace(pending.String())
+		pending.Reset()
+		if batch == "" {
+			return nil
+		}
+		return yield(batch, sourceDB)
+	}
+
+	br := bufio.NewReader(r)
+	for {
+		line, err := br.ReadString('\n')
+		if line != "" {
+			noline := strings.TrimSuffix(line, "\n")
+			if sourceDB == "" {
+				if src, ok := markerSourceDB(noline); ok {
+					sourceDB = src
+				}
+			}
+			if isGOSeparator(noline) {
+				if err := flush(); err != nil {
+					return err
+				}
+			} else {
+				pending.WriteString(noline)
+				pending.WriteByte('\n')
 			}
 		}
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return fmt.Errorf("read dump: %w", err)
+		}
 	}
-	return ""
+	return flush()
+}
+
+func rewriteBatch(batch, sourceDB, firstDB string) string {
+	if sourceDB != "" && sourceDB != firstDB {
+		batch = strings.ReplaceAll(batch, "["+sourceDB+"].", "["+firstDB+"].")
+	}
+	return batch
 }

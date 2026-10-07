@@ -404,17 +404,32 @@ func (s *SchemaOnly) UnmarshalYAML(node *yaml.Node) error {
 }
 
 func (j *JobConfig) Validate() error {
+	return j.ValidateWithEncryptionProfiles(nil)
+}
+
+func (j *JobConfig) ValidateWithEncryptionProfiles(profiles map[string]EncryptionConfig) error {
 	if j.Name == "" {
 		return fmt.Errorf("job has no name (every job needs a unique 'name' field)")
 	}
 	if j.Type == "" {
 		return fmt.Errorf("job %q has no database type (set 'type' to mysql/postgres/mongodb/etc, or reference a 'database' profile)", j.Name)
 	}
-	switch j.Encryption {
-	case "", "none", "age", "gpg", "openpgp", "pgp", "openssl":
+	if j.Encryption != "" {
+		if prof, ok := profiles[j.Encryption]; ok {
+			switch prof.Type {
+			case "", "none", "age", "gpg", "openpgp", "pgp", "openssl":
 
-	default:
-		return fmt.Errorf("job %q has unknown encryption type %q (want none|age|gpg|openssl)", j.Name, j.Encryption)
+			default:
+				return fmt.Errorf("job %q has unknown encryption type %q (want none|age|gpg|openssl)", j.Name, prof.Type)
+			}
+		} else {
+			switch j.Encryption {
+			case "", "none", "age", "gpg", "openpgp", "pgp", "openssl":
+
+			default:
+				return fmt.Errorf("job %q has unknown encryption type %q (want none|age|gpg|openssl)", j.Name, j.Encryption)
+			}
+		}
 	}
 	if j.Compression != nil && !j.unsetKey("compression") {
 		switch strings.ToLower(j.Compression.Type) {

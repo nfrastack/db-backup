@@ -51,15 +51,27 @@ dbbackup_generate_configuration() {
     _dbbackup_warn_notifications
 
     for _dbb_d in \
+        DEFAULT_ARCHIVE_LAST DEFAULT_ARCHIVE_PATH DEFAULT_ARCHIVE_WITHIN \
+        DEFAULT_AUTH_SOURCE \
         DEFAULT_AZURE_ACCOUNT DEFAULT_AZURE_KEY DEFAULT_AZURE_CONTAINER DEFAULT_AZURE_PATH \
-        DEFAULT_BACKUP_INTERVAL DEFAULT_BACKUP_LOCATION DEFAULT_BLACKOUT_BEGIN DEFAULT_BLACKOUT_DAYS DEFAULT_BLACKOUT_END \
-        DEFAULT_CHECKSUM DEFAULT_COMPRESSION DEFAULT_COMPRESSION_LEVEL DEFAULT_COMPRESSION_RSYNCABLE DEFAULT_COMPRESSION_THREADS \
+        DEFAULT_BACKUP_BEGIN DEFAULT_BACKUP_INTERVAL DEFAULT_BACKUP_LOCATION DEFAULT_BLACKOUT_BEGIN DEFAULT_BLACKOUT_DAYS DEFAULT_BLACKOUT_END \
+        DEFAULT_CHECKSUM DEFAULT_CLEANUP_TIME DEFAULT_COMPRESSION DEFAULT_COMPRESSION_LEVEL DEFAULT_COMPRESSION_RSYNCABLE DEFAULT_COMPRESSION_THREADS \
         DEFAULT_CONNECTIVITY_METHOD DEFAULT_CONNECTIVITY_RETRY_INTERVAL DEFAULT_CONNECTIVITY_TIMEOUT \
+        DEFAULT_CREATE_LATEST_SYMLINK \
+        DEFAULT_ENCRYPT DEFAULT_ENCRYPT_PASSPHRASE \
         DEFAULT_FILESYSTEM_PATH DEFAULT_FILESYSTEM_PATH_PERMISSION DEFAULT_FILESYSTEM_PERMISSION \
-        DEFAULT_GCS_BUCKET DEFAULT_GCS_KEY DEFAULT_GCS_PATH DEFAULT_GZ_RSYNCABLE \
+        DEFAULT_FULL_AFTER DEFAULT_FULL_EVERY \
+        DEFAULT_GCS_BUCKET DEFAULT_GCS_KEY DEFAULT_GCS_PATH DEFAULT_GLOBALS DEFAULT_GZ_RSYNCABLE \
+        DEFAULT_INFLUX_MODE DEFAULT_INFLUX_VERSION \
         DEFAULT_LOG_LEVEL DEFAULT_MAINTENANCE DEFAULT_MAINTENANCE_ANALYZE DEFAULT_MAINTENANCE_CHECK_TABLES DEFAULT_MAINTENANCE_COMPACT \
         DEFAULT_MAINTENANCE_MEMORY_PURGE DEFAULT_MAINTENANCE_OPTIMIZE DEFAULT_MAINTENANCE_REINDEX DEFAULT_MAINTENANCE_SCHEDULE DEFAULT_MAINTENANCE_VACUUM \
+        DEFAULT_MYSQL_EVENTS DEFAULT_MYSQL_RAW_BLOBS DEFAULT_MYSQL_ROUTINES DEFAULT_MYSQL_TRIGGERS DEFAULT_MYSQL_VIEWS \
+        DEFAULT_NAME_EXCLUDE \
+        DEFAULT_POST_COMMAND DEFAULT_PRE_COMMAND \
+        DEFAULT_RETENTION_DAILY DEFAULT_RETENTION_HOURLY DEFAULT_RETENTION_LAST DEFAULT_RETENTION_MONTHLY DEFAULT_RETENTION_WEEKLY DEFAULT_RETENTION_YEARLY \
         DEFAULT_S3_BUCKET DEFAULT_S3_CERT_CA_FILE DEFAULT_S3_CERT_SKIP_VERIFY DEFAULT_S3_HOST DEFAULT_S3_KEY_ID DEFAULT_S3_KEY_SECRET DEFAULT_S3_PATH DEFAULT_S3_PROTOCOL DEFAULT_S3_REGION \
+        DEFAULT_SCHEMA_ONLY DEFAULT_SIZE_FORMAT DEFAULT_SPLIT_DB \
+        DEFAULT_TABLES_EXCLUDE DEFAULT_TABLES_INCLUDE \
         DEFAULT_TLS_CA_FILE DEFAULT_TLS_CERT_FILE DEFAULT_TLS_ENABLE DEFAULT_TLS_KEY_FILE DEFAULT_TLS_VERIFY DEFAULT_TLS_VERSION \
         DEFAULT_WEBDAV_PASS DEFAULT_WEBDAV_PATH DEFAULT_WEBDAV_URL DEFAULT_WEBDAV_USER; do
         _dbbackup_dnorm "${_dbb_d}"
@@ -618,7 +630,7 @@ dbbackup_generate_configuration() {
         local checksum="$(_dbbackup_getv "${inst}" CHECKSUM "${d_checksum}")"
         checksum="${checksum,,}"
         local interval="$(_dbbackup_getv "${inst}" BACKUP_INTERVAL "${DEFAULT_BACKUP_INTERVAL}")"
-        local begin="$(_dbbackup_getv "${inst}" BACKUP_BEGIN "+0")"
+        local begin="$(_dbbackup_getv "${inst}" BACKUP_BEGIN "${DEFAULT_BACKUP_BEGIN:-+0}")"
         local blackout_begin="$(_dbbackup_getv "${inst}" BLACKOUT_BEGIN "${DEFAULT_BLACKOUT_BEGIN}")"
         local blackout_end="$(_dbbackup_getv "${inst}" BLACKOUT_END "${DEFAULT_BLACKOUT_END}")"
         local blackout_days="$(_dbbackup_getv "${inst}" BLACKOUT_DAYS "${DEFAULT_BLACKOUT_DAYS}")"
@@ -644,7 +656,7 @@ dbbackup_generate_configuration() {
         fi
         local backup_location="$(_dbbackup_getv "${inst}" BACKUP_LOCATION "${d_storage}")"
         backup_location="${backup_location,,}"
-        local cleanup_time="$(_dbbackup_getv "${inst}" CLEANUP_TIME "")"
+        local cleanup_time="$(_dbbackup_getv "${inst}" CLEANUP_TIME "${DEFAULT_CLEANUP_TIME}")"
         local split_db="$(_dbbackup_getv "${inst}" SPLIT_DB TRUE)"
         split_db="${split_db,,}"
         local create_latest="$(_dbbackup_getv "${inst}" CREATE_LATEST_SYMLINK FALSE)"
@@ -1365,7 +1377,7 @@ _dbbackup_unset_value() {
 }
 
 _dbbackup_getv() {
-    local inst="$1" name="$2" fallback="$3" v var
+    local inst="$1" name="$2" fallback="$3" v var dv
     var="DB${inst}_${name}"
     v="${!var-}"
     if _dbbackup_optout "$v"; then
@@ -1385,6 +1397,16 @@ _dbbackup_getv() {
                     return 0
                 fi
             fi
+        fi
+    fi
+    if _dbbackup_unset_value "$v"; then
+        var="DEFAULT_${name}"
+        dv="${!var-}"
+        if _dbbackup_optout "$dv"; then
+            dv=""
+        fi
+        if [ -n "${dv}" ]; then
+            v="${dv}"
         fi
     fi
     if _dbbackup_unset_value "$v"; then

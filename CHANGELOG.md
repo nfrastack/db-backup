@@ -1,3 +1,30 @@
+## 5.0.5 2026-10-07 <code at nfrastack dot com>
+
+   ### Changed
+      - fix encryption profile refs rejected as uknown type
+      - pretty print sidecars
+      - warn when limits reached on version checked on community edition
+      - (container) fix default scheduling begin and interval configuration generation
+      - (scheduler) time interval repeats are anchored to clock start not finish
+      - (scheduler) warn on every missed scheduled slot when overrun
+      - dump modifications
+         - (mysql) try to query server for SQL mode - fallback to writing backticks everywhere
+         - (mongo) chunk large operations
+         - (mssql) fix trailing GO statements leaking into another batch
+         - (postgres) encode TIME columns in COPY format
+         - (postgres) allow auth-source db to be used instead of postgres for list ops
+         - (postgres) skip views with unreadable definitions instead of aborting
+      - restore modifications
+         - add progress meter for chained incremental restores
+         - seperate progress meter from operations to avoid hanging
+         - (influx) change buffer to 16mb
+         - (mssql) switch to streaming
+         - (mysql) switch to streaming
+         - (postgres) allow auth-source db to be used instead of hardcoding postgres
+         - (sqlite) switch to streaming
+     - (storage/s3) chunk uploads into 8mb pieces and parallelize uploads
+
+
 ## 5.0.4 2026-09-24 <code at nfrastack dot com>
 
    ### Changed

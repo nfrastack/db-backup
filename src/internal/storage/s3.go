@@ -5,6 +5,7 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -18,6 +19,8 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nfrastack/db-backup/internal/log"
@@ -26,6 +29,13 @@ import (
 const (
 	s3IMDSv2Token = "http://169.254.169.254/latest/api/token"
 	s3IMDSv2Creds = "http://169.254.169.254/latest/meta-data/iam/security-credentials/"
+)
+
+const (
+	s3MultipartThreshold   = 8 * 1024 * 1024
+	s3MultipartPartSize    = 8 * 1024 * 1024
+	s3MultipartConcurrency = 10
+	s3MultipartMaxParts    = 10000
 )
 
 var nowFunc = time.Now
@@ -53,6 +63,21 @@ type s3ListObj struct {
 	Key          string `xml:"Key"`
 	Size         int64  `xml:"Size"`
 	LastModified string `xml:"LastModified"`
+}
+
+type s3InitiateMultipartResult struct {
+	XMLName  xml.Name `xml:"InitiateMultipartUploadResult"`
+	UploadID string   `xml:"UploadId"`
+}
+
+type s3CompleteMultipartPart struct {
+	PartNumber int    `xml:"PartNumber"`
+	ETag       string `xml:"ETag"`
+}
+
+type s3CompleteMultipartRequest struct {
+	XMLName xml.Name                  `xml:"CompleteMultipartUpload"`
+	Parts   []s3CompleteMultipartPart `xml:"Part"`
 }
 
 func (s *s3Storage) Delete(ctx context.Context, filePath string) error {
@@ -247,70 +272,37 @@ func (s *s3Storage) Upload(ctx context.Context, filePath string, r io.Reader) (i
 		return 0, ctx.Err()
 	default:
 	}
+	spool.Close()
+
+	if n >= int64(s3MultipartThreshold) {
+		return s.uploadMultipart(ctx, key, spoolPath, n)
+	}
 
 	h := sha256.New()
-	if _, err := spool.Seek(0, io.SeekStart); err != nil {
+	f, err := os.Open(spoolPath)
+	if err != nil {
 		return 0, fmt.Errorf("s3 spool: %w", err)
 	}
-	if _, err := io.Copy(h, spool); err != nil {
+	if _, err := io.Copy(h, f); err != nil {
+		_ = f.Close()
 		return 0, fmt.Errorf("s3 spool hash: %w", err)
 	}
-	spool.Close()
+	_ = f.Close()
 	payloadHash := hex.EncodeToString(h.Sum(nil))
 
-	u := s.requestURL(key)
-	dst := s.host("") + "/" + s.bucket
-	log.Debug("s3", "uploading object",
-		"host", endpointHost(s.endpoint), "bucket", s.bucket, "key", key, "bytes", n, "status", "debug")
-	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
-		if attempt > 0 {
-			select {
-			case <-ctx.Done():
-				return 0, ctx.Err()
-			case <-time.After(time.Duration(500*(1<<uint(attempt-1))) * time.Millisecond):
-			}
-		}
-		body, err := os.Open(spoolPath)
-		if err != nil {
-			return 0, fmt.Errorf("s3: upload %s: reopen spool: %w", dst, err)
-		}
-		log.Trace("s3", "upload attempt",
-			"host", endpointHost(s.endpoint), "bucket", s.bucket, "key", key, "attempt", attempt, "status", "trace")
-		resp, err := s.do(ctx, http.MethodPut, u, body, n, payloadHash)
-		_ = body.Close()
-		if err != nil {
-			if ctx.Err() != nil {
-				return 0, err
-			}
-			lastErr = err
-			log.Debug("s3", "upload attempt failed, retrying",
-				"host", endpointHost(s.endpoint), "bucket", s.bucket, "key", key,
-				"attempt", attempt, "error", err.Error(), "status", "debug")
-			continue
-		}
-		if resp.StatusCode == http.StatusOK {
-			resp.Body.Close()
-			log.Debug("s3", "upload complete",
-				"host", endpointHost(s.endpoint), "bucket", s.bucket, "key", key,
-				"bytes", n, "attempts", attempt+1, "status", "debug")
-			return n, nil
-		}
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		resp.Body.Close()
-		if !isRetryableStatus(resp.StatusCode) {
-			return 0, fmt.Errorf("s3: upload %s: %s: %s", dst, resp.Status, strings.TrimSpace(string(b)))
-		}
-		lastErr = fmt.Errorf("s3: upload %s: %s: %s", dst, resp.Status, strings.TrimSpace(string(b)))
-		log.Debug("s3", "upload attempt failed, retrying",
-			"host", endpointHost(s.endpoint), "bucket", s.bucket, "key", key,
-			"attempt", attempt, "error", lastErr.Error(), "status", "debug")
-	}
-	if lastErr != nil {
-		return 0, lastErr
-	}
-	return 0, fmt.Errorf("s3: upload %s: failed after retries", dst)
+	return s.uploadSingle(ctx, key, spoolPath, n, payloadHash)
 }
+
+func (s *s3Storage) abortMultipartUpload(ctx context.Context, key, uploadID string) {
+	_, _, u := s.multipartURLs(key, uploadID, 0)
+	resp, err := s.do(ctx, http.MethodDelete, u, nil, 0, "")
+	if err != nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+	resp.Body.Close()
+}
+
 func awsEncode(s string) string {
 	var b strings.Builder
 	for i := 0; i < len(s); i++ {
@@ -355,6 +347,106 @@ func canonicalQuery(raw string) string {
 	}
 	return strings.Join(parts, "&")
 }
+func (s *s3Storage) completeMultipartUpload(ctx context.Context, key, uploadID string, etags []string) error {
+	_, _, u := s.multipartURLs(key, uploadID, 0)
+	dst := s.host("") + "/" + s.bucket
+	req := s3CompleteMultipartRequest{}
+	for i, etag := range etags {
+		req.Parts = append(req.Parts, s3CompleteMultipartPart{PartNumber: i + 1, ETag: etag})
+	}
+	payload, err := xml.Marshal(req)
+	if err != nil {
+		return fmt.Errorf("s3: multipart complete encode: %w", err)
+	}
+	full := append([]byte(xml.Header), payload...)
+	sum := sha256.Sum256(full)
+	payloadHash := hex.EncodeToString(sum[:])
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Duration(500*(1<<uint(attempt-1))) * time.Millisecond):
+			}
+		}
+		log.Trace("s3", "multipart complete attempt",
+			"host", endpointHost(s.endpoint), "bucket", s.bucket, "key", key,
+			"upload_id", uploadID, "parts", len(etags), "attempt", attempt, "status", "trace")
+		resp, err := s.do(ctx, http.MethodPost, u, bytes.NewReader(full), int64(len(full)), payloadHash)
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			lastErr = err
+			continue
+		}
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 16384))
+		ok := s3UploadOK(resp.StatusCode)
+		resp.Body.Close()
+		if !ok {
+			if !isRetryableStatus(resp.StatusCode) {
+				return fmt.Errorf("s3: multipart complete %s: %s: %s", dst, resp.Status, strings.TrimSpace(string(b)))
+			}
+			lastErr = fmt.Errorf("s3: multipart complete %s: %s: %s", dst, resp.Status, strings.TrimSpace(string(b)))
+			continue
+		}
+		return nil
+	}
+	if lastErr != nil {
+		return lastErr
+	}
+	return fmt.Errorf("s3: multipart complete %s: failed after retries", dst)
+}
+
+func (s *s3Storage) createMultipartUpload(ctx context.Context, key string) (string, error) {
+	base := s.requestURL(key)
+	u := base + "?uploads"
+	dst := s.host("") + "/" + s.bucket
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			case <-time.After(time.Duration(500*(1<<uint(attempt-1))) * time.Millisecond):
+			}
+		}
+		log.Trace("s3", "multipart create attempt",
+			"host", endpointHost(s.endpoint), "bucket", s.bucket, "key", key, "attempt", attempt, "status", "trace")
+		resp, err := s.do(ctx, http.MethodPost, u, nil, 0, "")
+		if err != nil {
+			if ctx.Err() != nil {
+				return "", err
+			}
+			lastErr = err
+			continue
+		}
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 16384))
+		ok := s3UploadOK(resp.StatusCode)
+		resp.Body.Close()
+		if !ok {
+			if !isRetryableStatus(resp.StatusCode) {
+				return "", fmt.Errorf("s3: multipart create %s: %s: %s", dst, resp.Status, strings.TrimSpace(string(body)))
+			}
+			lastErr = fmt.Errorf("s3: multipart create %s: %s: %s", dst, resp.Status, strings.TrimSpace(string(body)))
+			continue
+		}
+		var res s3InitiateMultipartResult
+		if err := xml.Unmarshal(body, &res); err != nil {
+			return "", fmt.Errorf("s3: multipart create decode: %w", err)
+		}
+		if res.UploadID == "" {
+			return "", fmt.Errorf("s3: multipart create %s: empty upload id", dst)
+		}
+		return res.UploadID, nil
+	}
+	if lastErr != nil {
+		return "", lastErr
+	}
+	return "", fmt.Errorf("s3: multipart create %s: failed after retries", dst)
+}
+
 func (s *s3Storage) creds() (string, string, error) {
 	if s.keyID != "" {
 		return s.keyID, s.keySec, nil
@@ -387,6 +479,14 @@ func (s *s3Storage) do(ctx context.Context, method, rawURL string, body io.Reade
 	}
 	return s.client.Do(req)
 }
+func endpointHost(endpoint string) string {
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return ""
+	}
+	return u.Host
+}
+
 func escapePath(p string) string {
 	segs := strings.Split(p, "/")
 	for i, seg := range segs {
@@ -505,6 +605,15 @@ func (s *s3Storage) listURL(prefix, continuation string) string {
 	}
 	return u + "?" + q
 }
+func (s *s3Storage) multipartURLs(key, uploadID string, partNumber int) (createURL, partURL, completeURL string) {
+	base := s.requestURL(key)
+	createURL = base + "?uploads"
+	encID := url.QueryEscape(uploadID)
+	completeURL = base + "?uploadId=" + encID
+	partURL = base + "?partNumber=" + fmt.Sprintf("%d", partNumber) + "&uploadId=" + encID
+	return createURL, partURL, completeURL
+}
+
 func newS3Storage(opts map[string]string) (Storage, error) {
 	bucket := opts["bucket"]
 	if bucket == "" {
@@ -564,14 +673,6 @@ func normalizeEndpoint(raw string) (string, error) {
 	return endpoint, nil
 }
 
-func endpointHost(endpoint string) string {
-	u, err := url.Parse(endpoint)
-	if err != nil {
-		return ""
-	}
-	return u.Host
-}
-
 func parseS3Time(s string) int64 {
 	t, err := time.Parse(time.RFC3339Nano, s)
 	if err != nil {
@@ -586,6 +687,10 @@ func (s *s3Storage) requestURL(key string) string {
 	}
 	return s.scheme() + "://" + s.host(key) + pathPart
 }
+func s3UploadOK(code int) bool {
+	return code == http.StatusOK || code == http.StatusCreated || code == http.StatusNoContent
+}
+
 func (s *s3Storage) scheme() string {
 	if s.endpoint != "" && strings.HasPrefix(s.endpoint, "http://") {
 		return "http"
@@ -644,4 +749,225 @@ func (s *s3Storage) sign(req *http.Request, payloadHash string) error {
 			", SignedHeaders="+signedHeaders+
 			", Signature="+signature)
 	return nil
+}
+
+func (s *s3Storage) uploadMultipart(ctx context.Context, key, spoolPath string, size int64) (int64, error) {
+	dst := s.host("") + "/" + s.bucket
+	partSize := int64(s3MultipartPartSize)
+	if minPart := (size + int64(s3MultipartMaxParts) - 1) / int64(s3MultipartMaxParts); minPart > partSize {
+		partSize = minPart
+	}
+	numParts := int((size + partSize - 1) / partSize)
+	numWorkers := s3MultipartConcurrency
+	if numWorkers > numParts {
+		numWorkers = numParts
+	}
+	log.Debug("s3", "uploading object via multipart",
+		"host", endpointHost(s.endpoint), "bucket", s.bucket, "key", key,
+		"bytes", size, "parts", numParts, "part_size", partSize, "workers", numWorkers, "status", "debug")
+
+	uploadID, err := s.createMultipartUpload(ctx, key)
+	if err != nil {
+		return 0, err
+	}
+	completed := false
+	defer func() {
+		if !completed {
+			log.Debug("s3", "aborting multipart upload",
+				"host", endpointHost(s.endpoint), "bucket", s.bucket, "key", key,
+				"upload_id", uploadID, "status", "debug")
+			s.abortMultipartUpload(context.Background(), key, uploadID)
+		}
+	}()
+
+	f, err := os.Open(spoolPath)
+	if err != nil {
+		return 0, fmt.Errorf("s3: upload %s: reopen spool: %w", dst, err)
+	}
+	defer func() { _ = f.Close() }()
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	etags := make([]string, numParts)
+	jobs := make(chan int, numWorkers)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var firstErr error
+	var done int64
+	setErr := func(err error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if firstErr == nil {
+			firstErr = err
+			cancel()
+		}
+	}
+	for w := 0; w < numWorkers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			buf := make([]byte, partSize)
+			for i := range jobs {
+				off := int64(i) * partSize
+				curLen := partSize
+				if off+curLen > size {
+					curLen = size - off
+				}
+				if _, err := f.ReadAt(buf[:curLen], off); err != nil {
+					setErr(fmt.Errorf("s3: multipart part %d: read: %w", i+1, err))
+					return
+				}
+				start := time.Now()
+				etag, err := s.uploadMultipartPart(ctx, key, uploadID, i+1, buf[:curLen])
+				elapsed := time.Since(start)
+				if err != nil {
+					setErr(err)
+					return
+				}
+				etags[i] = etag
+				n := atomic.AddInt64(&done, 1)
+				rate := "-"
+				if elapsed > 0 {
+					rate = fmt.Sprintf("%.1f MiB/s", float64(curLen)/1048576/elapsed.Seconds())
+				}
+				log.Debug("s3", "multipart part complete",
+					"host", endpointHost(s.endpoint), "bucket", s.bucket, "key", key,
+					"upload_id", uploadID, "part", i+1, "parts", numParts, "bytes", curLen,
+					"elapsed", elapsed.Round(time.Millisecond).String(), "rate", rate, "status", "debug")
+				if n%10 == 0 || n == int64(numParts) {
+					log.Debug("s3", "multipart progress",
+						"host", endpointHost(s.endpoint), "bucket", s.bucket, "key", key,
+						"upload_id", uploadID, "parts_done", n, "parts", numParts, "status", "debug")
+				}
+			}
+		}()
+	}
+feed:
+	for i := 0; i < numParts; i++ {
+		select {
+		case <-ctx.Done():
+			break feed
+		case jobs <- i:
+		}
+	}
+	close(jobs)
+	wg.Wait()
+
+	mu.Lock()
+	err = firstErr
+	mu.Unlock()
+	if err != nil {
+		return 0, err
+	}
+
+	if err := s.completeMultipartUpload(ctx, key, uploadID, etags); err != nil {
+		return 0, err
+	}
+	completed = true
+	log.Debug("s3", "multipart upload complete",
+		"host", endpointHost(s.endpoint), "bucket", s.bucket, "key", key,
+		"bytes", size, "parts", numParts, "upload_id", uploadID, "status", "debug")
+	return size, nil
+}
+
+func (s *s3Storage) uploadMultipartPart(ctx context.Context, key, uploadID string, partNumber int, chunk []byte) (string, error) {
+	_, partURL, _ := s.multipartURLs(key, uploadID, partNumber)
+	dst := s.host("") + "/" + s.bucket
+	sum := sha256.Sum256(chunk)
+	payloadHash := hex.EncodeToString(sum[:])
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			case <-time.After(time.Duration(500*(1<<uint(attempt-1))) * time.Millisecond):
+			}
+		}
+		log.Trace("s3", "multipart part attempt",
+			"host", endpointHost(s.endpoint), "bucket", s.bucket, "key", key,
+			"upload_id", uploadID, "part", partNumber, "bytes", len(chunk), "attempt", attempt, "status", "trace")
+		resp, err := s.do(ctx, http.MethodPut, partURL, bytes.NewReader(chunk), int64(len(chunk)), payloadHash)
+		if err != nil {
+			if ctx.Err() != nil {
+				return "", err
+			}
+			lastErr = err
+			continue
+		}
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		etag := strings.TrimSpace(resp.Header.Get("ETag"))
+		ok := s3UploadOK(resp.StatusCode)
+		resp.Body.Close()
+		if !ok {
+			if !isRetryableStatus(resp.StatusCode) {
+				return "", fmt.Errorf("s3: multipart part %d %s: %s: %s", partNumber, dst, resp.Status, strings.TrimSpace(string(b)))
+			}
+			lastErr = fmt.Errorf("s3: multipart part %d %s: %s: %s", partNumber, dst, resp.Status, strings.TrimSpace(string(b)))
+			continue
+		}
+		if etag == "" {
+			return "", fmt.Errorf("s3: multipart part %d %s: missing ETag", partNumber, dst)
+		}
+		return etag, nil
+	}
+	if lastErr != nil {
+		return "", lastErr
+	}
+	return "", fmt.Errorf("s3: multipart part %d %s: failed after retries", partNumber, dst)
+}
+
+func (s *s3Storage) uploadSingle(ctx context.Context, key, spoolPath string, n int64, payloadHash string) (int64, error) {
+	u := s.requestURL(key)
+	dst := s.host("") + "/" + s.bucket
+	log.Debug("s3", "uploading object",
+		"host", endpointHost(s.endpoint), "bucket", s.bucket, "key", key, "bytes", n, "status", "debug")
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return 0, ctx.Err()
+			case <-time.After(time.Duration(500*(1<<uint(attempt-1))) * time.Millisecond):
+			}
+		}
+		body, err := os.Open(spoolPath)
+		if err != nil {
+			return 0, fmt.Errorf("s3: upload %s: reopen spool: %w", dst, err)
+		}
+		log.Trace("s3", "upload attempt",
+			"host", endpointHost(s.endpoint), "bucket", s.bucket, "key", key, "attempt", attempt, "status", "trace")
+		resp, err := s.do(ctx, http.MethodPut, u, body, n, payloadHash)
+		_ = body.Close()
+		if err != nil {
+			if ctx.Err() != nil {
+				return 0, err
+			}
+			lastErr = err
+			log.Debug("s3", "upload attempt failed, retrying",
+				"host", endpointHost(s.endpoint), "bucket", s.bucket, "key", key,
+				"attempt", attempt, "error", err.Error(), "status", "debug")
+			continue
+		}
+		if s3UploadOK(resp.StatusCode) {
+			resp.Body.Close()
+			log.Debug("s3", "upload complete",
+				"host", endpointHost(s.endpoint), "bucket", s.bucket, "key", key,
+				"bytes", n, "attempts", attempt+1, "status", "debug")
+			return n, nil
+		}
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		resp.Body.Close()
+		if !isRetryableStatus(resp.StatusCode) {
+			return 0, fmt.Errorf("s3: upload %s: %s: %s", dst, resp.Status, strings.TrimSpace(string(b)))
+		}
+		lastErr = fmt.Errorf("s3: upload %s: %s: %s", dst, resp.Status, strings.TrimSpace(string(b)))
+		log.Debug("s3", "upload attempt failed, retrying",
+			"host", endpointHost(s.endpoint), "bucket", s.bucket, "key", key,
+			"attempt", attempt, "error", lastErr.Error(), "status", "debug")
+	}
+	if lastErr != nil {
+		return 0, lastErr
+	}
+	return 0, fmt.Errorf("s3: upload %s: failed after retries", dst)
 }

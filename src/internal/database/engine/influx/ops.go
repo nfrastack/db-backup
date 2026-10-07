@@ -97,7 +97,7 @@ func Restore(r io.Reader, host string, port int, user, pass, dbName, authSource 
 	}
 
 	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 
 	const restoreBatchLines = 5000
 	var block strings.Builder

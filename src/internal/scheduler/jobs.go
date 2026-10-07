@@ -176,6 +176,7 @@ func (s *Scheduler) runJob(ctx context.Context, job config.JobConfig, idx int) {
 
 	firstRun := true
 	var blackoutSkips int
+	var prevExecStart time.Time
 	for {
 		var wait time.Duration
 		first := firstRun
@@ -195,6 +196,24 @@ func (s *Scheduler) runJob(ctx context.Context, job config.JobConfig, idx int) {
 
 		if first {
 			wait = firstWait
+		}
+
+		if !first && job.Schedule != nil && !job.Schedule.Time.Empty() && job.Schedule.Interval > 0 && !prevExecStart.IsZero() && wait > 0 {
+			target := time.Now().Add(wait)
+			if missed, samples := missedGridPoints(job.Schedule.Time, job.Schedule.Interval, prevExecStart, target); missed > 0 {
+				slotWord := "runs"
+				if missed == 1 {
+					slotWord = "run"
+				}
+				sampleStr := formatMissedTimes(samples, target)
+				if missed > len(samples) {
+					sampleStr = fmt.Sprintf("%s and %d more", sampleStr, missed-len(samples))
+				}
+				jlog(log.LevelWarn, "scheduler", job,
+					fmt.Sprintf("missed %d scheduled %s (%s) - running once at next slot %s, missed runs are skipped not queued",
+						missed, slotWord, sampleStr, target.Format("Mon 15:04")),
+					"status", "warn", "reason", "missed schedule", "missed", missed, "schedule", scheduleDesc)
+			}
 		}
 
 		if wait > 0 {
@@ -224,6 +243,7 @@ func (s *Scheduler) runJob(ctx context.Context, job config.JobConfig, idx int) {
 			if !job.Schedule.IsRecurring() {
 				return
 			}
+			prevExecStart = time.Now()
 			continue
 		}
 		if job.Schedule != nil && job.Schedule.Blocked(time.Now()) {
@@ -237,10 +257,12 @@ func (s *Scheduler) runJob(ctx context.Context, job config.JobConfig, idx int) {
 			if !job.Schedule.IsRecurring() {
 				return
 			}
+			prevExecStart = time.Now()
 			continue
 		}
 		blackoutSkips = 0
 
+		prevExecStart = time.Now()
 		s.runOnceJob(ctx, job, dbInfo)
 
 		if !job.Schedule.IsRecurring() {

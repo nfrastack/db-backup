@@ -423,9 +423,14 @@ func cmdRestore(args []string) int {
 		}
 		n, err := engSpec.RestoreChain(paths, order, func(name string, r io.Reader) error {
 			cr := &countingReader{r: r}
+			stop := startMeter("Restoring "+formatBytes(cr.Bytes())+": ", &cr.n)
 			if err := database.RestoreTo(cr, *dbType, *dbHost, *dbPort, *dbUser, pass, *dbName, restoreAuthSource, restoreTLS); err != nil {
+				close(stop)
 				return fmt.Errorf("restore %s: %w", name, err)
 			}
+			close(stop)
+			time.Sleep(50 * time.Millisecond)
+			fmt.Fprintf(os.Stderr, "%s: %s streamed\033[K\n", name, formatBytes(cr.Bytes()))
 			return nil
 		})
 		if err != nil {
