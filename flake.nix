@@ -5,8 +5,8 @@
 
   outputs = { self, nixpkgs }:
     let
-      version = "5.0.5beta";
-      expectedGoVersion = "1.26.7";
+      version = "5.0.5";
+      expectedGoVersion = "1.26.8";
 
       buildDate =
         let
