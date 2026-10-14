@@ -9,16 +9,42 @@ import (
 	"database/sql"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
 
+	"golang.org/x/sys/unix"
 	_ "modernc.org/sqlite"
 
 	"github.com/nfrastack/db-backup/internal/config"
 	"github.com/nfrastack/db-backup/internal/database/common"
 	"github.com/nfrastack/db-backup/internal/log"
 )
+
+const readOnlyHint = "file exists and is readable but SQLite cannot open it. db-backup needs the directory to be writeable."
+
+func isCantOpen(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "unable to open database file")
+}
+
+func dirWritable(dir string) bool {
+	return unix.Access(dir, unix.W_OK) == nil
+}
+
+func fileReadable(path string) bool {
+	fi, err := os.Stat(path)
+	if err != nil || fi.IsDir() {
+		return false
+	}
+	f, err := os.OpenFile(path, os.O_RDONLY, 0)
+	if err != nil {
+		return false
+	}
+	f.Close()
+	return true
+}
 
 type Dumper struct {
 	path       string
@@ -83,6 +109,9 @@ func (d *Dumper) Open() error {
 func (d *Dumper) OpenContext(ctx context.Context) error {
 	d.ctx = ctx
 	log.Debug("sqlite", "connect start", "path", d.path)
+	if err := common.FilePerms(d.path); err == nil && !dirWritable(filepath.Dir(d.path)) {
+		log.Warn("sqlite", "database directory is not writable", "path", d.path, "hint", readOnlyHint, "status", "warn")
+	}
 	probe := func() error { return common.FilePerms(d.path) }
 	connect := func() error {
 		dsn := "file:" + d.path + "?mode=ro"
@@ -95,6 +124,9 @@ func (d *Dumper) OpenContext(ctx context.Context) error {
 	}
 	ping := func() error {
 		if err := d.db.PingContext(ctx); err != nil {
+			if isCantOpen(err) && fileReadable(d.path) {
+				return fmt.Errorf("ping: %w (%s)", err, readOnlyHint)
+			}
 			return fmt.Errorf("ping: %w", err)
 		}
 		var one int

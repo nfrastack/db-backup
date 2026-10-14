@@ -1,7 +1,10 @@
 ## development
 
-   ### Changed
+   ### Added
       - Allow custom message during version check
+
+   ### Changed
+      - (sqlite) warn on unwritable directory for wal
 
 ## 5.0.5 2026-10-07 <code at nfrastack dot com>
 
