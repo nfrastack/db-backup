@@ -57,6 +57,7 @@ type VersionResponse struct {
 	ImageLatest    string           `json:"image_latest,omitempty"`
 	LicenseRevoked bool             `json:"license_revoked,omitempty"`
 	Channel        string           `json:"channel,omitempty"`
+	Message        string           `json:"message,omitempty"`
 	Stable         *VersionResponse `json:"stable,omitempty"`
 }
 

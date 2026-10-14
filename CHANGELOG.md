@@ -1,7 +1,7 @@
 ## development
 
    ### Changed
-      -
+      - Allow custom message during version check
 
 ## 5.0.5 2026-10-07 <code at nfrastack dot com>
 
