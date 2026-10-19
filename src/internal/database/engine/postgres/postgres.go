@@ -2140,6 +2140,9 @@ func (d *Dumper) dumpMatviews(w io.Writer, dbName string) ([]string, error) {
 		if m.owner != "" {
 			fmt.Fprintf(w, "ALTER MATERIALIZED VIEW %s OWNER TO %s;\n", qt, quotePGIdent(m.owner))
 		}
+		if idxSQL, err := d.getIndexes(m.schema, m.name); err == nil && idxSQL != "" {
+			fmt.Fprint(w, idxSQL)
+		}
 		log.Trace("postgres", "matview dumped", "database", dbName,
 			"matview", m.schema+"."+m.name)
 		if m.populated {
