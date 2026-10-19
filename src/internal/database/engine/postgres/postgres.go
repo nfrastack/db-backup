@@ -2811,6 +2811,10 @@ func (d *Dumper) identitySequenceDef(schema, table, column string) (string, erro
 }
 
 func (d *Dumper) getForeignKeys(schema, table string) (string, error) {
+	only := "ONLY "
+	if d.isPartitioned(schema, table) {
+		only = ""
+	}
 	rows, err := d.conn.Query(d.ctxOrBg(),
 		"SELECT c.conname, pg_get_constraintdef(c.oid) "+
 			"FROM pg_catalog.pg_constraint c "+
@@ -2832,7 +2836,7 @@ func (d *Dumper) getForeignKeys(schema, table string) (string, error) {
 		if def == "" {
 			continue
 		}
-		fmt.Fprintf(&sb, "ALTER TABLE ONLY %s.%s ADD CONSTRAINT %s %s;\n",
+		fmt.Fprintf(&sb, "ALTER TABLE %s%s.%s ADD CONSTRAINT %s %s;\n", only,
 			quotePGIdent(schema), quotePGIdent(table), quotePGIdent(conname), def)
 	}
 	return sb.String(), rows.Err()

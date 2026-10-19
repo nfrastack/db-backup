@@ -8,6 +8,7 @@
       - (scheduler) fix false missed-run warning on anchored schedules
       - dump modifications
         - (postgres) create indexes on materialized views
+        - (postgres) switch to ALTER TABLE (drop ONLY) for paritioned foreign keys
         - (postgres) use ALTER procedure for procedure grants and ownership
 
 
