@@ -8,6 +8,7 @@
       - (scheduler) fix false missed-run warning on anchored schedules
       - dump modifications
         - (postgres) create indexes on materialized views
+        - (postgres) use ALTER procedure for procedure grants and ownership
 
 
 ## 5.0.5 2026-10-07 <code at nfrastack dot com>
