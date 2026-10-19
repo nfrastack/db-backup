@@ -61,7 +61,10 @@ func fieldMatch(field string, val, min, max int) bool {
 }
 
 func nextCron(expr string) time.Duration {
-	now := time.Now()
+	return nextCronAt(expr, time.Now())
+}
+
+func nextCronAt(expr string, now time.Time) time.Duration {
 	next := now.Add(time.Minute).Truncate(time.Minute)
 	for i := 0; i < 525600; i++ {
 		if cronMatch(expr, next) {
@@ -73,24 +76,28 @@ func nextCron(expr string) time.Duration {
 }
 
 func nextJobDuration(s *config.Schedule) time.Duration {
+	return nextJobDurationAt(s, time.Now())
+}
+
+func nextJobDurationAt(s *config.Schedule, now time.Time) time.Duration {
 	if s == nil {
 		return 0
 	}
 	if s.Cron != "" {
-		return nextCron(s.Cron)
+		return nextCronAt(s.Cron, now)
 	}
 	if s.Interval > 0 {
 		if !s.Time.Empty() {
-			return nextAnchoredDuration(s.Time, s.Interval, time.Now())
+			return nextAnchoredDuration(s.Time, s.Interval, now)
 		}
 		return time.Duration(s.Interval) * time.Minute
 	}
 	if s.Begin != "" {
-		return parseBegin(s.Begin)
+		return parseBeginAt(s.Begin, now)
 	}
 	if !s.Time.Empty() {
-		if next, ok := s.Time.Next(time.Now()); ok {
-			return next.Sub(time.Now())
+		if next, ok := s.Time.Next(now); ok {
+			return next.Sub(now)
 		}
 		return 0
 	}
@@ -98,6 +105,10 @@ func nextJobDuration(s *config.Schedule) time.Duration {
 }
 
 func parseBegin(begin string) time.Duration {
+	return parseBeginAt(begin, time.Now())
+}
+
+func parseBeginAt(begin string, now time.Time) time.Duration {
 	if strings.HasPrefix(begin, "+") {
 		var m int
 		fmt.Sscanf(begin, "+%d", &m)
@@ -109,7 +120,6 @@ func parseBegin(begin string) time.Duration {
 	if len(begin) == 4 {
 		var h, m int
 		fmt.Sscanf(begin, "%2d%2d", &h, &m)
-		now := time.Now()
 		target := time.Date(now.Year(), now.Month(), now.Day(), h, m, 0, 0, now.Location())
 		if target.Before(now) {
 			target = target.Add(24 * time.Hour)

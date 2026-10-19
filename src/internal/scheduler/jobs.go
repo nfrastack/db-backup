@@ -178,6 +178,7 @@ func (s *Scheduler) runJob(ctx context.Context, job config.JobConfig, idx int) {
 	var blackoutSkips int
 	var prevExecStart time.Time
 	for {
+		loopNow := time.Now()
 		var wait time.Duration
 		first := firstRun
 		if firstRun && job.Schedule != nil {
@@ -185,12 +186,12 @@ func (s *Scheduler) runJob(ctx context.Context, job config.JobConfig, idx int) {
 			if d, ok := job.Schedule.FirstWait(); ok {
 				wait = d
 			} else if useBegin && job.Schedule.Begin != "" {
-				wait = parseBegin(job.Schedule.Begin)
+				wait = parseBeginAt(job.Schedule.Begin, loopNow)
 			} else {
-				wait = nextJobDuration(job.Schedule)
+				wait = nextJobDurationAt(job.Schedule, loopNow)
 			}
 		} else {
-			wait = nextJobDuration(job.Schedule)
+			wait = nextJobDurationAt(job.Schedule, loopNow)
 		}
 		firstRun = false
 
@@ -199,7 +200,7 @@ func (s *Scheduler) runJob(ctx context.Context, job config.JobConfig, idx int) {
 		}
 
 		if !first && job.Schedule != nil && !job.Schedule.Time.Empty() && job.Schedule.Interval > 0 && !prevExecStart.IsZero() && wait > 0 {
-			target := time.Now().Add(wait)
+			target := loopNow.Add(wait)
 			if missed, samples := missedGridPoints(job.Schedule.Time, job.Schedule.Interval, prevExecStart, target); missed > 0 {
 				slotWord := "runs"
 				if missed == 1 {
@@ -220,7 +221,7 @@ func (s *Scheduler) runJob(ctx context.Context, job config.JobConfig, idx int) {
 			if !first {
 
 				job.RunID = newRunID()
-				nextTime := time.Now().Add(wait).Format("2006-01-02 15:04:05")
+				nextTime := loopNow.Add(wait).Format("2006-01-02 15:04:05")
 				log.Info("scheduler",
 					fmt.Sprintf("sleeping until %s (next run in %s)", nextTime, roundDur(wait)),
 					"job", job.Name, "run_id", job.RunID, "status", "waiting", "schedule", scheduleDesc)

@@ -5,6 +5,7 @@
 
    ### Changed
       - (sqlite) warn on unwritable directory for wal
+      - (scheduler) fix false missed-run warning on anchored schedules
 
 ## 5.0.5 2026-10-07 <code at nfrastack dot com>
 
