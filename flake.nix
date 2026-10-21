@@ -6,7 +6,10 @@
   outputs = { self, nixpkgs }:
     let
       version = "5.0.6b";
-      expectedGoVersion = "1.26.8";
+      expectedGoVersion = "1.26.10";
+
+      goOverrideVersion = "1.26.10";
+      goOverrideHash = "sha256-/WPog7ovK/ypPBZGsx6+9j4rHk0rMXyXidl2po2B828=";
 
       buildDate =
         let
@@ -33,7 +36,13 @@
         inherit system;
         overlays = [
           (final: prev: {
-            go = final.go_1_26;
+            go = prev.go_1_26.overrideAttrs (old: {
+              version = goOverrideVersion;
+              src = final.fetchurl {
+                url = "https://go.dev/dl/go${goOverrideVersion}.src.tar.gz";
+                hash = goOverrideHash;
+              };
+            });
           })
         ];
       });

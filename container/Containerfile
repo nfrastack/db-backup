@@ -27,7 +27,7 @@ ARG \
     DBBACKUP_VERSION \
     DBBACKUP_COMMIT \
     DBBACKUP_CHANNEL="auto" \
-    GOLANG_VERSION="1.26.9"
+    GOLANG_VERSION="1.26.10"
 
 HEALTHCHECK \
                 --interval=30s \
