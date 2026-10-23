@@ -141,6 +141,16 @@ func versionCheckCmd(format string) int {
 	} else {
 		fmt.Print(updateNotice(resp))
 	}
+	for _, n := range resp.Notices {
+		if n.Text == "" {
+			continue
+		}
+		sev := n.Severity
+		if sev == "" {
+			sev = "info"
+		}
+		fmt.Printf("notice [%s]: %s\n", sev, n.Text)
+	}
 	if img := stats.ImageVersion(); stats.IsImageStale(img, resp.ImageLatest) {
 		fmt.Printf("New container image available: %s (running %s)\n", resp.ImageLatest, img)
 	}

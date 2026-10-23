@@ -593,29 +593,44 @@ func (m *Manager) notifyVersion(current string, opts Options, resp *VersionRespo
 	if opts.LicenseID != "" && OnLicenseVerdict != nil {
 		OnLicenseVerdict(opts.LicenseID, resp.LicenseRevoked)
 	}
+	now := time.Now().UTC()
+	checks := 0
+	if m != nil && m.vstate != nil {
+		m.vstate.Checks++
+		checks = m.vstate.Checks
+	}
 	binaryNewer := resp.Latest != "" && IsNewer(current, resp.Latest)
 	imageNewer := IsImageStale(opts.ImageVersion, resp.ImageLatest)
 
 	switch {
 	case binaryNewer:
-		msg := fmt.Sprintf("new version available: %s", resp.Latest)
-		if resp.DateReleased != "" {
-			msg += fmt.Sprintf(" (released %s)", resp.DateReleased)
-		}
+		maxShows, everyHours := 1, 0
 		if resp.Critical {
-			msg += " - marked critical"
+			maxShows, everyHours = 0, criticalVersionEveryHours
 		}
-		fields := []any{"current", current}
-		if resp.DownloadURL != "" {
-			fields = append(fields, "download_url", resp.DownloadURL)
+		if m.noticeDue(versionNoticeID(resp.Latest), maxShows, everyHours, 0, checks, now) {
+			m.recordNoticeShow(versionNoticeID(resp.Latest), checks, now)
+			msg := fmt.Sprintf("new version available: %s", resp.Latest)
+			if resp.DateReleased != "" {
+				msg += fmt.Sprintf(" (released %s)", resp.DateReleased)
+			}
+			if resp.Critical {
+				msg += " - marked critical"
+			}
+			fields := []any{"current", current, "notice_id", versionNoticeID(resp.Latest)}
+			if resp.DownloadURL != "" {
+				fields = append(fields, "download_url", resp.DownloadURL)
+			}
+			if resp.ChangelogURL != "" {
+				fields = append(fields, "changelog_url", resp.ChangelogURL)
+			}
+			if resp.ImageLatest != "" && resp.ImageLatest != resp.Latest {
+				fields = append(fields, "image_latest", resp.ImageLatest)
+			}
+			log.Info("version-check", msg, fields...)
+		} else {
+			log.Debug("version-check", fmt.Sprintf("already notified about %s - skipping", resp.Latest))
 		}
-		if resp.ChangelogURL != "" {
-			fields = append(fields, "changelog_url", resp.ChangelogURL)
-		}
-		if resp.ImageLatest != "" && resp.ImageLatest != resp.Latest {
-			fields = append(fields, "image_latest", resp.ImageLatest)
-		}
-		log.Info("version-check", msg, fields...)
 	case imageNewer:
 		log.Info("version-check", fmt.Sprintf("new container image available: %s (running %s)", resp.ImageLatest, opts.ImageVersion))
 	default:
@@ -626,21 +641,28 @@ func (m *Manager) notifyVersion(current string, opts Options, resp *VersionRespo
 		log.Debug("version-check", fmt.Sprintf("up to date - running %s, server reports %s", current, resp.Latest))
 	}
 
-	// let beta/edge know a stable has also been released
+	for _, n := range m.selectNotices(now, checks, effectiveNotices(resp)) {
+		logNotice(n)
+	}
+
+	// let beta/edge know a stable has also been released (once per version)
 	if resp.Stable != nil && resp.Stable.Latest != "" && resp.Stable.Latest != resp.Latest {
 		if IsNewer(current, resp.Stable.Latest) {
-			msg := fmt.Sprintf("stable release available: %s", resp.Stable.Latest)
-			if resp.Stable.DateReleased != "" {
-				msg += fmt.Sprintf(" (released %s)", resp.Stable.DateReleased)
+			if m.noticeDue(versionNoticeID(resp.Stable.Latest), 1, 0, 0, checks, now) {
+				m.recordNoticeShow(versionNoticeID(resp.Stable.Latest), checks, now)
+				msg := fmt.Sprintf("stable release available: %s", resp.Stable.Latest)
+				if resp.Stable.DateReleased != "" {
+					msg += fmt.Sprintf(" (released %s)", resp.Stable.DateReleased)
+				}
+				if resp.Stable.Critical {
+					msg += " - marked critical"
+				}
+				fields := []any{"current", current, "channel", opts.Channel, "notice_id", versionNoticeID(resp.Stable.Latest)}
+				if resp.Stable.DownloadURL != "" {
+					fields = append(fields, "download_url", resp.Stable.DownloadURL)
+				}
+				log.Info("version-check", msg, fields...)
 			}
-			if resp.Stable.Critical {
-				msg += " - marked critical"
-			}
-			fields := []any{"current", current, "channel", opts.Channel}
-			if resp.Stable.DownloadURL != "" {
-				fields = append(fields, "download_url", resp.Stable.DownloadURL)
-			}
-			log.Info("version-check", msg, fields...)
 		}
 	}
 }
