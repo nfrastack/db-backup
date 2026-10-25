@@ -6,9 +6,12 @@
   outputs = { self, nixpkgs }:
     let
       version = "5.0.6b";
-      expectedGoVersion = "1.26.10";
 
-      goOverrideVersion = "1.26.10";
+      goVersion = "1.26.10";
+      goMajorMinor = nixpkgs.lib.versions.majorMinor goVersion;
+      goAttr = "go_${nixpkgs.lib.replaceStrings ["."] ["_"] goMajorMinor}";
+      goBuilder = "buildGo${nixpkgs.lib.replaceStrings ["."] [""] goMajorMinor}Module";
+
       goOverrideHash = "sha256-/WPog7ovK/ypPBZGsx6+9j4rHk0rMXyXidl2po2B828=";
 
       buildDate =
@@ -35,15 +38,23 @@
       nixpkgsFor = forAllSystems (system: import nixpkgs {
         inherit system;
         overlays = [
-          (final: prev: {
-            go = prev.go_1_26.overrideAttrs (old: {
-              version = goOverrideVersion;
-              src = final.fetchurl {
-                url = "https://go.dev/dl/go${goOverrideVersion}.src.tar.gz";
-                hash = goOverrideHash;
-              };
-            });
-          })
+          (final: prev:
+            let stock = prev.${goAttr}; in
+            {
+              ${goAttr} =
+                if nixpkgs.lib.versionOlder stock.version goVersion then
+                  stock.overrideAttrs (old: {
+                    version = goVersion;
+                    src = final.fetchurl {
+                      url = "https://go.dev/dl/go${goVersion}.src.tar.gz";
+                      hash = goOverrideHash;
+                    };
+                  })
+                else
+                  stock;
+              go = final.${goAttr};
+              buildGoModule = prev.${goBuilder};
+            })
         ];
       });
       src = self;
@@ -58,14 +69,15 @@
     in {
       packages = forAllSystems (system:
         let pkgs = nixpkgsFor.${system};
-        in {
+        in assert nixpkgs.lib.assertMsg
+          (!(nixpkgs.lib.versionOlder (pkgs.${goAttr}.version or "0") goVersion))
+          "Go toolchain too old: ${goAttr} provides ${pkgs.${goAttr}.version or "missing"}, db-backup needs >= ${goVersion}";
+        {
           db-backup = pkgs.buildGoModule {
             pname = "db-backup";
             version = version;
             inherit src;
             modRoot = "src";
-
-            go = pkgs.go;
 
             meta = {
               description = "Database backup tool supporting MySQL, PostgreSQL, MongoDB, MSSQL, InfluxDB, CouchDB, Redis, SQLite";
