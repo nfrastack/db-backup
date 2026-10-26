@@ -15,7 +15,6 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/sys/unix"
 	_ "modernc.org/sqlite"
 
 	"github.com/nfrastack/db-backup/internal/config"
@@ -30,7 +29,14 @@ func isCantOpen(err error) bool {
 }
 
 func dirWritable(dir string) bool {
-	return unix.Access(dir, unix.W_OK) == nil
+	f, err := os.CreateTemp(dir, ".dbb-writetest-*")
+	if err != nil {
+		return false
+	}
+	name := f.Name()
+	f.Close()
+	os.Remove(name)
+	return true
 }
 
 func fileReadable(path string) bool {
