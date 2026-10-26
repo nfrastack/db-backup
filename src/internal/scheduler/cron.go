@@ -6,6 +6,7 @@ package scheduler
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -28,6 +29,9 @@ func fieldMatch(field string, val, min, max int) bool {
 	if field == "*" {
 		return true
 	}
+	if strings.ContainsAny(field, "\"'") {
+		return false
+	}
 	if strings.Contains(field, ",") {
 		for _, p := range strings.Split(field, ",") {
 			if fieldMatch(p, val, min, max) {
@@ -38,25 +42,31 @@ func fieldMatch(field string, val, min, max int) bool {
 	}
 	if strings.Contains(field, "/") {
 		parts := strings.SplitN(field, "/", 2)
-		var step int
-		fmt.Sscanf(parts[1], "%d", &step)
-		if step <= 0 {
+		step, err := strconv.Atoi(parts[1])
+		if err != nil || step <= 0 {
 			return false
 		}
 		if parts[0] == "*" {
 			return (val-min)%step == 0
 		}
-		var start int
-		fmt.Sscanf(parts[0], "%d", &start)
+		start, err := strconv.Atoi(parts[0])
+		if err != nil {
+			return false
+		}
 		return val >= start && (val-start)%step == 0
 	}
 	if strings.Contains(field, "-") {
-		var a, b int
-		fmt.Sscanf(field, "%d-%d", &a, &b)
+		a, err1 := strconv.Atoi(strings.SplitN(field, "-", 2)[0])
+		b, err2 := strconv.Atoi(strings.SplitN(field, "-", 2)[1])
+		if err1 != nil || err2 != nil {
+			return false
+		}
 		return val >= a && val <= b
 	}
-	var n int
-	fmt.Sscanf(field, "%d", &n)
+	n, err := strconv.Atoi(field)
+	if err != nil {
+		return false
+	}
 	return val == n
 }
 

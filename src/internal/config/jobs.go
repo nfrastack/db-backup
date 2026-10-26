@@ -440,6 +440,9 @@ func (j *JobConfig) ValidateWithEncryptionProfiles(profiles map[string]Encryptio
 		}
 	}
 	if j.Schedule != nil {
+		if err := j.Schedule.Validate(); err != nil {
+			return fmt.Errorf("job %q schedule: %w", j.Name, err)
+		}
 		if err := j.Schedule.enforceCommunityLimits(); err != nil {
 			return fmt.Errorf("job %q schedule: %w", j.Name, err)
 		}

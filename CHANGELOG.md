@@ -4,6 +4,7 @@
       - Allow custom message during version check
 
    ### Changed
+      - add cron scheduling validation
       - force go 1.26.10 as minimum version
       - (sqlite) warn on unwritable directory for wal
       - (scheduler) fix false missed-run warning on anchored schedules
