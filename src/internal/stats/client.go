@@ -48,6 +48,16 @@ type Client struct {
 // timeout in seconds
 const clientTimeout = 10 * time.Second
 
+type VersionNotice struct {
+	ID          string `json:"id"`
+	Text        string `json:"text"`
+	Severity    string `json:"severity,omitempty"`
+	MaxShows    int    `json:"max_shows,omitempty"`
+	EveryHours  int    `json:"every_hours,omitempty"`
+	EveryChecks int    `json:"every_checks,omitempty"`
+	Tracked     *bool  `json:"tracked,omitempty"`
+}
+
 type VersionResponse struct {
 	Latest         string           `json:"latest"`
 	DateReleased   string           `json:"date_released,omitempty"`
@@ -57,6 +67,8 @@ type VersionResponse struct {
 	ImageLatest    string           `json:"image_latest,omitempty"`
 	LicenseRevoked bool             `json:"license_revoked,omitempty"`
 	Channel        string           `json:"channel,omitempty"`
+	Message        string           `json:"message,omitempty"`
+	Notices        []VersionNotice  `json:"notices,omitempty"`
 	Stable         *VersionResponse `json:"stable,omitempty"`
 }
 

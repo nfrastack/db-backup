@@ -1,3 +1,19 @@
+## 5.0.6 2026-10-26 <code at nfrastack dot com>
+
+  15 day trials are available to test features such as incremental/differential backups, archiving and more..  https://www.nfrastack.com/db-backup/license/trial
+  
+   ### Changed
+      - add cron scheduling validation
+      - version check extra messaging
+      - force go 1.26.10 as minimum version
+      - (sqlite) warn on unwritable directory for wal
+      - (scheduler) fix false missed-run warning on anchored schedules
+      - dump modifications
+        - (postgres) create indexes on materialized views
+        - (postgres) switch to ALTER TABLE (drop ONLY) for paritioned foreign keys
+        - (postgres) use ALTER procedure for procedure grants and ownership
+
+
 ## 5.0.5 2026-10-07 <code at nfrastack dot com>
 
    ### Changed

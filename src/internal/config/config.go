@@ -90,14 +90,14 @@ type ConnConfig struct {
 }
 
 type RestoreConfig struct {
-	File       string `yaml:"file"`
-	Base       string `yaml:"base,omitempty"`
-	Connection string `yaml:"connection"`
-	StorageRef string `yaml:"storage"`
-	ProfileRef string `yaml:"profile,omitempty"`
-	Identity   string `yaml:"identity,omitempty"`
-	Passphrase string `yaml:"passphrase,omitempty"`
-	CreateDB *bool `yaml:"create_db,omitempty"`
+	File       string         `yaml:"file"`
+	Base       string         `yaml:"base,omitempty"`
+	Connection string         `yaml:"connection"`
+	StorageRef string         `yaml:"storage"`
+	ProfileRef string         `yaml:"profile,omitempty"`
+	Identity   string         `yaml:"identity,omitempty"`
+	Passphrase string         `yaml:"passphrase,omitempty"`
+	CreateDB   *bool          `yaml:"create_db,omitempty"`
 	Type       string         `yaml:"-"`
 	Host       string         `yaml:"-"`
 	Port       int            `yaml:"-"`
@@ -152,11 +152,19 @@ type StatsState struct {
 	LastReportAt string `json:"last_report_at,omitempty"`
 }
 
-// version check state written to <state.dir>/version.json
+// version check state <state.dir>/version.json
 type VersionState struct {
-	PreviousVersion string `json:"previous_version"`
-	LastCheckAt     string `json:"last_check_at,omitempty"`
-	EventAckAt      string `json:"event_ack_at,omitempty"`
+	Checks          int                   `json:"c,omitempty"`
+	EventAckAt      string                `json:"ack,omitempty"`
+	LastCheckAt     string                `json:"at,omitempty"`
+	Notices         map[string]NoticeShow `json:"n,omitempty"`
+	PreviousVersion string                `json:"prev,omitempty"`
+}
+
+type NoticeShow struct {
+	Count     int    `json:"c"`
+	LastShown string `json:"t,omitempty"`
+	LastCheck int    `json:"k,omitempty"`
 }
 
 type DefaultsConfig struct {
@@ -543,27 +551,6 @@ func WriteStatsState(stateDir string, st *StatsState) error {
 		return fmt.Errorf("writing usage stats state: %w", err)
 	}
 	return os.Rename(tmp, p)
-}
-
-func defaultBool(val, def bool) bool {
-	if val {
-		return val
-	}
-	return def
-}
-
-func defaultInt(val, def int) int {
-	if val != 0 {
-		return val
-	}
-	return def
-}
-
-func defaultString(val, def string) string {
-	if val != "" {
-		return val
-	}
-	return def
 }
 
 func ReadVersionState(stateDir string) (*VersionState, error) {

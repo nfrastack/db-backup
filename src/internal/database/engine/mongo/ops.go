@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	mongoMaxLineBytes = 16 * 1024 * 1024
+	mongoMaxLineBytes     = 16 * 1024 * 1024
 	mongoRestoreBatchSize = 1000
 )
 

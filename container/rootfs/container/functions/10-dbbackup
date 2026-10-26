@@ -631,6 +631,7 @@ dbbackup_generate_configuration() {
         checksum="${checksum,,}"
         local interval="$(_dbbackup_getv "${inst}" BACKUP_INTERVAL "${DEFAULT_BACKUP_INTERVAL}")"
         local begin="$(_dbbackup_getv "${inst}" BACKUP_BEGIN "${DEFAULT_BACKUP_BEGIN:-+0}")"
+        _dbbackup_unquote begin
         local blackout_begin="$(_dbbackup_getv "${inst}" BLACKOUT_BEGIN "${DEFAULT_BLACKOUT_BEGIN}")"
         local blackout_end="$(_dbbackup_getv "${inst}" BLACKOUT_END "${DEFAULT_BLACKOUT_END}")"
         local blackout_days="$(_dbbackup_getv "${inst}" BLACKOUT_DAYS "${DEFAULT_BLACKOUT_DAYS}")"
@@ -1366,6 +1367,27 @@ _dbbackup_dnorm() {
     if _dbbackup_optout "${v}"; then
         printf -v "$1" ""
     fi
+}
+
+_dbbackup_unquote() {
+    local v="${!1-}" stripped dq sq
+    dq=$(printf '"')
+    sq=$(printf \')
+    stripped="$(printf '%s' "${v}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+    case "${stripped}" in
+        "$dq"*"$dq")
+            stripped="${stripped#\"}"
+            stripped="${stripped%\"}"
+            ;;
+        "$sq"*"$sq")
+            stripped="${stripped#\'}"
+            stripped="${stripped%\'}"
+            ;;
+    esac
+    if [ "${stripped}" != "${v}" ]; then
+        print_warn "stripping surrounding quotes from ${1}: '${v}' -> '${stripped}'"
+    fi
+    printf -v "$1" '%s' "${stripped}"
 }
 
 _dbbackup_unset_value() {

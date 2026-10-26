@@ -323,7 +323,7 @@ func (d *Dumper) dumpACLs(w io.Writer, dbName string, tables []string) error {
 
 	funcRows, err := d.conn.Query(d.ctxOrBg(),
 		"SELECT n.nspname, p.proname, pg_get_function_identity_arguments(p.oid), "+
-			"pg_get_userbyid(p.proowner), p.proacl FROM pg_catalog.pg_proc p "+
+			"pg_get_userbyid(p.proowner), p.proacl, p.prokind FROM pg_catalog.pg_proc p "+
 			"JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace "+
 			"WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') "+
 			"AND p.prokind IN ('f', 'p') "+
@@ -332,12 +332,12 @@ func (d *Dumper) dumpACLs(w io.Writer, dbName string, tables []string) error {
 	if err != nil {
 		return nil
 	}
-	type funcRef struct{ schema, name, args, owner, acl string }
+	type funcRef struct{ schema, name, args, owner, acl, kind string }
 	var funcs []funcRef
 	for funcRows.Next() {
 		var f funcRef
 		var aclVal sql.NullString
-		if err := funcRows.Scan(&f.schema, &f.name, &f.args, &f.owner, &aclVal); err != nil {
+		if err := funcRows.Scan(&f.schema, &f.name, &f.args, &f.owner, &aclVal, &f.kind); err != nil {
 			continue
 		}
 		if aclVal.Valid {
@@ -351,30 +351,34 @@ func (d *Dumper) dumpACLs(w io.Writer, dbName string, tables []string) error {
 	}
 	for _, f := range funcs {
 		schema, name, args, owner := f.schema, f.name, f.args, f.owner
+		objType := "FUNCTION"
+		if f.kind == "p" {
+			objType = "PROCEDURE"
+		}
 		ident := quotePGIdent(schema) + "." + quotePGIdent(name) + "(" + args + ")"
 		emitted := false
 		if owner != "" {
 			header()
 			if !emitted {
-				fmt.Fprintf(w, "\n-- ACL: FUNCTION %s.%s(%s)\n", schema, name, args)
+				fmt.Fprintf(w, "\n-- ACL: %s %s.%s(%s)\n", objType, schema, name, args)
 				emitted = true
 			}
-			fmt.Fprintf(w, "ALTER FUNCTION %s OWNER TO %s;\n", ident, quotePGIdent(owner))
+			fmt.Fprintf(w, "ALTER %s %s OWNER TO %s;\n", objType, ident, quotePGIdent(owner))
 		}
 		if f.acl != "" && f.acl != "{}" {
 			grants, err := d.funcGrants(schema, name, args)
 			if err != nil {
 				log.Warn("postgres", "grants unavailable", "database", dbName,
-					"object", "FUNCTION "+schema+"."+name, "error", err.Error())
+					"object", objType+" "+schema+"."+name, "error", err.Error())
 			} else if len(grants) > 0 {
 				grantCount += len(grants)
 				log.Trace("postgres", "grants dumped", "database", dbName,
-					"object", "FUNCTION "+schema+"."+name, "grants", len(grants))
+					"object", objType+" "+schema+"."+name, "grants", len(grants))
 				header()
 				if !emitted {
-					fmt.Fprintf(w, "\n-- ACL: FUNCTION %s.%s(%s)\n", schema, name, args)
+					fmt.Fprintf(w, "\n-- ACL: %s %s.%s(%s)\n", objType, schema, name, args)
 				}
-				fmt.Fprint(w, formatGrants("FUNCTION "+ident, grants))
+				fmt.Fprint(w, formatGrants(objType+" "+ident, grants))
 			}
 		}
 	}
@@ -2140,6 +2144,9 @@ func (d *Dumper) dumpMatviews(w io.Writer, dbName string) ([]string, error) {
 		if m.owner != "" {
 			fmt.Fprintf(w, "ALTER MATERIALIZED VIEW %s OWNER TO %s;\n", qt, quotePGIdent(m.owner))
 		}
+		if idxSQL, err := d.getIndexes(m.schema, m.name); err == nil && idxSQL != "" {
+			fmt.Fprint(w, idxSQL)
+		}
 		log.Trace("postgres", "matview dumped", "database", dbName,
 			"matview", m.schema+"."+m.name)
 		if m.populated {
@@ -2804,6 +2811,10 @@ func (d *Dumper) identitySequenceDef(schema, table, column string) (string, erro
 }
 
 func (d *Dumper) getForeignKeys(schema, table string) (string, error) {
+	only := "ONLY "
+	if d.isPartitioned(schema, table) {
+		only = ""
+	}
 	rows, err := d.conn.Query(d.ctxOrBg(),
 		"SELECT c.conname, pg_get_constraintdef(c.oid) "+
 			"FROM pg_catalog.pg_constraint c "+
@@ -2825,7 +2836,7 @@ func (d *Dumper) getForeignKeys(schema, table string) (string, error) {
 		if def == "" {
 			continue
 		}
-		fmt.Fprintf(&sb, "ALTER TABLE ONLY %s.%s ADD CONSTRAINT %s %s;\n",
+		fmt.Fprintf(&sb, "ALTER TABLE %s%s.%s ADD CONSTRAINT %s %s;\n", only,
 			quotePGIdent(schema), quotePGIdent(table), quotePGIdent(conname), def)
 	}
 	return sb.String(), rows.Err()

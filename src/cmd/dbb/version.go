@@ -94,6 +94,24 @@ func runVersionCheck() (*stats.VersionResponse, error) {
 	return client.CheckVersion(ctx, stats.CheckPayload(stats.ToolDBBackup, Version, statsOpts()))
 }
 
+func updateNotice(resp *stats.VersionResponse) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "New version available: %s (released %s)\n", resp.Latest, resp.DateReleased)
+	if resp.Critical {
+		b.WriteString("This release is marked critical. Upgrade is strongly recommended.\n")
+	}
+	if resp.DownloadURL != "" {
+		fmt.Fprintf(&b, "Download: %s\n", resp.DownloadURL)
+	}
+	if resp.ChangelogURL != "" {
+		fmt.Fprintf(&b, "Changelog: %s\n", resp.ChangelogURL)
+	}
+	if resp.Message != "" {
+		fmt.Fprintf(&b, "%s\n", resp.Message)
+	}
+	return b.String()
+}
+
 func versionCheckCmd(format string) int {
 	resp, err := runVersionCheck()
 	if err != nil {
@@ -121,16 +139,17 @@ func versionCheckCmd(format string) int {
 	if !stats.IsNewer(Version, resp.Latest) {
 		fmt.Printf("Already running the latest version (%s). Server reports: %s\n", Version, resp.Latest)
 	} else {
-		fmt.Printf("New version available: %s (released %s)\n", resp.Latest, resp.DateReleased)
-		if resp.Critical {
-			fmt.Println("This release is marked critical. Upgrade is strongly recommended.")
+		fmt.Print(updateNotice(resp))
+	}
+	for _, n := range resp.Notices {
+		if n.Text == "" {
+			continue
 		}
-		if resp.DownloadURL != "" {
-			fmt.Printf("Download: %s\n", resp.DownloadURL)
+		sev := n.Severity
+		if sev == "" {
+			sev = "info"
 		}
-		if resp.ChangelogURL != "" {
-			fmt.Printf("Changelog: %s\n", resp.ChangelogURL)
-		}
+		fmt.Printf("notice [%s]: %s\n", sev, n.Text)
 	}
 	if img := stats.ImageVersion(); stats.IsImageStale(img, resp.ImageLatest) {
 		fmt.Printf("New container image available: %s (running %s)\n", resp.ImageLatest, img)

@@ -107,6 +107,115 @@ func CommunityScheduleLimits(s *Schedule) error {
 	return nil
 }
 
+func UnquoteScheduleValue(s string) (string, bool) {
+	t := strings.TrimSpace(s)
+	changed := false
+	for len(t) >= 2 {
+		q := t[0]
+		if (q == '"' || q == '\'') && t[len(t)-1] == q {
+			t = strings.TrimSpace(t[1 : len(t)-1])
+			changed = true
+			continue
+		}
+		break
+	}
+	return t, changed
+}
+
+func warnUnquoted(original, cleaned, where string) {
+	msg := fmt.Sprintf("schedule %s %q had surrounding quotes (likely from docker-compose `- VAR=\"...\"` list form) - using %q instead", where, original, cleaned)
+	fmt.Fprintln(os.Stderr, "WARN: "+msg)
+	log.Warn("schedule", msg, "original", original, "cleaned", cleaned)
+}
+
+func ValidateCron(expr string) error {
+	if strings.ContainsAny(expr, "\"'") {
+		return fmt.Errorf("cron %q contains quote characters (strip surrounding quotes from the env value)", expr)
+	}
+	parts := strings.Fields(expr)
+	if len(parts) != 5 {
+		return fmt.Errorf("cron %q must have 5 fields (minute hour day month weekday), got %d", expr, len(parts))
+	}
+	bounds := [5][2]int{{0, 59}, {0, 23}, {1, 31}, {1, 12}, {0, 6}}
+	names := [5]string{"minute", "hour", "day", "month", "weekday"}
+	for i, f := range parts {
+		if err := validateCronField(f, bounds[i][0], bounds[i][1]); err != nil {
+			return fmt.Errorf("cron %q field %d (%s %q): %w", expr, i+1, names[i], f, err)
+		}
+	}
+	return nil
+}
+
+func validateCronField(field string, min, max int) error {
+	if field == "" {
+		return fmt.Errorf("empty field")
+	}
+	for _, r := range field {
+		switch {
+		case r >= '0' && r <= '9', r == '*' || r == ',' || r == '-' || r == '/':
+		default:
+			return fmt.Errorf("invalid character %q (only digits, *, comma, - and / are allowed)", r)
+		}
+	}
+	if field == "*" {
+		return nil
+	}
+	if strings.Contains(field, ",") {
+		for _, p := range strings.Split(field, ",") {
+			if p == "" || strings.Contains(p, ",") {
+				return fmt.Errorf("bad list element in %q", field)
+			}
+			if err := validateCronAtom(p, min, max); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return validateCronAtom(field, min, max)
+}
+
+func validateCronAtom(atom string, min, max int) error {
+	if strings.Contains(atom, "/") {
+		parts := strings.SplitN(atom, "/", 2)
+		if len(parts) != 2 || parts[1] == "" {
+			return fmt.Errorf("bad step in %q (want base/step)", atom)
+		}
+		step, err := strconv.Atoi(parts[1])
+		if err != nil || step <= 0 {
+			return fmt.Errorf("bad step in %q (want a positive number)", atom)
+		}
+		if parts[0] == "*" {
+			return nil
+		}
+		start, err := strconv.Atoi(parts[0])
+		if err != nil {
+			return fmt.Errorf("bad step base in %q", atom)
+		}
+		if start < min || start > max {
+			return fmt.Errorf("step base %d out of range [%d-%d]", start, min, max)
+		}
+		return nil
+	}
+	if strings.Contains(atom, "-") {
+		a, b, err := parseRange(atom)
+		if err != nil {
+			return fmt.Errorf("bad range in %q (want lo-hi)", atom)
+		}
+		if a < min || b > max || a > b {
+			return fmt.Errorf("range %d-%d out of bounds [%d-%d]", a, b, min, max)
+		}
+		return nil
+	}
+	n, err := strconv.Atoi(atom)
+	if err != nil {
+		return fmt.Errorf("invalid value %q", atom)
+	}
+	if n < min || n > max {
+		return fmt.Errorf("value %d out of range [%d-%d]", n, min, max)
+	}
+	return nil
+}
+
 func (b *Blackout) Contains(t time.Time) bool {
 	if b == nil || b.Begin == "" || b.End == "" {
 		return false
@@ -264,6 +373,7 @@ func (s *Schedule) UnmarshalYAML(value *yaml.Node) error {
 		return err
 	}
 	*s = Schedule(a)
+	s.normalize()
 
 	if s.Recurring != "" {
 		ns, ok := parseScheduleString(s.Recurring)
@@ -273,6 +383,9 @@ func (s *Schedule) UnmarshalYAML(value *yaml.Node) error {
 		s.Cron = ns.Cron
 		s.Interval = ns.Interval
 		s.Time = ns.Time
+	}
+	if err := s.Validate(); err != nil {
+		return err
 	}
 	if err := s.enforceCommunityLimits(); err != nil {
 		return err
@@ -383,6 +496,60 @@ func describeRecurring(recurring string) string {
 	}
 	return ns.Describe()
 }
+
+func (s *Schedule) normalize() {
+	if s == nil {
+		return
+	}
+	if cleaned, stripped := UnquoteScheduleValue(s.Cron); stripped {
+		warnUnquoted(s.Cron, cleaned, "cron")
+		s.Cron = cleaned
+	}
+	if cleaned, stripped := UnquoteScheduleValue(s.Begin); stripped {
+		warnUnquoted(s.Begin, cleaned, "begin")
+		s.Begin = cleaned
+	}
+	if cleaned, stripped := UnquoteScheduleValue(s.Start); stripped {
+		warnUnquoted(s.Start, cleaned, "start")
+		s.Start = cleaned
+	}
+	if cleaned, stripped := UnquoteScheduleValue(s.Recurring); stripped {
+		warnUnquoted(s.Recurring, cleaned, "recurring")
+		s.Recurring = cleaned
+	}
+}
+
+func (s *Schedule) Validate() error {
+	if s == nil {
+		return nil
+	}
+	if s.Cron != "" {
+		if err := ValidateCron(s.Cron); err != nil {
+			return err
+		}
+	}
+	if s.Begin != "" {
+		b := strings.TrimSpace(s.Begin)
+		if strings.ContainsAny(b, "\"'") {
+			return fmt.Errorf("schedule begin %q contains quote characters (strip surrounding quotes from the env value)", s.Begin)
+		}
+		switch {
+		case strings.HasPrefix(b, "+"):
+			n, err := strconv.Atoi(strings.TrimPrefix(b, "+"))
+			if err != nil || n < 0 {
+				return fmt.Errorf("schedule begin %q is invalid (want +minutes)", s.Begin)
+			}
+		case len(b) == 4 && allDigits(b):
+			if _, ok := parseClock(b); !ok {
+				return fmt.Errorf("schedule begin %q is invalid (want HHMM)", s.Begin)
+			}
+		default:
+			return fmt.Errorf("schedule begin %q is invalid (want +minutes or HHMM)", s.Begin)
+		}
+	}
+	return nil
+}
+
 func (s *Schedule) enforceCommunityLimits() error {
 	return SupporterSchedule(s)
 }
@@ -399,6 +566,7 @@ func isTimeList(s string) bool {
 	}
 	return true
 }
+
 func looksLikeNL(phrase string) bool {
 	p := strings.ToLower(strings.TrimSpace(phrase))
 	if !strings.Contains(p, " ") {
@@ -503,6 +671,10 @@ func parseScheduleString(str string) (*Schedule, bool) {
 	return s, true
 }
 func (s *Schedule) parseString(str string) error {
+	if cleaned, stripped := UnquoteScheduleValue(str); stripped {
+		warnUnquoted(str, cleaned, "value")
+		str = cleaned
+	}
 
 	switch {
 	case strings.HasPrefix(str, "+"):
@@ -523,6 +695,9 @@ func (s *Schedule) parseString(str string) error {
 		s.Time = tl
 		return s.enforceCommunityLimits()
 	case strings.Contains(str, "*"):
+		if err := ValidateCron(str); err != nil {
+			return err
+		}
 		s.Cron = str
 		return s.enforceCommunityLimits()
 	case allDigits(str):
@@ -540,6 +715,9 @@ func (s *Schedule) parseString(str string) error {
 	}
 
 	if strings.Contains(str, " ") {
+		if err := ValidateCron(str); err != nil {
+			return err
+		}
 		s.Cron = str
 		return s.enforceCommunityLimits()
 	}

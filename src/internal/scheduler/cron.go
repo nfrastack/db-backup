@@ -6,6 +6,7 @@ package scheduler
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -28,6 +29,9 @@ func fieldMatch(field string, val, min, max int) bool {
 	if field == "*" {
 		return true
 	}
+	if strings.ContainsAny(field, "\"'") {
+		return false
+	}
 	if strings.Contains(field, ",") {
 		for _, p := range strings.Split(field, ",") {
 			if fieldMatch(p, val, min, max) {
@@ -38,30 +42,39 @@ func fieldMatch(field string, val, min, max int) bool {
 	}
 	if strings.Contains(field, "/") {
 		parts := strings.SplitN(field, "/", 2)
-		var step int
-		fmt.Sscanf(parts[1], "%d", &step)
-		if step <= 0 {
+		step, err := strconv.Atoi(parts[1])
+		if err != nil || step <= 0 {
 			return false
 		}
 		if parts[0] == "*" {
 			return (val-min)%step == 0
 		}
-		var start int
-		fmt.Sscanf(parts[0], "%d", &start)
+		start, err := strconv.Atoi(parts[0])
+		if err != nil {
+			return false
+		}
 		return val >= start && (val-start)%step == 0
 	}
 	if strings.Contains(field, "-") {
-		var a, b int
-		fmt.Sscanf(field, "%d-%d", &a, &b)
+		a, err1 := strconv.Atoi(strings.SplitN(field, "-", 2)[0])
+		b, err2 := strconv.Atoi(strings.SplitN(field, "-", 2)[1])
+		if err1 != nil || err2 != nil {
+			return false
+		}
 		return val >= a && val <= b
 	}
-	var n int
-	fmt.Sscanf(field, "%d", &n)
+	n, err := strconv.Atoi(field)
+	if err != nil {
+		return false
+	}
 	return val == n
 }
 
 func nextCron(expr string) time.Duration {
-	now := time.Now()
+	return nextCronAt(expr, time.Now())
+}
+
+func nextCronAt(expr string, now time.Time) time.Duration {
 	next := now.Add(time.Minute).Truncate(time.Minute)
 	for i := 0; i < 525600; i++ {
 		if cronMatch(expr, next) {
@@ -73,24 +86,28 @@ func nextCron(expr string) time.Duration {
 }
 
 func nextJobDuration(s *config.Schedule) time.Duration {
+	return nextJobDurationAt(s, time.Now())
+}
+
+func nextJobDurationAt(s *config.Schedule, now time.Time) time.Duration {
 	if s == nil {
 		return 0
 	}
 	if s.Cron != "" {
-		return nextCron(s.Cron)
+		return nextCronAt(s.Cron, now)
 	}
 	if s.Interval > 0 {
 		if !s.Time.Empty() {
-			return nextAnchoredDuration(s.Time, s.Interval, time.Now())
+			return nextAnchoredDuration(s.Time, s.Interval, now)
 		}
 		return time.Duration(s.Interval) * time.Minute
 	}
 	if s.Begin != "" {
-		return parseBegin(s.Begin)
+		return parseBeginAt(s.Begin, now)
 	}
 	if !s.Time.Empty() {
-		if next, ok := s.Time.Next(time.Now()); ok {
-			return next.Sub(time.Now())
+		if next, ok := s.Time.Next(now); ok {
+			return next.Sub(now)
 		}
 		return 0
 	}
@@ -98,6 +115,10 @@ func nextJobDuration(s *config.Schedule) time.Duration {
 }
 
 func parseBegin(begin string) time.Duration {
+	return parseBeginAt(begin, time.Now())
+}
+
+func parseBeginAt(begin string, now time.Time) time.Duration {
 	if strings.HasPrefix(begin, "+") {
 		var m int
 		fmt.Sscanf(begin, "+%d", &m)
@@ -109,7 +130,6 @@ func parseBegin(begin string) time.Duration {
 	if len(begin) == 4 {
 		var h, m int
 		fmt.Sscanf(begin, "%2d%2d", &h, &m)
-		now := time.Now()
 		target := time.Date(now.Year(), now.Month(), now.Day(), h, m, 0, 0, now.Location())
 		if target.Before(now) {
 			target = target.Add(24 * time.Hour)

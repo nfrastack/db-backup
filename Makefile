@@ -100,6 +100,45 @@ container-build:
 container-build-test:
 	docker build --build-arg BASE_IMAGE=$(BASE_IMAGE) --build-arg DBBACKUP_VERSION=$(VERSION) --build-arg DBBACKUP_COMMIT=$(GIT_COMMIT) -t db-backup:test -f container/Containerfile .
 
+version:
+	@if [ -n "$(V)" ]; then \
+		sed -i 's/^\(      version = "\)[^"]*"/\1$(V)"/' flake.nix; \
+		echo "version set to $(V): flake.nix"; \
+	else \
+		echo "flake.nix:  $$(grep -o 'version = "[^"$$][^"]*"' flake.nix | head -1 | cut -d'"' -f2)"; \
+		echo "git:        $$(git describe --tags --exact-match 2>/dev/null || git describe --always --dirty 2>/dev/null || echo dev)"; \
+	fi
+
+go-version:
+	@if [ -n "$(V)" ]; then \
+		echo "$(V)" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$$' || { echo "error: V must be full X.Y.Z (got '$(V)')"; exit 1; }; \
+		MAJMIN=$$(echo "$(V)" | cut -d. -f1,2); \
+		sed -i 's/\(goVersion = "\)[^"]*"/\1$(V)"/' flake.nix; \
+		for f in .github/workflows/branch-build.yml .github/workflows/release.yml; do \
+			[ -f "$$f" ] && sed -i "s/GO_VERSION: '[^']*'/GO_VERSION: '$(V)'/" "$$f"; \
+		done; \
+		[ -f container/Containerfile ] && sed -i 's/GOLANG_VERSION="[^"]*"/GOLANG_VERSION="$(V)"/' container/Containerfile; \
+		if grep -q 'GoLang [0-9][0-9]*\.[0-9][0-9]*' README.md 2>/dev/null; then \
+			sed -i "s/GoLang [0-9][0-9]*\.[0-9][0-9]*/GoLang $$MAJMIN/" README.md; \
+		fi; \
+		(cd $(SRC_DIR) && $(GO) mod edit -go=$(V)); \
+		echo "go $(V): go.mod + flake + gha + container"; \
+		HASH=$$(nix store prefetch-file --json "https://go.dev/dl/go$(V).src.tar.gz" 2>/dev/null | grep -o '"hash": *"[^"]*"' | cut -d'"' -f4); \
+		if [ -n "$$HASH" ]; then \
+			sed -i "s|goOverrideHash = \"[^\"]*\"|goOverrideHash = \"$$HASH\"|" flake.nix; \
+			echo "goOverrideHash auto-set to $$HASH"; \
+		else \
+			echo "WARN: auto-prefetch failed - update goOverrideHash in flake.nix manually:"; \
+			echo "  nix store prefetch-file --json https://go.dev/dl/go$(V).src.tar.gz"; \
+		fi; \
+	else \
+		echo "go.mod:     $$(grep -o '^go [0-9.]*' $(SRC_DIR)/go.mod)"; \
+		echo "flake:      $$(grep -o 'goVersion = "[^"]*"' flake.nix)"; \
+		echo "gha branch: $$(grep -o "GO_VERSION: '[^']*'" .github/workflows/branch-build.yml)"; \
+		echo "gha release:$$(grep -o "GO_VERSION: '[^']*'" .github/workflows/release.yml)"; \
+		echo "container:  $$(grep -o 'GOLANG_VERSION="[^"]*"' container/Containerfile)"; \
+	fi
+
 help:
 	@echo "make build                Build the full binary (supporter edition)"
 	@echo "make build-community      Build the community binary"
@@ -114,4 +153,6 @@ help:
 	@echo "make install              Install binary locally"
 	@echo "make container-build      Build container image"
 	@echo "make container-build-test Build container for testing"
+	@echo "make version [V=x]        Show app version, or set it (flake.nix)"
+	@echo "make go-version [V=x]     Show Go version, or set it (go.mod + flake + gha + container)"
 	@echo "make help                 Yer lookin' at it"
