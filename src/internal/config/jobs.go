@@ -416,6 +416,9 @@ func (j *JobConfig) ValidateWithEncryptionProfiles(profiles map[string]Encryptio
 	}
 	if j.Encryption != "" {
 		if prof, ok := profiles[j.Encryption]; ok {
+			if strings.EqualFold(prof.Type, "age") && prof.Passphrase != "" && len(prof.Recipients) > 0 {
+				return fmt.Errorf("job %q encryption profile %q sets both passphrase and recipients", j.Name, j.Encryption)
+			}
 			switch prof.Type {
 			case "", "none", "age", "gpg", "openpgp", "pgp", "openssl":
 
