@@ -489,6 +489,10 @@ func (d *Dumper) dumpPublications(w io.Writer, dbName string) error {
 			if err != nil {
 				return fmt.Errorf("query publication tables: %w", err)
 			}
+			type pubTable struct {
+				schema, name, attrs string
+			}
+			var trefs []pubTable
 			for trows.Next() {
 				var tschema, tname string
 				var attrs sql.NullString
@@ -496,15 +500,18 @@ func (d *Dumper) dumpPublications(w io.Writer, dbName string) error {
 					trows.Close()
 					return fmt.Errorf("scan publication table row: %w", err)
 				}
-				entry := quotePGIdent(tschema) + "." + quotePGIdent(tname)
-				if cols := d.pubColumnNames(tschema, tname, attrs.String); cols != "" {
-					entry += " (" + cols + ")"
-				}
-				tables = append(tables, entry)
+				trefs = append(trefs, pubTable{tschema, tname, attrs.String})
 			}
 			trows.Close()
 			if err := trows.Err(); err != nil {
 				return err
+			}
+			for _, tr := range trefs {
+				entry := quotePGIdent(tr.schema) + "." + quotePGIdent(tr.name)
+				if cols := d.pubColumnNames(tr.schema, tr.name, tr.attrs); cols != "" {
+					entry += " (" + cols + ")"
+				}
+				tables = append(tables, entry)
 			}
 		}
 		var sb strings.Builder
@@ -593,6 +600,12 @@ func (d *Dumper) dumpDefaultPrivileges(w io.Writer, dbName string) error {
 	}
 	groups := map[key][]string{}
 	var order []key
+	type rawPriv struct {
+		role, schema, obj, priv string
+		grantee                 int32
+		grantable               bool
+	}
+	var raw []rawPriv
 	for rows.Next() {
 		var role, schema sql.NullString
 		var obj string
@@ -602,8 +615,15 @@ func (d *Dumper) dumpDefaultPrivileges(w io.Writer, dbName string) error {
 		if err := rows.Scan(&role, &schema, &obj, &grantee, &priv, &grantable); err != nil {
 			return fmt.Errorf("scan default privilege row: %w", err)
 		}
+		raw = append(raw, rawPriv{role.String, schema.String, obj, priv, grantee, grantable})
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	rows.Close()
+	for _, r := range raw {
 		var objWord string
-		switch obj {
+		switch r.obj {
 		case "r":
 			objWord = "TABLES"
 		case "S":
@@ -616,22 +636,19 @@ func (d *Dumper) dumpDefaultPrivileges(w io.Writer, dbName string) error {
 			continue
 		}
 		to := "PUBLIC"
-		if grantee != 0 {
+		if r.grantee != 0 {
 			var rn string
 			if err := d.conn.QueryRow(d.ctxOrBg(),
-				"SELECT rolname FROM pg_catalog.pg_roles WHERE oid = $1", grantee).Scan(&rn); err != nil || rn == "" {
+				"SELECT rolname FROM pg_catalog.pg_roles WHERE oid = $1", r.grantee).Scan(&rn); err != nil || rn == "" {
 				continue
 			}
 			to = quotePGIdent(rn)
 		}
-		k := key{role.String, schema.String, objWord, priv, grantable}
+		k := key{r.role, r.schema, objWord, r.priv, r.grantable}
 		if _, ok := groups[k]; !ok {
 			order = append(order, k)
 		}
 		groups[k] = append(groups[k], to)
-	}
-	if err := rows.Err(); err != nil {
-		return err
 	}
 	for _, k := range order {
 		var sb strings.Builder
