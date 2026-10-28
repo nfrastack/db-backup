@@ -2,12 +2,15 @@
 
    ### Added
    ### Changed
-
+ 
+     - dump modifications
+       - (postgres) write serial sequences as int instead of bigint
+       - (postgres) include REVOKE statements before GRANTS
 
 ## 5.0.6 2026-10-26 <code at nfrastack dot com>
 
   15 day trials are available to test features such as incremental/differential backups, archiving and more..  https://www.nfrastack.com/db-backup/license/trial
-  
+
    ### Changed
       - add cron scheduling validation
       - version check extra messaging

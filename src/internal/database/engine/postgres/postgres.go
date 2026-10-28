@@ -1459,15 +1459,16 @@ func (d *Dumper) dumpSequences(w io.Writer, dbName string) error {
 	for _, s := range seqs {
 		schema, name, owner := s[0], s[1], s[2]
 		qn := quotePGIdent(schema) + "." + quotePGIdent(name)
-		var opts string
+		var seqType, opts string
 		err := d.conn.QueryRow(d.ctxOrBg(),
-			"SELECT 'START ' || ps.seqstart || ' INCREMENT BY ' || ps.seqincrement || "+
+			"SELECT format_type(ps.seqtypid, NULL), "+
+				"'START ' || ps.seqstart || ' INCREMENT BY ' || ps.seqincrement || "+
 				"' MINVALUE ' || ps.seqmin || ' MAXVALUE ' || ps.seqmax || ' CACHE ' || ps.seqcache || "+
 				"CASE WHEN ps.seqcycle THEN ' CYCLE' ELSE '' END "+
 				"FROM pg_catalog.pg_sequence ps "+
 				"JOIN pg_catalog.pg_class c ON c.oid = ps.seqrelid "+
 				"JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "+
-				"WHERE n.nspname = $1 AND c.relname = $2", schema, name).Scan(&opts)
+				"WHERE n.nspname = $1 AND c.relname = $2", schema, name).Scan(&seqType, &opts)
 		if err != nil {
 			log.Warn("postgres", "sequence skipped", "database", dbName,
 				"sequence", schema+"."+name, "error", err.Error())
@@ -1476,7 +1477,7 @@ func (d *Dumper) dumpSequences(w io.Writer, dbName string) error {
 		log.Trace("postgres", "sequence dumped", "database", dbName,
 			"sequence", schema+"."+name)
 		fmt.Fprintf(w, "\n-- Sequence: %s.%s\n", schema, name)
-		fmt.Fprintf(w, "CREATE SEQUENCE IF NOT EXISTS %s %s;\n", qn, opts)
+		fmt.Fprintf(w, "CREATE SEQUENCE IF NOT EXISTS %s AS %s %s;\n", qn, seqType, opts)
 		if owner != "" {
 			fmt.Fprintf(w, "ALTER SEQUENCE %s OWNER TO %s;\n", qn, quotePGIdent(owner))
 		}
@@ -2580,6 +2581,9 @@ func formatGrants(target string, grants []pgGrant) string {
 		privs[k] = append(privs[k], g.priv)
 	}
 	var sb strings.Builder
+	if len(order) > 0 {
+		fmt.Fprintf(&sb, "REVOKE ALL ON %s FROM PUBLIC;\n", target)
+	}
 	for _, k := range order {
 		to := k.grantee
 		if to != "PUBLIC" {
