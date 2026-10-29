@@ -1,12 +1,14 @@
-## develop
+## dev
 
    ### Changed
 
+     - dedupe repeated config files and stop unecessary warnings
      - dump modifications
        - (postgres) write serial sequences as int instead of bigint
        - (postgres) include REVOKE statements before GRANTS
        - (postgres) use ALTER DEFAULT PRIVILEGES so role targeted defaults survive restore
        - (postgres) fix publication column lists dropped by nested query on open rows
+
 
 ## 5.0.6 2026-10-26 <code at nfrastack dot com>
 
