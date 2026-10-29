@@ -4,6 +4,7 @@
 
      - dedupe repeated config files and stop unecessary warnings
      - dump modifications
+       - fix per job backend settings to respect DEFAULT_BACKUP_LOCATION
        - (postgres) write serial sequences as int instead of bigint
        - (postgres) include REVOKE statements before GRANTS
        - (postgres) use ALTER DEFAULT PRIVILEGES so role targeted defaults survive restore

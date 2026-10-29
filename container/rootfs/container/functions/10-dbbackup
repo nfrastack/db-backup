@@ -948,10 +948,17 @@ dbbackup_generate_configuration() {
         if [ -z "${explicit_fsd}" ]; then
             explicit_fsd="$(printenv "DB_FILESYSTEM_PATH_PERMISSION" 2>/dev/null || true)"
         fi
+        explicit_backend=""
+        for _dbb_bv in AZURE_ACCOUNT AZURE_KEY AZURE_CONTAINER AZURE_PATH GCS_BUCKET GCS_KEY GCS_PATH S3_BUCKET S3_PATH S3_REGION S3_HOST S3_PROTOCOL S3_KEY_ID S3_KEY_SECRET S3_CERT_CA_FILE S3_CERT_SKIP_VERIFY WEBDAV_URL WEBDAV_USER WEBDAV_PASS WEBDAV_PATH; do
+            if [ -n "$(_dbbackup_explicit_env "${inst}" "${_dbb_bv}")" ]; then
+                explicit_backend="1"
+                break
+            fi
+        done
         if [ -n "${explicit_fs}" ] || [ -n "${explicit_fsf}" ] || [ -n "${explicit_fsd}" ]; then
             backup_location="filesystem"
         fi
-        if [ -n "${explicit_loc}" ] || [ -n "${explicit_fs}" ] || [ -n "${explicit_fsf}" ] || [ -n "${explicit_fsd}" ]; then
+        if [ -n "${explicit_loc}" ] || [ -n "${explicit_fs}" ] || [ -n "${explicit_fsf}" ] || [ -n "${explicit_fsd}" ] || [ -n "${explicit_backend}" ]; then
             case "${backup_location,,}" in
                 azure )
                     DBB_B="azure"
