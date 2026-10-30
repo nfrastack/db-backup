@@ -66,7 +66,7 @@ func execStmtGroup(ctx context.Context, conn *pgx.Conn, stmt *strings.Builder) e
 
 func guardSession(ctx context.Context, conn *pgx.Conn) {
 	if _, err := conn.Exec(ctx,
-		"SET statement_timeout = 0; SET lock_timeout = 0; SET idle_in_transaction_session_timeout = 0"); err != nil {
+		"SET statement_timeout = 0; SET lock_timeout = 0; SET idle_in_transaction_session_timeout = 0; SET TIME ZONE 'UTC'"); err != nil {
 		log.Trace("postgres", "session guard unavailable", "error", err.Error())
 	}
 }

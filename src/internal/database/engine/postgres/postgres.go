@@ -489,6 +489,10 @@ func (d *Dumper) dumpPublications(w io.Writer, dbName string) error {
 			if err != nil {
 				return fmt.Errorf("query publication tables: %w", err)
 			}
+			type pubTable struct {
+				schema, name, attrs string
+			}
+			var trefs []pubTable
 			for trows.Next() {
 				var tschema, tname string
 				var attrs sql.NullString
@@ -496,15 +500,18 @@ func (d *Dumper) dumpPublications(w io.Writer, dbName string) error {
 					trows.Close()
 					return fmt.Errorf("scan publication table row: %w", err)
 				}
-				entry := quotePGIdent(tschema) + "." + quotePGIdent(tname)
-				if cols := d.pubColumnNames(tschema, tname, attrs.String); cols != "" {
-					entry += " (" + cols + ")"
-				}
-				tables = append(tables, entry)
+				trefs = append(trefs, pubTable{tschema, tname, attrs.String})
 			}
 			trows.Close()
 			if err := trows.Err(); err != nil {
 				return err
+			}
+			for _, tr := range trefs {
+				entry := quotePGIdent(tr.schema) + "." + quotePGIdent(tr.name)
+				if cols := d.pubColumnNames(tr.schema, tr.name, tr.attrs); cols != "" {
+					entry += " (" + cols + ")"
+				}
+				tables = append(tables, entry)
 			}
 		}
 		var sb strings.Builder
@@ -593,6 +600,12 @@ func (d *Dumper) dumpDefaultPrivileges(w io.Writer, dbName string) error {
 	}
 	groups := map[key][]string{}
 	var order []key
+	type rawPriv struct {
+		role, schema, obj, priv string
+		grantee                 int32
+		grantable               bool
+	}
+	var raw []rawPriv
 	for rows.Next() {
 		var role, schema sql.NullString
 		var obj string
@@ -602,8 +615,15 @@ func (d *Dumper) dumpDefaultPrivileges(w io.Writer, dbName string) error {
 		if err := rows.Scan(&role, &schema, &obj, &grantee, &priv, &grantable); err != nil {
 			return fmt.Errorf("scan default privilege row: %w", err)
 		}
+		raw = append(raw, rawPriv{role.String, schema.String, obj, priv, grantee, grantable})
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	rows.Close()
+	for _, r := range raw {
 		var objWord string
-		switch obj {
+		switch r.obj {
 		case "r":
 			objWord = "TABLES"
 		case "S":
@@ -616,22 +636,19 @@ func (d *Dumper) dumpDefaultPrivileges(w io.Writer, dbName string) error {
 			continue
 		}
 		to := "PUBLIC"
-		if grantee != 0 {
+		if r.grantee != 0 {
 			var rn string
 			if err := d.conn.QueryRow(d.ctxOrBg(),
-				"SELECT rolname FROM pg_catalog.pg_roles WHERE oid = $1", grantee).Scan(&rn); err != nil || rn == "" {
+				"SELECT rolname FROM pg_catalog.pg_roles WHERE oid = $1", r.grantee).Scan(&rn); err != nil || rn == "" {
 				continue
 			}
 			to = quotePGIdent(rn)
 		}
-		k := key{role.String, schema.String, objWord, priv, grantable}
+		k := key{r.role, r.schema, objWord, r.priv, r.grantable}
 		if _, ok := groups[k]; !ok {
 			order = append(order, k)
 		}
 		groups[k] = append(groups[k], to)
-	}
-	if err := rows.Err(); err != nil {
-		return err
 	}
 	for _, k := range order {
 		var sb strings.Builder
@@ -1262,7 +1279,7 @@ func (d *Dumper) DumpGlobals(w io.Writer) error {
 		var name string
 		var super, inherit, createrole, createdb, canlogin, replication bool
 		var connlimit int
-		var validuntil *time.Time
+		var validuntil sql.NullString
 		if err := rows.Scan(&name, &super, &inherit, &createrole, &createdb, &canlogin, &replication, &connlimit, &validuntil); err != nil {
 			rows.Close()
 			return fmt.Errorf("scan role row: %w", err)
@@ -1459,15 +1476,16 @@ func (d *Dumper) dumpSequences(w io.Writer, dbName string) error {
 	for _, s := range seqs {
 		schema, name, owner := s[0], s[1], s[2]
 		qn := quotePGIdent(schema) + "." + quotePGIdent(name)
-		var opts string
+		var seqType, opts string
 		err := d.conn.QueryRow(d.ctxOrBg(),
-			"SELECT 'START ' || ps.seqstart || ' INCREMENT BY ' || ps.seqincrement || "+
+			"SELECT format_type(ps.seqtypid, NULL), "+
+				"'START ' || ps.seqstart || ' INCREMENT BY ' || ps.seqincrement || "+
 				"' MINVALUE ' || ps.seqmin || ' MAXVALUE ' || ps.seqmax || ' CACHE ' || ps.seqcache || "+
 				"CASE WHEN ps.seqcycle THEN ' CYCLE' ELSE '' END "+
 				"FROM pg_catalog.pg_sequence ps "+
 				"JOIN pg_catalog.pg_class c ON c.oid = ps.seqrelid "+
 				"JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "+
-				"WHERE n.nspname = $1 AND c.relname = $2", schema, name).Scan(&opts)
+				"WHERE n.nspname = $1 AND c.relname = $2", schema, name).Scan(&seqType, &opts)
 		if err != nil {
 			log.Warn("postgres", "sequence skipped", "database", dbName,
 				"sequence", schema+"."+name, "error", err.Error())
@@ -1476,7 +1494,7 @@ func (d *Dumper) dumpSequences(w io.Writer, dbName string) error {
 		log.Trace("postgres", "sequence dumped", "database", dbName,
 			"sequence", schema+"."+name)
 		fmt.Fprintf(w, "\n-- Sequence: %s.%s\n", schema, name)
-		fmt.Fprintf(w, "CREATE SEQUENCE IF NOT EXISTS %s %s;\n", qn, opts)
+		fmt.Fprintf(w, "CREATE SEQUENCE IF NOT EXISTS %s AS %s %s;\n", qn, seqType, opts)
 		if owner != "" {
 			fmt.Fprintf(w, "ALTER SEQUENCE %s OWNER TO %s;\n", qn, quotePGIdent(owner))
 		}
@@ -2580,6 +2598,9 @@ func formatGrants(target string, grants []pgGrant) string {
 		privs[k] = append(privs[k], g.priv)
 	}
 	var sb strings.Builder
+	if len(order) > 0 {
+		fmt.Fprintf(&sb, "REVOKE ALL ON %s FROM PUBLIC;\n", target)
+	}
 	for _, k := range order {
 		to := k.grantee
 		if to != "PUBLIC" {
@@ -3269,11 +3290,15 @@ func pgCopyTextCast(typid uint32, cat, elemcat string) bool {
 		return false
 	}
 	switch cat {
-	case "B", "N", "S", "D", "T", "V", "E", "R":
+	case "D", "T":
+		return true
+	case "B", "N", "S", "V", "E", "R":
 		return false
 	case "A":
 		switch elemcat {
-		case "B", "N", "S", "D", "T", "V", "E", "R":
+		case "D", "T":
+			return true
+		case "B", "N", "S", "V", "E", "R":
 			return false
 		}
 		return true

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -52,6 +53,8 @@ func expandIncludes(data []byte, path string, inProgress map[string]bool) ([]byt
 	if err != nil {
 		return nil, err
 	}
+	origins := map[string]string{}
+	markOrigins(root, origins, "", path)
 	for _, incPath := range incPaths {
 		incData, err := os.ReadFile(incPath)
 		if err != nil {
@@ -65,7 +68,7 @@ func expandIncludes(data []byte, path string, inProgress map[string]bool) ([]byt
 		if err := yaml.Unmarshal(merged, &incMap); err != nil {
 			return nil, fmt.Errorf("parsing included config %s: %w", incPath, err)
 		}
-		mergeYAML(root, incMap, path, incPath)
+		mergeYAML(root, incMap, origins, "", incPath)
 	}
 	delete(root, "include")
 	out, err := yaml.Marshal(root)
@@ -80,10 +83,20 @@ func hasGlobMeta(s string) bool {
 }
 func loadMerged(paths []string) ([]byte, error) {
 	var effective []string
+	seen := map[string]bool{}
 	for _, p := range paths {
-		if p != "" {
-			effective = append(effective, p)
+		if p == "" {
+			continue
 		}
+		abs, err := filepath.Abs(p)
+		if err != nil {
+			abs = p
+		}
+		if seen[abs] {
+			continue
+		}
+		seen[abs] = true
+		effective = append(effective, abs)
 	}
 	if len(effective) == 0 {
 		return nil, nil
@@ -92,6 +105,7 @@ func loadMerged(paths []string) ([]byte, error) {
 		return ReadConfigBytes(effective[0])
 	}
 	var merged map[string]any
+	origins := map[string]string{}
 	for _, p := range effective {
 		b, err := ReadConfigBytes(p)
 		if err != nil {
@@ -103,37 +117,66 @@ func loadMerged(paths []string) ([]byte, error) {
 		}
 		if merged == nil {
 			merged = m
+			markOrigins(m, origins, "", p)
 			continue
 		}
-		mergeYAML(merged, m, effective[0], p)
+		mergeYAML(merged, m, origins, "", p)
 	}
 	return yaml.Marshal(merged)
 }
 
-func mergeYAML(dst, src map[string]any, dstPath, srcPath string) {
+func markOrigins(m map[string]any, origins map[string]string, prefix, srcPath string) {
+	for k, v := range m {
+		full := k
+		if prefix != "" {
+			full = prefix + "." + k
+		}
+		if dm, ok := v.(map[string]any); ok {
+			markOrigins(dm, origins, full, srcPath)
+			continue
+		}
+		origins[full] = srcPath
+	}
+}
+
+func mergeYAML(dst, src map[string]any, origins map[string]string, prefix, srcPath string) {
 	for k, sv := range src {
+		full := k
+		if prefix != "" {
+			full = prefix + "." + k
+		}
 		dv, exists := dst[k]
 		if !exists {
 			dst[k] = sv
+			origins[full] = srcPath
 			continue
 		}
 		dm, dok := dv.(map[string]any)
 		sm, sok := sv.(map[string]any)
 		if dok && sok {
-			mergeYAML(dm, sm, dstPath, srcPath)
+			mergeYAML(dm, sm, origins, full, srcPath)
 			continue
 		}
 		dl, dlok := dv.([]any)
 		sl, slok := sv.([]any)
 		if dlok && slok {
 			dst[k] = append(dl, sl...)
+			origins[full] = srcPath
 			continue
 		}
-		key := k + "\x00" + dstPath + "\x00" + srcPath
+		if reflect.DeepEqual(dv, sv) {
+			continue
+		}
+		dstName := origins[full]
+		if dstName == "" {
+			dstName = "previous config"
+		}
+		key := full + "\x00" + dstName + "\x00" + srcPath
 		if _, dup := overrideWarned.LoadOrStore(key, true); !dup {
-			fmt.Fprintf(os.Stderr, "WARN: config option %q in %s is overridden by %s\n", k, dstPath, srcPath)
+			fmt.Fprintf(os.Stderr, "WARN: config option %q in %s is overridden by %s\n", full, dstName, srcPath)
 		}
 		dst[k] = sv
+		origins[full] = srcPath
 	}
 }
 

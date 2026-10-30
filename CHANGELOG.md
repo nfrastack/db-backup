@@ -1,7 +1,22 @@
+## 5.0.7 2026-10-30 <code at nfrastack dot com>
+
+   ### Changed
+
+     - dedupe repeated config files and stop unecessary warnings
+     - dump modifications
+       - fix per job backend settings to respect DEFAULT_BACKUP_LOCATION
+       - (postgres) copy temporal and interval columns as raw text to fix timestamptz year-10000 dump failure
+       - (postgres) fix globals dump aborting on roles with infinity valid-until
+       - (postgres) fix publication column lists dropped by nested query on open rows
+       - (postgres) force UTC session
+       - (postgres) include REVOKE statements before GRANTS
+       - (postgres) use ALTER DEFAULT PRIVILEGES so role targeted defaults survive restore
+       - (postgres) write serial sequences as int instead of bigint
+
 ## 5.0.6 2026-10-26 <code at nfrastack dot com>
 
   15 day trials are available to test features such as incremental/differential backups, archiving and more..  https://www.nfrastack.com/db-backup/license/trial
-  
+
    ### Changed
       - add cron scheduling validation
       - version check extra messaging
