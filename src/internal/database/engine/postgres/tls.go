@@ -14,7 +14,7 @@ import (
 
 func ConnStr(user, pass, host string, port int, db string, tlsCfg *config.TLSConfig) string {
 	hostPort := net.JoinHostPort(host, fmt.Sprintf("%d", port))
-	return fmt.Sprintf("postgres://%s:%s@%s/%s?%s", url.QueryEscape(user), url.QueryEscape(pass), hostPort, url.PathEscape(db), SSLParams(tlsCfg))
+	return fmt.Sprintf("postgres://%s:%s@%s/%s?%s&timezone=UTC", url.QueryEscape(user), url.QueryEscape(pass), hostPort, url.PathEscape(db), SSLParams(tlsCfg))
 }
 func SSLParams(tlsCfg *config.TLSConfig) string {
 	if tlsCfg == nil || !tlsCfg.Enable {
