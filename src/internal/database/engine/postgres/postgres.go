@@ -1279,7 +1279,7 @@ func (d *Dumper) DumpGlobals(w io.Writer) error {
 		var name string
 		var super, inherit, createrole, createdb, canlogin, replication bool
 		var connlimit int
-		var validuntil *time.Time
+		var validuntil sql.NullString
 		if err := rows.Scan(&name, &super, &inherit, &createrole, &createdb, &canlogin, &replication, &connlimit, &validuntil); err != nil {
 			rows.Close()
 			return fmt.Errorf("scan role row: %w", err)
@@ -3290,15 +3290,15 @@ func pgCopyTextCast(typid uint32, cat, elemcat string) bool {
 		return false
 	}
 	switch cat {
-	case "D":
+	case "D", "T":
 		return true
-	case "B", "N", "S", "T", "V", "E", "R":
+	case "B", "N", "S", "V", "E", "R":
 		return false
 	case "A":
 		switch elemcat {
-		case "D":
+		case "D", "T":
 			return true
-		case "B", "N", "S", "T", "V", "E", "R":
+		case "B", "N", "S", "V", "E", "R":
 			return false
 		}
 		return true
