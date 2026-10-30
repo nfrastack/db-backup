@@ -1,6 +1,9 @@
-## 5.0.7 2026-10-30 <code at nfrastack dot com>
+## dev x.x.x <code at nfrastack dot com>
 
    ### Changed
+     - 
+
+## 5.0.7 2026-10-30 <code at nfrastack dot com>
 
      - dedupe repeated config files and stop unecessary warnings
      - dump modifications
