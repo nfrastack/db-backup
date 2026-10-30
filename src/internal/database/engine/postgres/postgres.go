@@ -3290,11 +3290,15 @@ func pgCopyTextCast(typid uint32, cat, elemcat string) bool {
 		return false
 	}
 	switch cat {
-	case "B", "N", "S", "D", "T", "V", "E", "R":
+	case "D":
+		return true
+	case "B", "N", "S", "T", "V", "E", "R":
 		return false
 	case "A":
 		switch elemcat {
-		case "B", "N", "S", "D", "T", "V", "E", "R":
+		case "D":
+			return true
+		case "B", "N", "S", "T", "V", "E", "R":
 			return false
 		}
 		return true
