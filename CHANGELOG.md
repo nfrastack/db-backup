@@ -5,11 +5,12 @@
      - dedupe repeated config files and stop unecessary warnings
      - dump modifications
        - fix per job backend settings to respect DEFAULT_BACKUP_LOCATION
-       - (postgres) write serial sequences as int instead of bigint
+       - (postgres) copy temporal columns as raw text to fix timestamptz year-10000 dump failure
+       - (postgres) fix publication column lists dropped by nested query on open rows
+       - (postgres) force UTC session
        - (postgres) include REVOKE statements before GRANTS
        - (postgres) use ALTER DEFAULT PRIVILEGES so role targeted defaults survive restore
-       - (postgres) fix publication column lists dropped by nested query on open rows
-
+       - (postgres) write serial sequences as int instead of bigint
 
 ## 5.0.6 2026-10-26 <code at nfrastack dot com>
 
