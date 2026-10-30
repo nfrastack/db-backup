@@ -1,4 +1,4 @@
-## dev
+## 5.0.7 2026-10-30 <code at nfrastack dot com>
 
    ### Changed
 
