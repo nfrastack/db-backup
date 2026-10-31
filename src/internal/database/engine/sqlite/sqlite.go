@@ -193,19 +193,28 @@ func (d *Dumper) dumpTable(w io.Writer, table string) (int, error) {
 		return 0, nil
 	}
 
-	rows, err := d.db.QueryContext(ctx, "SELECT * FROM "+quoteSQLiteIdent(table))
+	colRows, err := d.db.QueryContext(ctx, "SELECT * FROM "+quoteSQLiteIdent(table)+" LIMIT 0")
+	if err != nil {
+		return 0, fmt.Errorf("select: %w", err)
+	}
+	cols, err := colRows.Columns()
+	colRows.Close()
+	if err != nil {
+		return 0, fmt.Errorf("columns: %w", err)
+	}
+	quoted := make([]string, len(cols))
+	for i, c := range cols {
+		quoted[i] = "quote(" + quoteSQLiteIdent(c) + ")"
+	}
+	rows, err := d.db.QueryContext(ctx, "SELECT "+strings.Join(quoted, ", ")+" FROM "+quoteSQLiteIdent(table))
 	if err != nil {
 		return 0, fmt.Errorf("select: %w", err)
 	}
 	defer rows.Close()
 
-	cols, err := rows.Columns()
-	if err != nil {
-		return 0, fmt.Errorf("columns: %w", err)
-	}
 	var rowCount int
 	for rows.Next() {
-		vals := make([]any, len(cols))
+		vals := make([]sql.NullString, len(cols))
 		valPtrs := make([]any, len(cols))
 		for i := range vals {
 			valPtrs[i] = &vals[i]
@@ -224,27 +233,12 @@ func (d *Dumper) dumpTable(w io.Writer, table string) (int, error) {
 			fmt.Fprintf(w, ",\n")
 		}
 
-		var parts []string
-		for _, v := range vals {
-			switch val := v.(type) {
-			case nil:
-				parts = append(parts, "NULL")
-			case []byte:
-				parts = append(parts, fmt.Sprintf("x'%x'", val))
-			case int64:
-				parts = append(parts, fmt.Sprintf("%d", val))
-			case float64:
-				parts = append(parts, fmt.Sprintf("%v", val))
-			case bool:
-				if val {
-					parts = append(parts, "1")
-				} else {
-					parts = append(parts, "0")
-				}
-			case string:
-				parts = append(parts, fmt.Sprintf("'%s'", escapeSQLite(val)))
-			default:
-				parts = append(parts, fmt.Sprintf("'%s'", escapeSQLite(fmt.Sprintf("%v", val))))
+		parts := make([]string, len(cols))
+		for i, v := range vals {
+			if v.Valid {
+				parts[i] = v.String
+			} else {
+				parts[i] = "NULL"
 			}
 		}
 		fmt.Fprintf(w, "(%s)", strings.Join(parts, ", "))
@@ -260,11 +254,6 @@ func (d *Dumper) dumpTable(w io.Writer, table string) (int, error) {
 		"table", table, "rows", rowCount,
 		"elapsed", time.Since(start).Round(time.Millisecond).String())
 	return rowCount, nil
-}
-
-func escapeSQLite(s string) string {
-	s = strings.ReplaceAll(s, "'", "''")
-	return s
 }
 
 func (d *Dumper) dumpSchemaObjects(w io.Writer) (int, error) {
