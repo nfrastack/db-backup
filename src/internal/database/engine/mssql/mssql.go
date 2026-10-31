@@ -347,9 +347,7 @@ func (d *Dumper) dumpTable(ctx context.Context, w io.Writer, dbName, table strin
 }
 
 func escapeMSSQL(s string) string {
-	s = strings.ReplaceAll(s, "'", "''")
-	s = strings.ReplaceAll(s, "\\", "\\\\")
-	return s
+	return strings.ReplaceAll(s, "'", "''")
 }
 
 func formatMSSQLType(dataType string, maxLen *int) string {

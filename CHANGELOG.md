@@ -2,6 +2,7 @@
 
    ### Changed
      - dump modifications
+       - (mssql) stop escaping backslashes in strings
        - (mongo) include index definitions with collections
        - (mongo) use extended json for operations
        - (sqlite) dump indexes, views, and triggers after tables
