@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 
@@ -153,21 +152,6 @@ func (d *Dumper) SetTableFilter(f *config.TableFilter, schemaOnly bool) {
 	d.SchemaOnly = schemaOnly
 }
 
-func bsonToJSON(doc bson.M) string {
-	var sb strings.Builder
-	sb.WriteString("{")
-	first := true
-	for k, v := range doc {
-		if first {
-			first = false
-		} else {
-			sb.WriteString(", ")
-		}
-		sb.WriteString(fmt.Sprintf("\"%s\": %s", k, mongoValue(v)))
-	}
-	sb.WriteString("}")
-	return sb.String()
-}
 func (d *Dumper) ctxOrBg() context.Context {
 	if d.ctx != nil {
 		return d.ctx
@@ -194,7 +178,11 @@ func (d *Dumper) dumpCollection(ctx context.Context, w io.Writer, dbName, col st
 			return fmt.Errorf("decode: %w", err)
 		}
 
-		json := bsonToJSON(doc)
+		raw, err := bson.MarshalExtJSON(doc, true, false)
+		if err != nil {
+			return fmt.Errorf("encode: %w", err)
+		}
+		json := string(raw)
 		if docCount == 0 {
 			fmt.Fprintf(w, "db.%s.insertMany([\n", col)
 		} else {
@@ -248,60 +236,10 @@ func (d *Dumper) dumpDatabase(ctx context.Context, w io.Writer, dbName string) e
 	return nil
 }
 
-func escapeJSON(s string) string {
-	s = strings.ReplaceAll(s, "\\", "\\\\")
-	s = strings.ReplaceAll(s, "\"", "\\\"")
-	s = strings.ReplaceAll(s, "\n", "\\n")
-	s = strings.ReplaceAll(s, "\r", "\\r")
-	s = strings.ReplaceAll(s, "\t", "\\t")
-	return s
-}
-
 func isSystemDB(name string) bool {
 	switch name {
 	case "admin", "config", "local":
 		return true
 	}
 	return false
-}
-
-func mongoValue(v any) string {
-	switch val := v.(type) {
-	case nil:
-		return "null"
-	case string:
-		return fmt.Sprintf("\"%s\"", escapeJSON(val))
-	case bool:
-		if val {
-			return "true"
-		}
-		return "false"
-	case int, int32, int64:
-		return fmt.Sprintf("%d", val)
-	case float64:
-		return fmt.Sprintf("%v", val)
-	case primitive.ObjectID:
-		return fmt.Sprintf("ObjectId(\"%s\")", val.Hex())
-	case primitive.DateTime:
-		t := time.UnixMilli(int64(val))
-		return fmt.Sprintf("ISODate(\"%s\")", t.Format("2006-01-02T15:04:05.000Z"))
-	case primitive.A:
-		var items []string
-		for _, item := range val {
-			items = append(items, mongoValue(item))
-		}
-		return "[" + strings.Join(items, ", ") + "]"
-	case primitive.M:
-		return bsonToJSON(bson.M(val))
-	case map[string]any:
-		return bsonToJSON(val)
-	case []any:
-		var items []string
-		for _, item := range val {
-			items = append(items, mongoValue(item))
-		}
-		return "[" + strings.Join(items, ", ") + "]"
-	default:
-		return fmt.Sprintf("\"%v\"", escapeJSON(fmt.Sprintf("%v", v)))
-	}
 }

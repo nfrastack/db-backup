@@ -2,6 +2,7 @@
 
    ### Changed
      - dump modifications
+       - (mongo) use extended json for operations
        - (sqlite) dump indexes, views, and triggers after tables
        - (sqlite) preserve auto increment watermarks
        - (sqlite) preserve query planner data
@@ -10,10 +11,10 @@
        - (sqlite) skip shadow fts tables from appearing in output
        - (sqlite) wrap entire operation in a transaction
 
+
 ## 5.0.7 2026-10-30 <code at nfrastack dot com>
 
    ### Changed
-
      - dedupe repeated config files and stop unecessary warnings
      - dump modifications
        - fix per job backend settings to respect DEFAULT_BACKUP_LOCATION
@@ -24,6 +25,7 @@
        - (postgres) include REVOKE statements before GRANTS
        - (postgres) use ALTER DEFAULT PRIVILEGES so role targeted defaults survive restore
        - (postgres) write serial sequences as int instead of bigint
+
 
 ## 5.0.6 2026-10-26 <code at nfrastack dot com>
 

@@ -7,7 +7,6 @@ package mongo
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
@@ -172,7 +171,7 @@ func parseDocLine(line string) (doc bson.M, ok bool, err error) {
 		return nil, false, nil
 	}
 	var d bson.M
-	if err := json.Unmarshal([]byte(line), &d); err != nil {
+	if err := bson.UnmarshalExtJSON([]byte(line), false, &d); err != nil {
 		return nil, false, fmt.Errorf("parse doc: %w", err)
 	}
 	return d, true, nil
