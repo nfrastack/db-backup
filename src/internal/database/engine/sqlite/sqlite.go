@@ -100,6 +100,9 @@ func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
 		rowsByTable[table] = n
 		totalRows += n
 	}
+	if err := d.dumpQueryStats(w, rowsByTable); err != nil {
+		return err
+	}
 	if err := d.dumpSequences(w, rowsByTable); err != nil {
 		return err
 	}
@@ -307,6 +310,44 @@ func (d *Dumper) dumpDefaultRows(w io.Writer, table string) (int, error) {
 	log.Trace("sqlite", "table done",
 		"table", table, "rows", rowCount)
 	return rowCount, nil
+}
+
+func (d *Dumper) dumpQueryStats(w io.Writer, rowsByTable map[string]int) error {
+	var one int
+	if err := d.db.QueryRowContext(d.ctxOrBg(), "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sqlite_stat1'").Scan(&one); err != nil {
+		return nil
+	}
+	rows, err := d.db.QueryContext(d.ctxOrBg(), "SELECT tbl, quote(tbl), quote(idx), quote(stat) FROM sqlite_stat1 ORDER BY rowid")
+	if err != nil {
+		return fmt.Errorf("read query stats: %w", err)
+	}
+	defer rows.Close()
+	var lines []string
+	for rows.Next() {
+		var tbl sql.NullString
+		var qtbl, qidx, qstat string
+		if err := rows.Scan(&tbl, &qtbl, &qidx, &qstat); err != nil {
+			return fmt.Errorf("scan query stat row: %w", err)
+		}
+		if tbl.Valid {
+			if _, ok := rowsByTable[tbl.String]; !ok {
+				continue
+			}
+		}
+		lines = append(lines, "INSERT INTO sqlite_stat1 (tbl, idx, stat) VALUES ("+qtbl+", "+qidx+", "+qstat+");")
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(lines) == 0 {
+		return nil
+	}
+	fmt.Fprintf(w, "ANALYZE sqlite_schema;\nDELETE FROM sqlite_stat1;\n")
+	for _, l := range lines {
+		fmt.Fprintf(w, "%s\n", l)
+	}
+	fmt.Fprintf(w, "\n")
+	return nil
 }
 
 func (d *Dumper) dumpSequences(w io.Writer, rowsByTable map[string]int) error {
