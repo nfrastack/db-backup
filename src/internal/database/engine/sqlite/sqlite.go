@@ -340,6 +340,33 @@ func (d *Dumper) dumpSchemaObjects(w io.Writer) (int, error) {
 	return count, rows.Err()
 }
 
+func (d *Dumper) shadowTables() (map[string]bool, error) {
+	rows, err := d.db.QueryContext(d.ctxOrBg(), "SELECT name, sql FROM sqlite_master WHERE type='table'")
+	if err != nil {
+		return nil, fmt.Errorf("list virtual tables: %w", err)
+	}
+	defer rows.Close()
+	suffixes := []string{"_data", "_idx", "_content", "_docsize", "_config", "_segments", "_segdir", "_stat", "_node", "_rowid", "_parent"}
+	out := map[string]bool{}
+	for rows.Next() {
+		var name string
+		var createSQL sql.NullString
+		if err := rows.Scan(&name, &createSQL); err != nil {
+			return nil, fmt.Errorf("scan virtual table row: %w", err)
+		}
+		if !createSQL.Valid {
+			continue
+		}
+		if !strings.HasPrefix(strings.ToUpper(strings.TrimSpace(createSQL.String)), "CREATE VIRTUAL TABLE") {
+			continue
+		}
+		for _, s := range suffixes {
+			out[name+s] = true
+		}
+	}
+	return out, rows.Err()
+}
+
 func (d *Dumper) listTables() ([]string, error) {
 	rows, err := d.db.QueryContext(d.ctxOrBg(), "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
 	if err != nil {
@@ -354,7 +381,22 @@ func (d *Dumper) listTables() ([]string, error) {
 		}
 		tables = append(tables, t)
 	}
-	return tables, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	shadows, err := d.shadowTables()
+	if err != nil {
+		return nil, err
+	}
+	kept := tables[:0]
+	for _, t := range tables {
+		if shadows[t] {
+			log.Trace("sqlite", "shadow table skipped", "table", t)
+			continue
+		}
+		kept = append(kept, t)
+	}
+	return kept, nil
 }
 func quoteSQLiteIdent(s string) string {
 	return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
