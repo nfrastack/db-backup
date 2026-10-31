@@ -198,9 +198,46 @@ func (d *Dumper) dumpCollection(ctx context.Context, w io.Writer, dbName, col st
 	if err := cursor.Err(); err != nil {
 		return err
 	}
+	if err := d.dumpIndexes(ctx, w, dbName, col); err != nil {
+		return err
+	}
 	log.Trace("mongo", "collection done",
 		"database", dbName, "collection", col, "docs", docCount,
 		"elapsed", time.Since(colStart).Round(time.Millisecond).String())
+	return nil
+}
+
+func (d *Dumper) dumpIndexes(ctx context.Context, w io.Writer, dbName, col string) error {
+	cursor, err := d.client.Database(dbName).Collection(col).Indexes().List(ctx)
+	if err != nil {
+		log.Warn("mongo", "skipping indexes - list failed", "database", dbName, "collection", col, "error", err.Error())
+		return nil
+	}
+	defer cursor.Close(ctx)
+	var specs []string
+	for cursor.Next(ctx) {
+		var spec bson.M
+		if err := cursor.Decode(&spec); err != nil {
+			return fmt.Errorf("decode index %s: %w", col, err)
+		}
+		if name, _ := spec["name"].(string); name == "_id_" {
+			continue
+		}
+		delete(spec, "ns")
+		delete(spec, "v")
+		raw, err := bson.MarshalExtJSON(spec, true, false)
+		if err != nil {
+			return fmt.Errorf("encode index %s: %w", col, err)
+		}
+		specs = append(specs, string(raw))
+	}
+	if err := cursor.Err(); err != nil {
+		return err
+	}
+	if len(specs) == 0 {
+		return nil
+	}
+	fmt.Fprintf(w, "db.%s.createIndexes([%s])\n\n", col, strings.Join(specs, ", "))
 	return nil
 }
 

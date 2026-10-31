@@ -101,6 +101,13 @@ func Restore(r io.Reader, host string, port int, user, pass, dbName, authSource 
 			continue
 		}
 
+		if strings.HasPrefix(line, "db.") && strings.Contains(line, ".createIndexes([") {
+			if err := createIndexesLine(ctx, client, firstDB, line); err != nil {
+				return err
+			}
+			continue
+		}
+
 		if strings.HasPrefix(line, "db.") && strings.Contains(line, ".insertMany([") {
 			collection = extractCollection(line)
 			inInsert = true
@@ -153,6 +160,35 @@ func (b *docBatcher) take() []bson.M {
 	full := b.docs
 	b.docs = nil
 	return full
+}
+
+func parseCreateIndexesLine(line string) (string, []bson.M, error) {
+	rest := strings.TrimPrefix(line, "db.")
+	idx := strings.Index(rest, ".createIndexes([")
+	if idx < 0 {
+		return "", nil, fmt.Errorf("bad createIndexes line")
+	}
+	collection := rest[:idx]
+	payload := rest[idx+len(".createIndexes(["):]
+	if !strings.HasSuffix(payload, ")") {
+		return "", nil, fmt.Errorf("bad createIndexes line")
+	}
+	var specs []bson.M
+	if err := bson.UnmarshalExtJSON([]byte("["+strings.TrimSuffix(payload, ")")), false, &specs); err != nil {
+		return "", nil, fmt.Errorf("parse indexes: %w", err)
+	}
+	return collection, specs, nil
+}
+
+func createIndexesLine(ctx context.Context, client *mongo.Client, db, line string) error {
+	collection, specs, err := parseCreateIndexesLine(line)
+	if err != nil {
+		return err
+	}
+	if len(specs) == 0 {
+		return nil
+	}
+	return client.Database(db).RunCommand(ctx, bson.D{{Key: "createIndexes", Value: collection}, {Key: "indexes", Value: specs}}).Err()
 }
 
 func extractCollection(line string) string {

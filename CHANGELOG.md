@@ -2,6 +2,7 @@
 
    ### Changed
      - dump modifications
+       - (mongo) include index definitions with collections
        - (mongo) use extended json for operations
        - (sqlite) dump indexes, views, and triggers after tables
        - (sqlite) preserve auto increment watermarks
