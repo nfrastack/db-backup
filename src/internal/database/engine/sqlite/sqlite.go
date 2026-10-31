@@ -98,8 +98,12 @@ func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
 		}
 		totalRows += n
 	}
+	extras, err := d.dumpSchemaObjects(w)
+	if err != nil {
+		return err
+	}
 	log.Debug("sqlite", "backup done",
-		"path", d.path, "tables", len(tables), "rows", totalRows,
+		"path", d.path, "tables", len(tables), "rows", totalRows, "extras", extras,
 		"elapsed", time.Since(start).Round(time.Millisecond).String())
 	return nil
 }
@@ -261,6 +265,42 @@ func (d *Dumper) dumpTable(w io.Writer, table string) (int, error) {
 func escapeSQLite(s string) string {
 	s = strings.ReplaceAll(s, "'", "''")
 	return s
+}
+
+func (d *Dumper) dumpSchemaObjects(w io.Writer) (int, error) {
+	rows, err := d.db.QueryContext(d.ctxOrBg(), "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE type IN ('index', 'view', 'trigger') AND sql IS NOT NULL ORDER BY rowid")
+	if err != nil {
+		return 0, fmt.Errorf("list schema objects: %w", err)
+	}
+	defer rows.Close()
+	var count int
+	for rows.Next() {
+		var typ, name, tbl, objSQL string
+		if err := rows.Scan(&typ, &name, &tbl, &objSQL); err != nil {
+			return count, fmt.Errorf("scan schema object row: %w", err)
+		}
+		if d.Tables != nil {
+			included, _ := d.Tables.Apply(tbl)
+			if !included {
+				log.Trace("sqlite", "schema object excluded by filter", "type", typ, "name", name)
+				continue
+			}
+		}
+		common.TraceTable(d.ctxOrBg(), "", name)
+		switch typ {
+		case "index":
+			fmt.Fprintf(w, "DROP INDEX IF EXISTS %s;\n", quoteSQLiteIdent(name))
+		case "view":
+			fmt.Fprintf(w, "DROP VIEW IF EXISTS %s;\n", quoteSQLiteIdent(name))
+		case "trigger":
+			fmt.Fprintf(w, "DROP TRIGGER IF EXISTS %s;\n", quoteSQLiteIdent(name))
+		default:
+			continue
+		}
+		fmt.Fprintf(w, "%s;\n\n", strings.TrimSuffix(strings.TrimSpace(objSQL), ";"))
+		count++
+	}
+	return count, rows.Err()
 }
 
 func (d *Dumper) listTables() ([]string, error) {

@@ -1,7 +1,9 @@
 ## dev x.x.x <code at nfrastack dot com>
 
    ### Changed
-     - 
+     - dump modifications
+       - (sqlite) dump indexes, views, and triggers after tables
+
 
 ## 5.0.7 2026-10-30 <code at nfrastack dot com>
 

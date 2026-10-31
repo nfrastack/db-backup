@@ -64,6 +64,20 @@ func Restore(r io.Reader, dbPath string) error {
 	return nil
 }
 
+func stmtComplete(s string) bool {
+	up := strings.ToUpper(strings.TrimSpace(s))
+	if !strings.HasPrefix(up, "CREATE ") {
+		return true
+	}
+	rest := strings.TrimSpace(strings.TrimPrefix(up, "CREATE "))
+	rest = strings.TrimSpace(strings.TrimPrefix(rest, "TEMPORARY "))
+	rest = strings.TrimSpace(strings.TrimPrefix(rest, "TEMP "))
+	if !strings.HasPrefix(rest, "TRIGGER ") {
+		return true
+	}
+	return strings.HasSuffix(up, "END;")
+}
+
 func restoreStream(r io.Reader, yield func(stmt string) error) error {
 	var cur strings.Builder
 	flush := func() error {
@@ -83,7 +97,7 @@ func restoreStream(r io.Reader, yield func(stmt string) error) error {
 			if trimmed := strings.TrimSpace(noline); !strings.HasPrefix(trimmed, "--") {
 				cur.WriteString(noline)
 				cur.WriteByte('\n')
-				if strings.HasSuffix(trimmed, ";") {
+				if strings.HasSuffix(trimmed, ";") && stmtComplete(cur.String()) {
 					if err := flush(); err != nil {
 						return err
 					}
