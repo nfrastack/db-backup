@@ -58,7 +58,7 @@ dbbackup_generate_configuration() {
         DEFAULT_CHECKSUM DEFAULT_CLEANUP_TIME DEFAULT_COMPRESSION DEFAULT_COMPRESSION_LEVEL DEFAULT_COMPRESSION_RSYNCABLE DEFAULT_COMPRESSION_THREADS \
         DEFAULT_CONNECTIVITY_METHOD DEFAULT_CONNECTIVITY_RETRY_INTERVAL DEFAULT_CONNECTIVITY_TIMEOUT \
         DEFAULT_CREATE_LATEST_SYMLINK \
-        DEFAULT_ENCRYPT DEFAULT_ENCRYPT_PASSPHRASE \
+        DEFAULT_ENCRYPT DEFAULT_ENCRYPT_PASSPHRASE DEFAULT_ENCRYPT_RECIPIENTS \
         DEFAULT_FILESYSTEM_PATH DEFAULT_FILESYSTEM_PATH_PERMISSION DEFAULT_FILESYSTEM_PERMISSION \
         DEFAULT_FULL_AFTER DEFAULT_FULL_EVERY \
         DEFAULT_GCS_BUCKET DEFAULT_GCS_KEY DEFAULT_GCS_PATH DEFAULT_GLOBALS DEFAULT_GZ_RSYNCABLE \
@@ -577,8 +577,9 @@ dbbackup_generate_configuration() {
     done
 
     # encryption
-    local enc_count=0 encrypt
+    local enc_count=0 encrypt enc_pass enc_recip
     declare -A enc_profile
+    declare -A enc_recipients
     for inst in "${insts[@]}"; do
         encrypt="$(_dbbackup_getv "${inst}" ENCRYPT FALSE)"; encrypt="${encrypt,,}"
         case "${encrypt,,}" in
@@ -586,19 +587,44 @@ dbbackup_generate_configuration() {
                 print_warn "DB${inst}_ENCRYPT is set - encryption now uses AGE"
                 print_warn "  This is a BREAKING CHANGE from the <4.x series which used GPG"
                 print_warn "  See the container README 'Upgrading from 4.x to v5'."
-                enc_profile["age-${inst}"]="$(_dbbackup_getv "${inst}" ENCRYPT_PASSPHRASE "")"
+                enc_pass="$(_dbbackup_getv "${inst}" ENCRYPT_PASSPHRASE "")"
+                enc_recip="$(_dbbackup_getv "${inst}" ENCRYPT_RECIPIENTS "")"
+                if [ -n "${enc_pass}" ] && [ -n "${enc_recip}" ]; then
+                    print_error "DB${inst} sets both ENCRYPT_PASSPHRASE and ENCRYPT_RECIPIENTS"
+                    rm -f "${CONFIG_FILE_PATH}"
+                    exit 1
+                fi
+                enc_profile["age-${inst}"]="${enc_pass}"
+                enc_recipients["age-${inst}"]="${enc_recip}"
                 enc_count=$((enc_count + 1))
             ;;
         esac
     done
     if [ "${enc_count}" -gt 0 ]; then
-        local name2
+        local name2 _dbb_rec_tok _dbb_rec_ifs
+        local -a _dbb_rec_toks
         for name2 in "${!enc_profile[@]}"; do
             DBB_REF="$name2"
             yq -i '.profiles.encryption[strenv(DBB_REF)].type = "age"' "${CONFIG_FILE_PATH}"
             if [ -n "${enc_profile[$name2]}" ]; then
                 DBB_ITEM="${enc_profile[$name2]}"
                 yq -i '.profiles.encryption[strenv(DBB_REF)].passphrase = strenv(DBB_ITEM)' "${CONFIG_FILE_PATH}"
+            fi
+            if [ -n "${enc_recipients[$name2]}" ]; then
+                _dbb_rec_toks=()
+                _dbb_rec_ifs="${IFS}"
+                set -f
+                IFS=$' \t\n,'
+                read -r -a _dbb_rec_toks <<< "${enc_recipients[$name2]//$'\n'/ }"
+                IFS="${_dbb_rec_ifs}"
+                set +f
+                for _dbb_rec_tok in "${_dbb_rec_toks[@]}"; do
+                    if [ -z "${_dbb_rec_tok}" ]; then
+                        continue
+                    fi
+                    DBB_ITEM="${_dbb_rec_tok}"
+                    yq -i '.profiles.encryption[strenv(DBB_REF)].recipients += [strenv(DBB_ITEM)]' "${CONFIG_FILE_PATH}"
+                done
             fi
         done
     fi
