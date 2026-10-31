@@ -81,6 +81,7 @@ func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
 		return err
 	}
 	log.Debug("sqlite", "tables listed", "path", d.path, "count", len(tables))
+	fmt.Fprintf(w, "PRAGMA foreign_keys=OFF;\nBEGIN TRANSACTION;\n\n")
 
 	rowsByTable := make(map[string]int, len(tables))
 	var totalRows int
@@ -110,6 +111,7 @@ func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
 	if err != nil {
 		return err
 	}
+	fmt.Fprintf(w, "COMMIT;\n")
 	log.Debug("sqlite", "backup done",
 		"path", d.path, "tables", len(tables), "rows", totalRows, "extras", extras,
 		"elapsed", time.Since(start).Round(time.Millisecond).String())

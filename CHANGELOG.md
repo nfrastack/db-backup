@@ -8,6 +8,7 @@
        - (sqlite) save datetime as raw values
        - (sqlite) skip generated columns in table inserts
        - (sqlite) skip shadow fts tables from appearing in output
+       - (sqlite) wrap entire operation in a transaction
 
 ## 5.0.7 2026-10-30 <code at nfrastack dot com>
 
