@@ -202,8 +202,34 @@ func (d *Dumper) dumpTable(w io.Writer, table string) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("columns: %w", err)
 	}
-	quoted := make([]string, len(cols))
-	for i, c := range cols {
+	genRows, err := d.db.QueryContext(ctx, "SELECT name FROM pragma_table_xinfo('"+strings.ReplaceAll(table, "'", "''")+"') WHERE hidden IN (2, 3)")
+	if err != nil {
+		return 0, fmt.Errorf("generated columns: %w", err)
+	}
+	generated := map[string]bool{}
+	for genRows.Next() {
+		var g string
+		if err := genRows.Scan(&g); err != nil {
+			genRows.Close()
+			return 0, fmt.Errorf("scan generated column: %w", err)
+		}
+		generated[g] = true
+	}
+	genRows.Close()
+	if err := genRows.Err(); err != nil {
+		return 0, fmt.Errorf("generated columns: %w", err)
+	}
+	insertCols := make([]string, 0, len(cols))
+	for _, c := range cols {
+		if !generated[c] {
+			insertCols = append(insertCols, c)
+		}
+	}
+	if len(insertCols) == 0 {
+		return d.dumpDefaultRows(w, table)
+	}
+	quoted := make([]string, len(insertCols))
+	for i, c := range insertCols {
 		quoted[i] = "quote(" + quoteSQLiteIdent(c) + ")"
 	}
 	rows, err := d.db.QueryContext(ctx, "SELECT "+strings.Join(quoted, ", ")+" FROM "+quoteSQLiteIdent(table))
@@ -214,8 +240,8 @@ func (d *Dumper) dumpTable(w io.Writer, table string) (int, error) {
 
 	var rowCount int
 	for rows.Next() {
-		vals := make([]sql.NullString, len(cols))
-		valPtrs := make([]any, len(cols))
+		vals := make([]sql.NullString, len(insertCols))
+		valPtrs := make([]any, len(insertCols))
 		for i := range vals {
 			valPtrs[i] = &vals[i]
 		}
@@ -224,8 +250,8 @@ func (d *Dumper) dumpTable(w io.Writer, table string) (int, error) {
 		}
 
 		if rowCount == 0 {
-			qCols := make([]string, len(cols))
-			for i, c := range cols {
+			qCols := make([]string, len(insertCols))
+			for i, c := range insertCols {
 				qCols[i] = quoteSQLiteIdent(c)
 			}
 			fmt.Fprintf(w, "INSERT INTO %s (%s) VALUES\n", quoteSQLiteIdent(table), strings.Join(qCols, ", "))
@@ -233,7 +259,7 @@ func (d *Dumper) dumpTable(w io.Writer, table string) (int, error) {
 			fmt.Fprintf(w, ",\n")
 		}
 
-		parts := make([]string, len(cols))
+		parts := make([]string, len(insertCols))
 		for i, v := range vals {
 			if v.Valid {
 				parts[i] = v.String
@@ -253,6 +279,28 @@ func (d *Dumper) dumpTable(w io.Writer, table string) (int, error) {
 	log.Trace("sqlite", "table done",
 		"table", table, "rows", rowCount,
 		"elapsed", time.Since(start).Round(time.Millisecond).String())
+	return rowCount, nil
+}
+
+func (d *Dumper) dumpDefaultRows(w io.Writer, table string) (int, error) {
+	rows, err := d.db.QueryContext(d.ctxOrBg(), "SELECT 1 FROM "+quoteSQLiteIdent(table))
+	if err != nil {
+		return 0, fmt.Errorf("select: %w", err)
+	}
+	defer rows.Close()
+	var rowCount int
+	for rows.Next() {
+		fmt.Fprintf(w, "INSERT INTO %s DEFAULT VALUES;\n", quoteSQLiteIdent(table))
+		rowCount++
+	}
+	if rowCount > 0 {
+		fmt.Fprintf(w, "\n")
+	}
+	if err := rows.Err(); err != nil {
+		return rowCount, err
+	}
+	log.Trace("sqlite", "table done",
+		"table", table, "rows", rowCount)
 	return rowCount, nil
 }
 

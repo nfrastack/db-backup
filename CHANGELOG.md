@@ -4,9 +4,12 @@
      - dump modifications
        - (sqlite) dump indexes, views, and triggers after tables
        - (sqlite) save datetime as raw values
+       - (sqlite) skip generated columns in table inserts
 
 
 ## 5.0.7 2026-10-30 <code at nfrastack dot com>
+
+   ### Changed
 
      - dedupe repeated config files and stop unecessary warnings
      - dump modifications
