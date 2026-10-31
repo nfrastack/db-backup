@@ -82,6 +82,7 @@ func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
 	}
 	log.Debug("sqlite", "tables listed", "path", d.path, "count", len(tables))
 
+	rowsByTable := make(map[string]int, len(tables))
 	var totalRows int
 	for _, table := range tables {
 		if d.Tables != nil {
@@ -96,7 +97,11 @@ func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
 		if err != nil {
 			return fmt.Errorf("dump %s: %w", table, err)
 		}
+		rowsByTable[table] = n
 		totalRows += n
+	}
+	if err := d.dumpSequences(w, rowsByTable); err != nil {
+		return err
 	}
 	extras, err := d.dumpSchemaObjects(w)
 	if err != nil {
@@ -302,6 +307,40 @@ func (d *Dumper) dumpDefaultRows(w io.Writer, table string) (int, error) {
 	log.Trace("sqlite", "table done",
 		"table", table, "rows", rowCount)
 	return rowCount, nil
+}
+
+func (d *Dumper) dumpSequences(w io.Writer, rowsByTable map[string]int) error {
+	var one int
+	if err := d.db.QueryRowContext(d.ctxOrBg(), "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sqlite_sequence'").Scan(&one); err != nil {
+		return nil
+	}
+	rows, err := d.db.QueryContext(d.ctxOrBg(), "SELECT name, seq FROM sqlite_sequence ORDER BY name")
+	if err != nil {
+		return fmt.Errorf("read sequences: %w", err)
+	}
+	defer rows.Close()
+	var lines []string
+	for rows.Next() {
+		var name string
+		var seq int64
+		if err := rows.Scan(&name, &seq); err != nil {
+			return fmt.Errorf("scan sequence row: %w", err)
+		}
+		if rowsByTable[name] == 0 {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("UPDATE sqlite_sequence SET seq=%d WHERE name='%s';", seq, strings.ReplaceAll(name, "'", "''")))
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, l := range lines {
+		fmt.Fprintf(w, "%s\n", l)
+	}
+	if len(lines) > 0 {
+		fmt.Fprintf(w, "\n")
+	}
+	return nil
 }
 
 func (d *Dumper) dumpSchemaObjects(w io.Writer) (int, error) {

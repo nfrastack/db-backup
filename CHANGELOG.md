@@ -3,6 +3,7 @@
    ### Changed
      - dump modifications
        - (sqlite) dump indexes, views, and triggers after tables
+       - (sqlite) preserve auto increment watermarks
        - (sqlite) save datetime as raw values
        - (sqlite) skip generated columns in table inserts
        - (sqlite) skip shadow fts tables from appearing in output
