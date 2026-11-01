@@ -12,6 +12,7 @@
        - (mongo) use extended json for operations
        - (postgres) dump event triggers, FDW objects, text search, casts, conversions,
                     operator classes, orphan large objects and tablespaces
+       - (redis) dump module keys as restore blobs
        - (redis) escape backslashes and newlines in values
        - (sqlite) dump indexes, views, and triggers after tables
        - (sqlite) preserve auto increment watermarks
