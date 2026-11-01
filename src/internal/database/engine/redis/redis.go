@@ -6,6 +6,7 @@ package redis
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net"
