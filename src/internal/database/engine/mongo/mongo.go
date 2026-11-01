@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"time"
 
@@ -241,11 +242,60 @@ func (d *Dumper) dumpIndexes(ctx context.Context, w io.Writer, dbName, col strin
 	return nil
 }
 
+type collectionInfo struct {
+	name, kind string
+	options    bson.M
+}
+
+func (d *Dumper) listCollections(ctx context.Context, dbName string) ([]collectionInfo, error) {
+	cursor, err := d.client.Database(dbName).ListCollections(ctx, bson.D{})
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+	var out []collectionInfo
+	for cursor.Next(ctx) {
+		var m bson.M
+		if err := cursor.Decode(&m); err != nil {
+			return nil, fmt.Errorf("decode collection: %w", err)
+		}
+		info := collectionInfo{}
+		info.name, _ = m["name"].(string)
+		info.kind, _ = m["type"].(string)
+		info.options, _ = m["options"].(bson.M)
+		if info.name == "" || strings.HasPrefix(info.name, "system.") {
+			continue
+		}
+		out = append(out, info)
+	}
+	if err := cursor.Err(); err != nil {
+		return nil, err
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].name < out[j].name })
+	return out, nil
+}
+
+func (d *Dumper) dumpView(w io.Writer, dbName string, col collectionInfo) error {
+	viewOn, _ := col.options["viewOn"].(string)
+	if viewOn == "" {
+		log.Warn("mongo", "skipping view - no viewOn", "database", dbName, "view", col.name)
+		return nil
+	}
+	spec := bson.M{"viewOn": viewOn, "pipeline": col.options["pipeline"]}
+	raw, err := bson.MarshalExtJSON(spec, true, false)
+	if err != nil {
+		return fmt.Errorf("encode view %s: %w", col.name, err)
+	}
+	fmt.Fprintf(w, "// View: %s\n", col.name)
+	fmt.Fprintf(w, "db.%s.createView(%s)\n\n", col.name, string(raw))
+	return nil
+}
+
 func (d *Dumper) dumpDatabase(ctx context.Context, w io.Writer, dbName string) error {
 	dbStart := time.Now()
 	fmt.Fprintf(w, "\n// Database: %s\n\n", dbName)
 
-	collections, err := d.client.Database(dbName).ListCollectionNames(ctx, bson.D{})
+	collections, err := d.listCollections(ctx, dbName)
 	if err != nil {
 		return fmt.Errorf("list collections: %w", err)
 	}
@@ -254,15 +304,21 @@ func (d *Dumper) dumpDatabase(ctx context.Context, w io.Writer, dbName string) e
 
 	for _, col := range collections {
 		if d.Tables != nil {
-			included, _ := d.Tables.Apply(col)
+			included, _ := d.Tables.Apply(col.name)
 			if !included {
 				log.Trace("mongo", "collection excluded by filter",
-					"database", dbName, "collection", col)
+					"database", dbName, "collection", col.name)
 				continue
 			}
 		}
-		common.TraceTable(ctx, dbName, col)
-		if err := d.dumpCollection(ctx, w, dbName, col); err != nil {
+		common.TraceTable(ctx, dbName, col.name)
+		if col.kind == "view" {
+			if err := d.dumpView(w, dbName, col); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := d.dumpCollection(ctx, w, dbName, col.name); err != nil {
 			return err
 		}
 	}

@@ -101,6 +101,13 @@ func Restore(r io.Reader, host string, port int, user, pass, dbName, authSource 
 			continue
 		}
 
+		if strings.HasPrefix(line, "db.") && strings.Contains(line, ".createView(") {
+			if err := createViewLine(ctx, client, firstDB, line); err != nil {
+				return err
+			}
+			continue
+		}
+
 		if strings.HasPrefix(line, "db.") && strings.Contains(line, ".createIndexes([") {
 			if err := createIndexesLine(ctx, client, firstDB, line); err != nil {
 				return err
@@ -160,6 +167,36 @@ func (b *docBatcher) take() []bson.M {
 	full := b.docs
 	b.docs = nil
 	return full
+}
+
+func parseCreateViewLine(line string) (string, string, any, error) {
+	rest := strings.TrimPrefix(line, "db.")
+	idx := strings.Index(rest, ".createView(")
+	if idx < 0 {
+		return "", "", nil, fmt.Errorf("bad createView line")
+	}
+	view := rest[:idx]
+	payload := rest[idx+len(".createView("):]
+	if !strings.HasSuffix(payload, ")") {
+		return "", "", nil, fmt.Errorf("bad createView line")
+	}
+	var spec bson.M
+	if err := bson.UnmarshalExtJSON([]byte(payload[:len(payload)-1]), false, &spec); err != nil {
+		return "", "", nil, fmt.Errorf("parse view: %w", err)
+	}
+	viewOn, _ := spec["viewOn"].(string)
+	if viewOn == "" {
+		return "", "", nil, fmt.Errorf("bad createView line")
+	}
+	return view, viewOn, spec["pipeline"], nil
+}
+
+func createViewLine(ctx context.Context, client *mongo.Client, db, line string) error {
+	view, viewOn, pipeline, err := parseCreateViewLine(line)
+	if err != nil {
+		return err
+	}
+	return client.Database(db).RunCommand(ctx, bson.D{{Key: "create", Value: view}, {Key: "viewOn", Value: viewOn}, {Key: "pipeline", Value: pipeline}}).Err()
 }
 
 func parseCreateIndexesLine(line string) (string, []bson.M, error) {

@@ -6,6 +6,7 @@
        - (mssql) dump constraints, indexes, routines, triggers, and routines
        - (mssql) skip computed columns in table inserts
        - (mssql) stop escaping backslashes in strings
+       - (mongo) dump view definitions instead of view data
        - (mongo) include index definitions with collections
        - (mongo) use extended json for operations
        - (postgres) dump event triggers, FDW objects, text search, casts, conversions,
