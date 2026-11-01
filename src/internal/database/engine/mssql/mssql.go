@@ -247,6 +247,10 @@ func (d *Dumper) dumpTable(ctx context.Context, w io.Writer, dbName, table strin
 		}
 	}
 	rows.Close()
+	computed, err := d.computedColumns(ctx, dbName, table)
+	if err != nil {
+		return err
+	}
 	sb.WriteString("\n);\n\n")
 	sb.WriteString("GO\n\n")
 
@@ -269,6 +273,15 @@ func (d *Dumper) dumpTable(ctx context.Context, w io.Writer, dbName, table strin
 	defer dataRows.Close()
 
 	cols, _ := dataRows.Columns()
+	insertCols := insertableMSSQLColumns(cols, computed)
+	keepSet := make(map[string]bool, len(insertCols))
+	for _, c := range insertCols {
+		keepSet[c] = true
+	}
+	if len(insertCols) == 0 {
+		dataRows.Close()
+		return d.dumpDefaultRows(ctx, w, dbName, table)
+	}
 	const batchSize = 500
 	var rowCount int
 	var batchRows int
@@ -284,7 +297,7 @@ func (d *Dumper) dumpTable(ctx context.Context, w io.Writer, dbName, table strin
 
 		if batchRows == 0 {
 			var qCols []string
-			for _, c := range cols {
+			for _, c := range insertCols {
 				qCols = append(qCols, quoteMSSQLIdent(c))
 			}
 			fmt.Fprintf(w, "INSERT INTO %s.[dbo].%s (%s) VALUES\n", quoteMSSQLIdent(dbName), quoteMSSQLIdent(table), strings.Join(qCols, ", "))
@@ -295,6 +308,9 @@ func (d *Dumper) dumpTable(ctx context.Context, w io.Writer, dbName, table strin
 
 		var parts []string
 		for i, v := range vals {
+			if !keepSet[cols[i]] {
+				continue
+			}
 			dt := colTypes[cols[i]]
 			uni := colIsUnicode[cols[i]]
 			switch val := v.(type) {
@@ -344,6 +360,55 @@ func (d *Dumper) dumpTable(ctx context.Context, w io.Writer, dbName, table strin
 		fmt.Fprintf(w, ";\nGO\n\n")
 	}
 	return dataRows.Err()
+}
+
+func (d *Dumper) computedColumns(ctx context.Context, dbName, table string) (map[string]bool, error) {
+	rows, err := d.db.QueryContext(ctx,
+		"SELECT c.name FROM "+quoteMSSQLIdent(dbName)+".sys.columns c "+
+			"JOIN "+quoteMSSQLIdent(dbName)+".sys.tables t ON t.object_id = c.object_id "+
+			"JOIN "+quoteMSSQLIdent(dbName)+".sys.schemas s ON s.schema_id = t.schema_id "+
+			"WHERE s.name = 'dbo' AND t.name = @p1 AND c.is_computed = 1",
+		table)
+	if err != nil {
+		return nil, fmt.Errorf("computed columns: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("scan computed column: %w", err)
+		}
+		out[name] = true
+	}
+	return out, rows.Err()
+}
+
+func insertableMSSQLColumns(cols []string, computed map[string]bool) []string {
+	kept := make([]string, 0, len(cols))
+	for _, c := range cols {
+		if !computed[c] {
+			kept = append(kept, c)
+		}
+	}
+	return kept
+}
+
+func (d *Dumper) dumpDefaultRows(ctx context.Context, w io.Writer, dbName, table string) error {
+	rows, err := d.db.QueryContext(ctx, "SELECT 1 FROM "+quoteMSSQLIdent(dbName)+".[dbo]."+quoteMSSQLIdent(table))
+	if err != nil {
+		return fmt.Errorf("select: %w", err)
+	}
+	defer rows.Close()
+	var rowCount int
+	for rows.Next() {
+		fmt.Fprintf(w, "INSERT INTO %s.[dbo].%s DEFAULT VALUES;\nGO\n", quoteMSSQLIdent(dbName), quoteMSSQLIdent(table))
+		rowCount++
+	}
+	if rowCount > 0 {
+		fmt.Fprintf(w, "\n")
+	}
+	return rows.Err()
 }
 
 func escapeMSSQL(s string) string {

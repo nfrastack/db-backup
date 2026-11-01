@@ -2,6 +2,7 @@
 
    ### Changed
      - dump modifications
+       - (mssql) skip computed columns in table inserts
        - (mssql) stop escaping backslashes in strings
        - (mongo) include index definitions with collections
        - (mongo) use extended json for operations
