@@ -198,7 +198,11 @@ func (d *Dumper) authMode() string {
 }
 
 func QuoteRedis(s string) string {
-	return fmt.Sprintf("\"%s\"", strings.ReplaceAll(s, "\"", "\\\""))
+	s = strings.ReplaceAll(s, "\\", "\\\\")
+	s = strings.ReplaceAll(s, "\"", "\\\"")
+	s = strings.ReplaceAll(s, "\n", "\\n")
+	s = strings.ReplaceAll(s, "\r", "\\r")
+	return fmt.Sprintf("\"%s\"", s)
 }
 func (d *Dumper) SetConnectivity(cfg *config.ConnectivityConfig) {
 	if cfg != nil {
