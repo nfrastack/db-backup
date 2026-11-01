@@ -177,7 +177,7 @@ func (d *Dumper) dumpDatabase(w io.Writer, dbName string) (int, error) {
 }
 
 func (d *Dumper) dumpPage(w io.Writer, dbName string, skip int) (int, error) {
-	u := fmt.Sprintf("%s/%s/_all_docs?include_docs=true&limit=%d&skip=%d", d.baseURL(), url.PathEscape(dbName), couchPageSize, skip)
+	u := fmt.Sprintf("%s/%s/_all_docs?include_docs=true&attachments=true&limit=%d&skip=%d", d.baseURL(), url.PathEscape(dbName), couchPageSize, skip)
 	start := time.Now()
 	req, err := http.NewRequestWithContext(d.ctxOrBg(), "GET", u, nil)
 	if err != nil {
