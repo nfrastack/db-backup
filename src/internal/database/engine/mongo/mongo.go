@@ -160,6 +160,27 @@ func (d *Dumper) ctxOrBg() context.Context {
 	return context.Background()
 }
 
+func (d *Dumper) dumpCollectionOptions(w io.Writer, dbName string, col collectionInfo) error {
+	if len(col.options) == 0 {
+		return nil
+	}
+	spec := bson.M{}
+	for _, k := range []string{"capped", "size", "max", "validator", "validationLevel", "validationAction", "timeseries", "changeStreamPreAndPostImages", "clusteredIndex"} {
+		if v, ok := col.options[k]; ok {
+			spec[k] = v
+		}
+	}
+	if len(spec) == 0 {
+		return nil
+	}
+	raw, err := bson.MarshalExtJSON(spec, true, false)
+	if err != nil {
+		return fmt.Errorf("encode collection options %s: %w", col.name, err)
+	}
+	fmt.Fprintf(w, "db.%s.createCollection(%s)\n", col.name, string(raw))
+	return nil
+}
+
 func (d *Dumper) dumpCollection(ctx context.Context, w io.Writer, dbName, col string) error {
 	coll := d.client.Database(dbName).Collection(col)
 
@@ -317,6 +338,9 @@ func (d *Dumper) dumpDatabase(ctx context.Context, w io.Writer, dbName string) e
 				return err
 			}
 			continue
+		}
+		if err := d.dumpCollectionOptions(w, dbName, col); err != nil {
+			return err
 		}
 		if err := d.dumpCollection(ctx, w, dbName, col.name); err != nil {
 			return err

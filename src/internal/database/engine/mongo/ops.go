@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -101,6 +102,13 @@ func Restore(r io.Reader, host string, port int, user, pass, dbName, authSource 
 			continue
 		}
 
+		if strings.HasPrefix(line, "db.") && strings.Contains(line, ".createCollection(") {
+			if err := createCollectionLine(ctx, client, firstDB, line); err != nil {
+				return err
+			}
+			continue
+		}
+
 		if strings.HasPrefix(line, "db.") && strings.Contains(line, ".createView(") {
 			if err := createViewLine(ctx, client, firstDB, line); err != nil {
 				return err
@@ -167,6 +175,44 @@ func (b *docBatcher) take() []bson.M {
 	full := b.docs
 	b.docs = nil
 	return full
+}
+
+func parseCreateCollectionLine(line string) (string, bson.M, error) {
+	rest := strings.TrimPrefix(line, "db.")
+	idx := strings.Index(rest, ".createCollection(")
+	if idx < 0 {
+		return "", nil, fmt.Errorf("bad createCollection line")
+	}
+	collection := rest[:idx]
+	payload := rest[idx+len(".createCollection("):]
+	if !strings.HasSuffix(payload, ")") {
+		return "", nil, fmt.Errorf("bad createCollection line")
+	}
+	var opts bson.M
+	if err := bson.UnmarshalExtJSON([]byte(payload[:len(payload)-1]), false, &opts); err != nil {
+		return "", nil, fmt.Errorf("parse collection options: %w", err)
+	}
+	return collection, opts, nil
+}
+
+func createCollectionLine(ctx context.Context, client *mongo.Client, db, line string) error {
+	collection, opts, err := parseCreateCollectionLine(line)
+	if err != nil {
+		return err
+	}
+	if len(opts) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(opts))
+	for k := range opts {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	cmd := bson.D{{Key: "create", Value: collection}}
+	for _, k := range keys {
+		cmd = append(cmd, bson.E{Key: k, Value: opts[k]})
+	}
+	return client.Database(db).RunCommand(ctx, cmd).Err()
 }
 
 func parseCreateViewLine(line string) (string, string, any, error) {
