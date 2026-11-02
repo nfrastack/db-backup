@@ -1,4 +1,4 @@
-## dev x.x.x <code at nfrastack dot com>
+## 5.0.8 2026-11-03 <code at nfrastack dot com>
 
    ### Changed
      - dump modifications
@@ -6,7 +6,7 @@
        - (mssql) dump constraints, indexes, routines, triggers, and routines
        - (mssql) skip computed columns in table inserts
        - (mssql) stop escaping backslashes in strings
-       - (mongo) bump linecamp to 64MB to handle base64 attachments better
+       - (mongo) bump linecap to 64MB to handle base64 attachments better
        - (mongo) grab collection options with collections
        - (mongo) dump view definitions instead of view data
        - (mongo) include index definitions with collections
