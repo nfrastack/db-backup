@@ -675,7 +675,6 @@ func (d *Dumper) dumpBlobs(w io.Writer, dbName string, tables []string) error {
 	if d.SchemaOnly {
 		return nil
 	}
-	start := time.Now()
 	loCols := map[string][]string{}
 	for _, t := range tables {
 		parts := strings.SplitN(t, ".", 2)
@@ -693,7 +692,7 @@ func (d *Dumper) dumpBlobs(w io.Writer, dbName string, tables []string) error {
 		}
 	}
 	if len(loCols) == 0 {
-		return nil
+		return d.dumpOrphanBlobs(w, dbName, map[uint32]bool{})
 	}
 
 	oids := map[uint32]bool{}
@@ -728,7 +727,38 @@ func (d *Dumper) dumpBlobs(w io.Writer, dbName string, tables []string) error {
 	}
 
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i] < ordered[j] })
-	fmt.Fprintf(w, "\n-- Large objects\n")
+	return d.writeBlobs(w, dbName, ordered)
+}
+
+func (d *Dumper) dumpOrphanBlobs(w io.Writer, dbName string, seen map[uint32]bool) error {
+	rows, err := d.conn.Query(d.ctxOrBg(), "SELECT oid FROM pg_catalog.pg_largeobject_metadata ORDER BY oid")
+	if err != nil {
+		return fmt.Errorf("read orphan large objects: %w", err)
+	}
+	defer rows.Close()
+	var ordered []uint32
+	for rows.Next() {
+		var oid uint32
+		if err := rows.Scan(&oid); err != nil {
+			return fmt.Errorf("scan orphan large object: %w", err)
+		}
+		if !seen[oid] {
+			seen[oid] = true
+			ordered = append(ordered, oid)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(ordered) == 0 {
+		return nil
+	}
+	log.Debug("postgres", "orphan large objects found", "database", dbName, "objects", len(ordered))
+	return d.writeBlobs(w, dbName, ordered)
+}
+
+func (d *Dumper) writeBlobs(w io.Writer, dbName string, ordered []uint32) error {
+	start := time.Now()
 	for _, oid := range ordered {
 		fmt.Fprintf(w, "DO $$BEGIN IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_largeobject_metadata WHERE oid = %d) THEN PERFORM pg_catalog.lo_create(%d); END IF; END$$;\n", oid, oid)
 		fmt.Fprintf(w, "DELETE FROM pg_catalog.pg_largeobject WHERE loid = %d;\n", oid)
@@ -812,6 +842,9 @@ func (d *Dumper) dumpDatabase(w io.Writer, dbName string) error {
 	if err != nil {
 		return err
 	}
+	if err := d.dumpLanguages(w, dbName); err != nil {
+		return err
+	}
 	if err := d.dumpFunctions(w, dbName, false); err != nil {
 		return err
 	}
@@ -825,6 +858,30 @@ func (d *Dumper) dumpDatabase(w io.Writer, dbName string) error {
 		}
 	}
 
+	if err := d.dumpForeignServers(w, dbName); err != nil {
+		return err
+	}
+	if err := d.dumpUserMappings(w, dbName); err != nil {
+		return err
+	}
+	if err := d.dumpForeignTables(w, dbName); err != nil {
+		return err
+	}
+	if err := d.dumpTextSearch(w, dbName); err != nil {
+		return err
+	}
+	if err := d.dumpCasts(w, dbName); err != nil {
+		return err
+	}
+	if err := d.dumpConversions(w, dbName); err != nil {
+		return err
+	}
+	if err := d.dumpOpClasses(w, dbName); err != nil {
+		return err
+	}
+	if err := d.dumpEventTriggers(w, dbName); err != nil {
+		return err
+	}
 	if err := d.dumpSequences(w, dbName); err != nil {
 		return err
 	}
@@ -1048,6 +1105,339 @@ func (d *Dumper) dumpExtensions(w io.Writer, dbName string) error {
 	return nil
 }
 
+type eventTriggerDef struct {
+	name, event, function, enabled string
+	tags                           []string
+}
+
+func buildEventTrigger(e eventTriggerDef) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "DROP EVENT TRIGGER IF EXISTS %s;\n", quotePGIdent(e.name))
+	fmt.Fprintf(&sb, "CREATE EVENT TRIGGER %s ON %s", quotePGIdent(e.name), quotePGIdent(e.event))
+	if len(e.tags) > 0 {
+		quoted := make([]string, 0, len(e.tags))
+		for _, tag := range e.tags {
+			quoted = append(quoted, "'"+escapePGLiteral(tag)+"'")
+		}
+		fmt.Fprintf(&sb, " WHEN TAG IN (%s)", strings.Join(quoted, ", "))
+	}
+	fmt.Fprintf(&sb, " EXECUTE FUNCTION %s;", e.function)
+	switch e.enabled {
+	case "D":
+		fmt.Fprintf(&sb, "\nALTER EVENT TRIGGER %s DISABLE;", quotePGIdent(e.name))
+	case "R":
+		fmt.Fprintf(&sb, "\nALTER EVENT TRIGGER %s ENABLE REPLICA;", quotePGIdent(e.name))
+	case "A":
+		fmt.Fprintf(&sb, "\nALTER EVENT TRIGGER %s ENABLE ALWAYS;", quotePGIdent(e.name))
+	}
+	return sb.String()
+}
+
+func pgTagList(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "{}" {
+		return nil
+	}
+	raw = strings.TrimPrefix(strings.TrimSuffix(raw, "}"), "{")
+	var out []string
+	for _, t := range strings.Split(raw, ",") {
+		t = strings.Trim(strings.TrimSpace(t), `"`)
+		if t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+func (d *Dumper) dumpEventTriggers(w io.Writer, dbName string) error {
+	rows, err := d.conn.Query(d.ctxOrBg(),
+		"SELECT e.evtname, e.evtevent, e.evttags::text, fn.nspname, p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid), e.evtenabled FROM pg_catalog.pg_event_trigger e "+
+			"JOIN pg_catalog.pg_proc p ON p.oid = e.evtfoid "+
+			"JOIN pg_catalog.pg_namespace fn ON fn.oid = p.pronamespace "+
+			"ORDER BY e.evtname")
+	if err != nil {
+		return fmt.Errorf("event triggers: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var e eventTriggerDef
+		var schema, fn, args, tagsRaw string
+		if err := rows.Scan(&e.name, &e.event, &tagsRaw, &schema, &fn, &args, &e.enabled); err != nil {
+			return fmt.Errorf("scan event trigger: %w", err)
+		}
+		e.function = quotePGIdent(schema) + "." + quotePGIdent(fn) + "(" + args + ")"
+		e.tags = pgTagList(tagsRaw)
+		fmt.Fprintf(w, "\n-- Event trigger: %s\n%s\n", e.name, buildEventTrigger(e))
+	}
+	return rows.Err()
+}
+
+type optionPair struct {
+	name, value string
+}
+
+func buildOptionsClause(opts []optionPair) string {
+	if len(opts) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(opts))
+	for _, o := range opts {
+		parts = append(parts, quotePGIdent(o.name)+" '"+escapePGLiteral(o.value)+"'")
+	}
+	return " OPTIONS (" + strings.Join(parts, ", ") + ")"
+}
+
+func buildForeignServer(name, fdw, owner string, opts []optionPair) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "DROP SERVER IF EXISTS %s CASCADE;\n", quotePGIdent(name))
+	fmt.Fprintf(&sb, "CREATE SERVER %s FOREIGN DATA WRAPPER %s%s;\n", quotePGIdent(name), quotePGIdent(fdw), buildOptionsClause(opts))
+	fmt.Fprintf(&sb, "ALTER SERVER %s OWNER TO %s;", quotePGIdent(name), quotePGIdent(owner))
+	return sb.String()
+}
+
+func buildUserMapping(user, server string, opts []optionPair) string {
+	forUser := "PUBLIC"
+	if user != "" {
+		forUser = quotePGIdent(user)
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "DROP USER MAPPING IF EXISTS FOR %s SERVER %s;\n", forUser, quotePGIdent(server))
+	fmt.Fprintf(&sb, "CREATE USER MAPPING FOR %s SERVER %s%s;", forUser, quotePGIdent(server), buildOptionsClause(opts))
+	return sb.String()
+}
+
+type foreignColumnDef struct {
+	name, typ string
+	notNull   bool
+	options   []optionPair
+}
+
+func buildForeignTable(schema, name, server string, cols []foreignColumnDef, opts []optionPair) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "DROP FOREIGN TABLE IF EXISTS %s.%s CASCADE;\n", quotePGIdent(schema), quotePGIdent(name))
+	fmt.Fprintf(&sb, "CREATE FOREIGN TABLE %s.%s (\n", quotePGIdent(schema), quotePGIdent(name))
+	for i, c := range cols {
+		if i > 0 {
+			sb.WriteString(",\n")
+		}
+		fmt.Fprintf(&sb, "    %s %s", quotePGIdent(c.name), c.typ)
+		if c.notNull {
+			sb.WriteString(" NOT NULL")
+		}
+		if len(c.options) > 0 {
+			sb.WriteString(buildOptionsClause(c.options))
+		}
+	}
+	fmt.Fprintf(&sb, "\n) SERVER %s%s;", quotePGIdent(server), buildOptionsClause(opts))
+	return sb.String()
+}
+
+func (d *Dumper) dumpForeignServers(w io.Writer, dbName string) error {
+	rows, err := d.conn.Query(d.ctxOrBg(),
+		"SELECT s.srvname, w.fdwname, r.rolname, o.option_name, o.option_value FROM pg_catalog.pg_foreign_server s "+
+			"JOIN pg_catalog.pg_foreign_data_wrapper w ON w.oid = s.srvfdw "+
+			"JOIN pg_catalog.pg_roles r ON r.oid = s.srvowner "+
+			"LEFT JOIN LATERAL pg_catalog.pg_options_to_table(s.srvoptions) o ON true "+
+			"WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = s.oid AND dd.deptype = 'e') "+
+			"ORDER BY s.srvname, o.option_name")
+	if err != nil {
+		return fmt.Errorf("foreign servers: %w", err)
+	}
+	defer rows.Close()
+	type serverDef struct {
+		fdw, owner string
+		opts       []optionPair
+	}
+	var order []string
+	servers := map[string]*serverDef{}
+	for rows.Next() {
+		var name, fdw, owner string
+		var optName, optValue sql.NullString
+		if err := rows.Scan(&name, &fdw, &owner, &optName, &optValue); err != nil {
+			return fmt.Errorf("scan foreign server: %w", err)
+		}
+		sd, ok := servers[name]
+		if !ok {
+			sd = &serverDef{fdw: fdw, owner: owner}
+			servers[name] = sd
+			order = append(order, name)
+		}
+		if optName.Valid {
+			val := ""
+			if optValue.Valid {
+				val = optValue.String
+			}
+			sd.opts = append(sd.opts, optionPair{name: optName.String, value: val})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, name := range order {
+		sd := servers[name]
+		fmt.Fprintf(w, "\n-- Foreign server: %s\n%s\n", name, buildForeignServer(name, sd.fdw, sd.owner, sd.opts))
+	}
+	return nil
+}
+
+func (d *Dumper) dumpUserMappings(w io.Writer, dbName string) error {
+	rows, err := d.conn.Query(d.ctxOrBg(),
+		"SELECT s.srvname, r.rolname, o.option_name, o.option_value FROM pg_catalog.pg_user_mapping u "+
+			"JOIN pg_catalog.pg_foreign_server s ON s.oid = u.umserver "+
+			"LEFT JOIN pg_catalog.pg_roles r ON r.oid = u.umuser "+
+			"LEFT JOIN LATERAL pg_catalog.pg_options_to_table(u.umoptions) o ON true "+
+			"WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = u.oid AND dd.deptype = 'e') "+
+			"ORDER BY s.srvname, r.rolname")
+	if err != nil {
+		return fmt.Errorf("user mappings: %w", err)
+	}
+	defer rows.Close()
+	type mappingDef struct {
+		user, server string
+		opts         []optionPair
+	}
+	var order []string
+	mappings := map[string]*mappingDef{}
+	for rows.Next() {
+		var server string
+		var user, optName, optValue sql.NullString
+		if err := rows.Scan(&server, &user, &optName, &optValue); err != nil {
+			return fmt.Errorf("scan user mapping: %w", err)
+		}
+		key := server + "." + user.String
+		md, ok := mappings[key]
+		if !ok {
+			md = &mappingDef{user: user.String, server: server}
+			mappings[key] = md
+			order = append(order, key)
+		}
+		if optName.Valid {
+			val := ""
+			if optValue.Valid {
+				val = optValue.String
+			}
+			md.opts = append(md.opts, optionPair{name: optName.String, value: val})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, key := range order {
+		md := mappings[key]
+		label := md.user
+		if label == "" {
+			label = "PUBLIC"
+		}
+		fmt.Fprintf(w, "\n-- User mapping: %s on %s\n%s\n", label, md.server, buildUserMapping(md.user, md.server, md.opts))
+	}
+	return nil
+}
+
+func (d *Dumper) dumpForeignTables(w io.Writer, dbName string) error {
+	rows, err := d.conn.Query(d.ctxOrBg(),
+		"SELECT n.nspname, c.relname, c.oid, s.srvname FROM pg_catalog.pg_class c "+
+			"JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "+
+			"JOIN pg_catalog.pg_foreign_table ft ON ft.ftrelid = c.oid "+
+			"JOIN pg_catalog.pg_foreign_server s ON s.oid = ft.ftserver "+
+			"WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') "+
+			"AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = c.oid AND dd.deptype = 'e') "+
+			"ORDER BY n.nspname, c.relname")
+	if err != nil {
+		return fmt.Errorf("foreign tables: %w", err)
+	}
+	defer rows.Close()
+	type foreignTableDef struct {
+		schema, name, server string
+		relid                int64
+	}
+	var tables []foreignTableDef
+	for rows.Next() {
+		var t foreignTableDef
+		if err := rows.Scan(&t.schema, &t.name, &t.server, &t.relid); err != nil {
+			return fmt.Errorf("scan foreign table: %w", err)
+		}
+		tables = append(tables, t)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, t := range tables {
+		qualified := t.schema + "." + t.name
+		if d.Tables != nil {
+			ok, _ := d.Tables.Apply(qualified)
+			if !ok {
+				if _, bare, cut := strings.Cut(qualified, "."); cut {
+					ok, _ = d.Tables.Apply(bare)
+				}
+			}
+			if !ok {
+				log.Trace("postgres", "foreign table excluded by filter", "database", dbName, "table", qualified)
+				continue
+			}
+		}
+		common.TraceTable(d.ctxOrBg(), dbName, qualified)
+		cols, err := d.foreignTableColumns(t.relid)
+		if err != nil {
+			return err
+		}
+		opts, err := d.tableOptions("SELECT pg_catalog.pg_options_to_table(ftoptions) FROM pg_catalog.pg_foreign_table WHERE ftrelid = $1", t.relid)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(w, "\n-- Foreign table: %s\n%s\n", qualified, buildForeignTable(t.schema, t.name, t.server, cols, opts))
+	}
+	return nil
+}
+
+func (d *Dumper) foreignTableColumns(relid int64) ([]foreignColumnDef, error) {
+	rows, err := d.conn.Query(d.ctxOrBg(),
+		"SELECT a.attname, pg_catalog.format_type(a.atttypid, a.atttypmod), a.attnotnull, o.option_name, o.option_value FROM pg_catalog.pg_attribute a "+
+			"LEFT JOIN LATERAL pg_catalog.pg_options_to_table(a.attoptions) o ON true "+
+			"WHERE a.attrelid = $1 AND a.attnum > 0 AND NOT a.attisdropped ORDER BY a.attnum, o.option_name",
+		relid)
+	if err != nil {
+		return nil, fmt.Errorf("foreign table columns: %w", err)
+	}
+	defer rows.Close()
+	var cols []foreignColumnDef
+	for rows.Next() {
+		var name, typ string
+		var notNull bool
+		var optName, optValue sql.NullString
+		if err := rows.Scan(&name, &typ, &notNull, &optName, &optValue); err != nil {
+			return nil, fmt.Errorf("scan foreign table column: %w", err)
+		}
+		if len(cols) == 0 || cols[len(cols)-1].name != name {
+			cols = append(cols, foreignColumnDef{name: name, typ: typ, notNull: notNull})
+		}
+		if optName.Valid {
+			val := ""
+			if optValue.Valid {
+				val = optValue.String
+			}
+			cols[len(cols)-1].options = append(cols[len(cols)-1].options, optionPair{name: optName.String, value: val})
+		}
+	}
+	return cols, rows.Err()
+}
+
+func (d *Dumper) tableOptions(query string, arg int64) ([]optionPair, error) {
+	rows, err := d.conn.Query(d.ctxOrBg(), query, arg)
+	if err != nil {
+		return nil, fmt.Errorf("table options: %w", err)
+	}
+	defer rows.Close()
+	var opts []optionPair
+	for rows.Next() {
+		var name, value string
+		if err := rows.Scan(&name, &value); err != nil {
+			return nil, fmt.Errorf("scan table option: %w", err)
+		}
+		opts = append(opts, optionPair{name: name, value: value})
+	}
+	return opts, rows.Err()
+}
+
 func (d *Dumper) dumpFunctions(w io.Writer, dbName string, tableDependent bool) error {
 	rows, err := d.conn.Query(d.ctxOrBg(),
 		"SELECT proname, pg_get_functiondef(oid) FROM pg_proc "+
@@ -1085,6 +1475,437 @@ func (d *Dumper) dumpFunctions(w io.Writer, dbName string, tableDependent bool) 
 		fmt.Fprintf(w, "\n-- Function: %s\n%s\n\n", name, def)
 	}
 	return rows.Err()
+}
+
+func buildLanguage(name string, trusted bool, handler, inline, validator string) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "DROP LANGUAGE IF EXISTS %s;\n", quotePGIdent(name))
+	if trusted {
+		fmt.Fprintf(&sb, "CREATE TRUSTED")
+	} else {
+		fmt.Fprintf(&sb, "CREATE")
+	}
+	fmt.Fprintf(&sb, " PROCEDURAL LANGUAGE %s", quotePGIdent(name))
+	if handler != "" {
+		fmt.Fprintf(&sb, " HANDLER %s", handler)
+	}
+	if inline != "" {
+		fmt.Fprintf(&sb, " INLINE %s", inline)
+	}
+	if validator != "" {
+		fmt.Fprintf(&sb, " VALIDATOR %s", validator)
+	}
+	sb.WriteString(";")
+	return sb.String()
+}
+
+func (d *Dumper) dumpLanguages(w io.Writer, dbName string) error {
+	rows, err := d.conn.Query(d.ctxOrBg(),
+		"SELECT l.lanname, l.lanpltrusted, hn.nspname, p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid), "+
+			"insp.nspname, ip.proname, pg_catalog.pg_get_function_identity_arguments(ip.oid), "+
+			"vn.nspname, vp.proname, pg_catalog.pg_get_function_identity_arguments(vp.oid) "+
+			"FROM pg_catalog.pg_language l "+
+			"LEFT JOIN pg_catalog.pg_proc p ON p.oid = l.lanplcallfoid LEFT JOIN pg_catalog.pg_namespace hn ON hn.oid = p.pronamespace "+
+			"LEFT JOIN pg_catalog.pg_proc ip ON ip.oid = l.laninline LEFT JOIN pg_catalog.pg_namespace insp ON insp.oid = ip.pronamespace "+
+			"LEFT JOIN pg_catalog.pg_proc vp ON vp.oid = l.lanvalidator LEFT JOIN pg_catalog.pg_namespace vn ON vn.oid = vp.pronamespace "+
+			"WHERE l.lanispl AND l.lanname NOT IN ('internal', 'c', 'sql') "+
+			"AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = l.oid AND dd.deptype = 'e') "+
+			"ORDER BY l.lanname")
+	if err != nil {
+		return fmt.Errorf("languages: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		var trusted bool
+		var hSchema, hName, hArgs, iSchema, iName, iArgs, vSchema, vName, vArgs sql.NullString
+		if err := rows.Scan(&name, &trusted, &hSchema, &hName, &hArgs, &iSchema, &iName, &iArgs, &vSchema, &vName, &vArgs); err != nil {
+			return fmt.Errorf("scan language: %w", err)
+		}
+		qualified := func(s, n, a sql.NullString) string {
+			if !n.Valid {
+				return ""
+			}
+			args := ""
+			if a.Valid {
+				args = a.String
+			}
+			if s.Valid && s.String != "" {
+				return quotePGIdent(s.String) + "." + quotePGIdent(n.String) + "(" + args + ")"
+			}
+			return quotePGIdent(n.String) + "(" + args + ")"
+		}
+		fmt.Fprintf(w, "\n-- Language: %s\n%s\n", name, buildLanguage(name, trusted, qualified(hSchema, hName, hArgs), qualified(iSchema, iName, iArgs), qualified(vSchema, vName, vArgs)))
+	}
+	return rows.Err()
+}
+
+func buildTextSearchParser(schema, name, start, token, end, headline, lextype string) string {
+	return fmt.Sprintf("DROP TEXT SEARCH PARSER IF EXISTS %s.%s;\nCREATE TEXT SEARCH PARSER %s.%s (\n    START = %s,\n    GETTOKEN = %s,\n    END = %s,\n    HEADLINE = %s,\n    LEXTYPES = %s);",
+		quotePGIdent(schema), quotePGIdent(name), quotePGIdent(schema), quotePGIdent(name), start, token, end, headline, lextype)
+}
+
+func buildTextSearchTemplate(schema, name, lexize string) string {
+	return fmt.Sprintf("DROP TEXT SEARCH TEMPLATE IF EXISTS %s.%s;\nCREATE TEXT SEARCH TEMPLATE %s.%s (LEXIZE = %s);",
+		quotePGIdent(schema), quotePGIdent(name), quotePGIdent(schema), quotePGIdent(name), lexize)
+}
+
+func buildTextSearchDictionary(schema, name, template string, opts []optionPair) string {
+	return fmt.Sprintf("DROP TEXT SEARCH DICTIONARY IF EXISTS %s.%s;\nCREATE TEXT SEARCH DICTIONARY %s.%s (TEMPLATE = %s%s);",
+		quotePGIdent(schema), quotePGIdent(name), quotePGIdent(schema), quotePGIdent(name), template, buildOptionsClause(opts))
+}
+
+func buildTextSearchConfiguration(schema, name, parser string, mappings []string) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "DROP TEXT SEARCH CONFIGURATION IF EXISTS %s.%s;\n", quotePGIdent(schema), quotePGIdent(name))
+	fmt.Fprintf(&sb, "CREATE TEXT SEARCH CONFIGURATION %s.%s (PARSER = %s);", quotePGIdent(schema), quotePGIdent(name), parser)
+	for _, m := range mappings {
+		fmt.Fprintf(&sb, "\n%s;", m)
+	}
+	return sb.String()
+}
+
+func (d *Dumper) dumpTextSearch(w io.Writer, dbName string) error {
+	parsers, err := d.conn.Query(d.ctxOrBg(),
+		"SELECT n.nspname, p.prsname, hs.nspname, hp.proname, pg_catalog.pg_get_function_identity_arguments(hp.oid), "+
+			"ts.nspname, tp.proname, pg_catalog.pg_get_function_identity_arguments(tp.oid), "+
+			"es.nspname, ep.proname, pg_catalog.pg_get_function_identity_arguments(ep.oid), "+
+			"ds.nspname, dp.proname, pg_catalog.pg_get_function_identity_arguments(dp.oid), "+
+			"ls.nspname, lp.proname, pg_catalog.pg_get_function_identity_arguments(lp.oid) "+
+			"FROM pg_catalog.pg_ts_parser p JOIN pg_catalog.pg_namespace n ON n.oid = p.prsnamespace "+
+			"JOIN pg_catalog.pg_proc hp ON hp.oid = p.prsstart JOIN pg_catalog.pg_namespace hs ON hs.oid = hp.pronamespace "+
+			"JOIN pg_catalog.pg_proc tp ON tp.oid = p.prstoken JOIN pg_catalog.pg_namespace ts ON ts.oid = tp.pronamespace "+
+			"JOIN pg_catalog.pg_proc ep ON ep.oid = p.prsend JOIN pg_catalog.pg_namespace es ON es.oid = ep.pronamespace "+
+			"JOIN pg_catalog.pg_proc dp ON dp.oid = p.prsheadline JOIN pg_catalog.pg_namespace ds ON ds.oid = dp.pronamespace "+
+			"JOIN pg_catalog.pg_proc lp ON lp.oid = p.prslextype JOIN pg_catalog.pg_namespace ls ON ls.oid = lp.pronamespace "+
+			"WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = p.oid AND dd.deptype = 'e') "+
+			"ORDER BY n.nspname, p.prsname")
+	if err != nil {
+		return fmt.Errorf("text search parsers: %w", err)
+	}
+	defer parsers.Close()
+	fn := func(s, n, a sql.NullString) string {
+		args := ""
+		if a.Valid {
+			args = a.String
+		}
+		return quotePGIdent(s.String) + "." + quotePGIdent(n.String) + "(" + args + ")"
+	}
+	for parsers.Next() {
+		var schema, name string
+		var ss, sn, sa, ts, tn, ta, es, en, ea, ds, dn, da, ls, ln, la sql.NullString
+		if err := parsers.Scan(&schema, &name, &ss, &sn, &sa, &ts, &tn, &ta, &es, &en, &ea, &ds, &dn, &da, &ls, &ln, &la); err != nil {
+			return fmt.Errorf("scan text search parser: %w", err)
+		}
+		fmt.Fprintf(w, "\n-- Text search parser: %s.%s\n%s\n", schema, name,
+			buildTextSearchParser(schema, name, fn(ss, sn, sa), fn(ts, tn, ta), fn(es, en, ea), fn(ds, dn, da), fn(ls, ln, la)))
+	}
+	parsers.Close()
+	if err := parsers.Err(); err != nil {
+		return err
+	}
+	templates, err := d.conn.Query(d.ctxOrBg(),
+		"SELECT n.nspname, t.tmplname, ln.nspname, p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) "+
+			"FROM pg_catalog.pg_ts_template t JOIN pg_catalog.pg_namespace n ON n.oid = t.tmplnamespace "+
+			"JOIN pg_catalog.pg_proc p ON p.oid = t.tmpllexize JOIN pg_catalog.pg_namespace ln ON ln.oid = p.pronamespace "+
+			"WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = t.oid AND dd.deptype = 'e') "+
+			"ORDER BY n.nspname, t.tmplname")
+	if err != nil {
+		return fmt.Errorf("text search templates: %w", err)
+	}
+	defer templates.Close()
+	for templates.Next() {
+		var schema, name, lschema, lexize, args string
+		if err := templates.Scan(&schema, &name, &lschema, &lexize, &args); err != nil {
+			return fmt.Errorf("scan text search template: %w", err)
+		}
+		fmt.Fprintf(w, "\n-- Text search template: %s.%s\n%s\n", schema, name,
+			buildTextSearchTemplate(schema, name, quotePGIdent(lschema)+"."+quotePGIdent(lexize)+"("+args+")"))
+	}
+	if err := templates.Err(); err != nil {
+		return err
+	}
+	dicts, err := d.conn.Query(d.ctxOrBg(),
+		"SELECT n.nspname, dd.dictname, tn.nspname, t.tmplname, o.option_name, o.option_value, dd.oid FROM pg_catalog.pg_ts_dict dd "+
+			"JOIN pg_catalog.pg_namespace n ON n.oid = dd.dictnamespace "+
+			"JOIN pg_catalog.pg_ts_template t ON t.oid = dd.dicttemplate "+
+			"JOIN pg_catalog.pg_namespace tn ON tn.oid = t.tmplnamespace "+
+			"LEFT JOIN LATERAL pg_catalog.pg_options_to_table(dd.dictoptions) o ON true "+
+			"WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dx WHERE dx.objid = dd.oid AND dx.deptype = 'e') "+
+			"ORDER BY n.nspname, dd.dictname, o.option_name")
+	if err != nil {
+		return fmt.Errorf("text search dictionaries: %w", err)
+	}
+	defer dicts.Close()
+	type dictDef struct {
+		schema, name, template string
+		opts                   []optionPair
+	}
+	var dictOrder []string
+	dictDefs := map[string]*dictDef{}
+	for dicts.Next() {
+		var schema, name, tschema, tmpl string
+		var optName, optValue sql.NullString
+		var oid int64
+		if err := dicts.Scan(&schema, &name, &tschema, &tmpl, &optName, &optValue, &oid); err != nil {
+			return fmt.Errorf("scan text search dictionary: %w", err)
+		}
+		key := schema + "." + name
+		dd, ok := dictDefs[key]
+		if !ok {
+			dd = &dictDef{schema: schema, name: name, template: quotePGIdent(tschema) + "." + quotePGIdent(tmpl)}
+			dictDefs[key] = dd
+			dictOrder = append(dictOrder, key)
+		}
+		if optName.Valid {
+			val := ""
+			if optValue.Valid {
+				val = optValue.String
+			}
+			dd.opts = append(dd.opts, optionPair{name: optName.String, value: val})
+		}
+	}
+	if err := dicts.Err(); err != nil {
+		return err
+	}
+	for _, key := range dictOrder {
+		dd := dictDefs[key]
+		fmt.Fprintf(w, "\n-- Text search dictionary: %s\n%s\n", key, buildTextSearchDictionary(dd.schema, dd.name, dd.template, dd.opts))
+	}
+	configs, err := d.conn.Query(d.ctxOrBg(),
+		"SELECT n.nspname, c.cfgname, pn.nspname, p.prsname, c.oid FROM pg_catalog.pg_ts_config c "+
+			"JOIN pg_catalog.pg_namespace n ON n.oid = c.cfgnamespace "+
+			"JOIN pg_catalog.pg_ts_parser p ON p.oid = c.cfgparser "+
+			"JOIN pg_catalog.pg_namespace pn ON pn.oid = p.prsnamespace "+
+			"WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = c.oid AND dd.deptype = 'e') "+
+			"ORDER BY n.nspname, c.cfgname")
+	if err != nil {
+		return fmt.Errorf("text search configurations: %w", err)
+	}
+	defer configs.Close()
+	type configDef struct {
+		schema, name, parser string
+		oid                  int64
+	}
+	var configDefs []configDef
+	for configs.Next() {
+		var cd configDef
+		var pschema, parser string
+		if err := configs.Scan(&cd.schema, &cd.name, &pschema, &parser, &cd.oid); err != nil {
+			return fmt.Errorf("scan text search configuration: %w", err)
+		}
+		cd.parser = quotePGIdent(pschema) + "." + quotePGIdent(parser)
+		configDefs = append(configDefs, cd)
+	}
+	if err := configs.Err(); err != nil {
+		return err
+	}
+	for _, cd := range configDefs {
+		maps, err := d.conn.Query(d.ctxOrBg(),
+			"SELECT t.alias, d.dict FROM pg_catalog.ts_token_type((SELECT cfgparser FROM pg_catalog.pg_ts_config WHERE oid = $1)) AS t "+
+				"LEFT JOIN LATERAL (SELECT n.nspname || '.' || dd.dictname AS dict FROM pg_catalog.pg_ts_config_map m JOIN pg_catalog.pg_ts_dict dd ON dd.oid = m.mapdict JOIN pg_catalog.pg_namespace n ON n.oid = dd.dictnamespace WHERE m.mapcfg = $1 AND m.maptokentype = t.tokid ORDER BY m.mapseqno) AS d ON true",
+			cd.oid)
+		if err != nil {
+			return fmt.Errorf("text search mappings %s: %w", cd.name, err)
+		}
+		var mappings []string
+		for maps.Next() {
+			var alias string
+			var dict sql.NullString
+			if err := maps.Scan(&alias, &dict); err != nil {
+				maps.Close()
+				return fmt.Errorf("scan text search mapping %s: %w", cd.name, err)
+			}
+			if !dict.Valid {
+				continue
+			}
+			mappings = append(mappings, fmt.Sprintf("ALTER TEXT SEARCH CONFIGURATION %s.%s ADD MAPPING FOR %s WITH %s", quotePGIdent(cd.schema), quotePGIdent(cd.name), alias, dict.String))
+		}
+		maps.Close()
+		if err := maps.Err(); err != nil {
+			return err
+		}
+		fmt.Fprintf(w, "\n-- Text search configuration: %s.%s\n%s\n", cd.schema, cd.name, buildTextSearchConfiguration(cd.schema, cd.name, cd.parser, mappings))
+	}
+	return nil
+}
+
+func buildCast(source, target, function, context string) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "DROP CAST IF EXISTS (%s AS %s);\n", source, target)
+	fmt.Fprintf(&sb, "CREATE CAST (%s AS %s)", source, target)
+	if function != "" {
+		fmt.Fprintf(&sb, " WITH FUNCTION %s", function)
+	}
+	switch context {
+	case "a":
+		sb.WriteString(" AS ASSIGNMENT")
+	case "i":
+		sb.WriteString(" AS IMPLICIT")
+	}
+	sb.WriteString(";")
+	return sb.String()
+}
+
+func (d *Dumper) dumpCasts(w io.Writer, dbName string) error {
+	rows, err := d.conn.Query(d.ctxOrBg(),
+		"SELECT pg_catalog.format_type(c.castsource, NULL), pg_catalog.format_type(c.casttarget, NULL), "+
+			"CASE WHEN c.castfuncid = 0 THEN '' ELSE pg_catalog.quote_ident(fn.nspname) || '.' || pg_catalog.quote_ident(p.proname) || '(' || pg_catalog.pg_get_function_identity_arguments(p.oid) || ')' END, c.castcontext::text "+
+			"FROM pg_catalog.pg_cast c "+
+			"LEFT JOIN pg_catalog.pg_proc p ON p.oid = c.castfuncid "+
+			"LEFT JOIN pg_catalog.pg_namespace fn ON fn.oid = p.pronamespace "+
+			"WHERE (c.castfuncid <> 0 AND fn.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')) "+
+			"OR (c.castfuncid = 0 AND EXISTS (SELECT 1 FROM pg_catalog.pg_type t JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace WHERE t.oid IN (c.castsource, c.casttarget) AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast'))) "+
+			"ORDER BY 1, 2")
+	if err != nil {
+		return fmt.Errorf("casts: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var source, target, function, context string
+		if err := rows.Scan(&source, &target, &function, &context); err != nil {
+			return fmt.Errorf("scan cast: %w", err)
+		}
+		fmt.Fprintf(w, "\n-- Cast: %s to %s\n%s\n", source, target, buildCast(source, target, function, context))
+	}
+	return rows.Err()
+}
+
+func buildConversion(name, source, target, function, def string) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "DROP CONVERSION IF EXISTS %s;\n", quotePGIdent(name))
+	if def == "t" {
+		fmt.Fprintf(&sb, "CREATE DEFAULT")
+	} else {
+		fmt.Fprintf(&sb, "CREATE")
+	}
+	fmt.Fprintf(&sb, " CONVERSION %s FOR '%s' TO '%s' FROM %s;", quotePGIdent(name), source, target, function)
+	return sb.String()
+}
+
+func (d *Dumper) dumpConversions(w io.Writer, dbName string) error {
+	rows, err := d.conn.Query(d.ctxOrBg(),
+		"SELECT c.conname, pg_catalog.pg_encoding_to_char(c.conforencoding), pg_catalog.pg_encoding_to_char(c.contoencoding), fn.nspname, p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid), c.condefault::text "+
+			"FROM pg_catalog.pg_conversion c JOIN pg_catalog.pg_proc p ON p.oid = c.conproc JOIN pg_catalog.pg_namespace fn ON fn.oid = p.pronamespace "+
+			"WHERE c.connamespace <> 'pg_catalog'::regnamespace AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = c.oid AND dd.deptype = 'e') "+
+			"ORDER BY c.conname")
+	if err != nil {
+		return fmt.Errorf("conversions: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name, source, target, fschema, fn, args, def string
+		if err := rows.Scan(&name, &source, &target, &fschema, &fn, &args, &def); err != nil {
+			return fmt.Errorf("scan conversion: %w", err)
+		}
+		fmt.Fprintf(w, "\n-- Conversion: %s\n%s\n", name,
+			buildConversion(name, source, target, quotePGIdent(fschema)+"."+quotePGIdent(fn)+"("+args+")", def))
+	}
+	return rows.Err()
+}
+
+func buildOpFamily(name, method string) string {
+	return fmt.Sprintf("DROP OPERATOR FAMILY IF EXISTS %s USING %s;\nCREATE OPERATOR FAMILY %s USING %s;",
+		quotePGIdent(name), quotePGIdent(method), quotePGIdent(name), quotePGIdent(method))
+}
+
+func buildOpClassDef(name, family, method, datatype, isDefault, members string) string {
+	if isDefault == "t" {
+		return fmt.Sprintf("DROP OPERATOR CLASS IF EXISTS %s USING %s;\nCREATE OPERATOR CLASS %s DEFAULT FOR TYPE %s USING %s FAMILY %s AS %s;",
+			quotePGIdent(name), quotePGIdent(method), quotePGIdent(name), datatype, quotePGIdent(method), quotePGIdent(family), members)
+	}
+	return fmt.Sprintf("DROP OPERATOR CLASS IF EXISTS %s USING %s;\nCREATE OPERATOR CLASS %s FOR TYPE %s USING %s FAMILY %s AS %s;",
+		quotePGIdent(name), quotePGIdent(method), quotePGIdent(name), datatype, quotePGIdent(method), quotePGIdent(family), members)
+}
+
+func (d *Dumper) dumpOpClasses(w io.Writer, dbName string) error {
+	fams, err := d.conn.Query(d.ctxOrBg(),
+		"SELECT o.opfname, a.amname FROM pg_catalog.pg_opfamily o JOIN pg_catalog.pg_am a ON a.oid = o.opfmethod "+
+			"WHERE o.opfnamespace <> 'pg_catalog'::regnamespace AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = o.oid AND dd.deptype = 'e') "+
+			"ORDER BY o.opfname")
+	if err != nil {
+		return fmt.Errorf("operator families: %w", err)
+	}
+	defer fams.Close()
+	for fams.Next() {
+		var name, method string
+		if err := fams.Scan(&name, &method); err != nil {
+			return fmt.Errorf("scan operator family: %w", err)
+		}
+		fmt.Fprintf(w, "\n-- Operator family: %s\n%s\n", name, buildOpFamily(name, method))
+	}
+	if err := fams.Err(); err != nil {
+		return err
+	}
+	classes, err := d.conn.Query(d.ctxOrBg(),
+		"SELECT c.opcname, f.opfname, a.amname, pg_catalog.format_type(c.opcintype, NULL), c.opcdefault::text, c.oid FROM pg_catalog.pg_opclass c "+
+			"JOIN pg_catalog.pg_opfamily f ON f.oid = c.opcfamily JOIN pg_catalog.pg_am a ON a.oid = f.opfmethod "+
+			"WHERE c.opcnamespace <> 'pg_catalog'::regnamespace AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = c.oid AND dd.deptype = 'e') "+
+			"ORDER BY c.opcname")
+	if err != nil {
+		return fmt.Errorf("operator classes: %w", err)
+	}
+	defer classes.Close()
+	for classes.Next() {
+		var name, family, method, datatype, isDefault string
+		var oid int64
+		if err := classes.Scan(&name, &family, &method, &datatype, &isDefault, &oid); err != nil {
+			return fmt.Errorf("scan operator class: %w", err)
+		}
+		members, err := d.opClassMembers(oid)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(w, "\n-- Operator class: %s\n%s\n", name, buildOpClassDef(name, family, method, datatype, isDefault, members))
+	}
+	return classes.Err()
+}
+
+func (d *Dumper) opClassMembers(oid int64) (string, error) {
+	ops, err := d.conn.Query(d.ctxOrBg(),
+		"SELECT m.amopstrategy, pg_catalog.quote_ident(fn.nspname) || '.' || pg_catalog.quote_ident(p.proname) || '(' || pg_catalog.pg_get_function_identity_arguments(p.oid) || ')' "+
+			"FROM pg_catalog.pg_amop m JOIN pg_catalog.pg_operator o ON o.oid = m.amopopr JOIN pg_catalog.pg_proc p ON p.oid = m.amopfunction JOIN pg_catalog.pg_namespace fn ON fn.oid = p.pronamespace "+
+			"WHERE m.amopfamily = (SELECT opcfamily FROM pg_catalog.pg_opclass WHERE oid = $1) AND m.amopmethod = (SELECT opfmethod FROM pg_catalog.pg_opfamily WHERE oid = (SELECT opcfamily FROM pg_catalog.pg_opclass WHERE oid = $1)) AND m.amoplefttype = (SELECT opcintype FROM pg_catalog.pg_opclass WHERE oid = $1) AND m.amoprighttype = (SELECT opcintype FROM pg_catalog.pg_opclass WHERE oid = $1) "+
+			"ORDER BY m.amopstrategy",
+		oid)
+	if err != nil {
+		return "", fmt.Errorf("operator class operators: %w", err)
+	}
+	defer ops.Close()
+	var members []string
+	for ops.Next() {
+		var strategy int
+		var operator string
+		if err := ops.Scan(&strategy, &operator); err != nil {
+			return "", fmt.Errorf("scan operator class operator: %w", err)
+		}
+		members = append(members, fmt.Sprintf("OPERATOR %d %s", strategy, operator))
+	}
+	if err := ops.Err(); err != nil {
+		return "", err
+	}
+	procs, err := d.conn.Query(d.ctxOrBg(),
+		"SELECT m.amprocnum, pg_catalog.quote_ident(fn.nspname) || '.' || pg_catalog.quote_ident(p.proname) || '(' || pg_catalog.pg_get_function_identity_arguments(p.oid) || ')' "+
+			"FROM pg_catalog.pg_amproc m JOIN pg_catalog.pg_proc p ON p.oid = m.amproc JOIN pg_catalog.pg_namespace fn ON fn.oid = p.pronamespace "+
+			"WHERE m.amprocfamily = (SELECT opcfamily FROM pg_catalog.pg_opclass WHERE oid = $1) AND m.amproclefttype = (SELECT opcintype FROM pg_catalog.pg_opclass WHERE oid = $1) AND m.amprocrighttype = (SELECT opcintype FROM pg_catalog.pg_opclass WHERE oid = $1) "+
+			"ORDER BY m.amprocnum",
+		oid)
+	if err != nil {
+		return "", fmt.Errorf("operator class functions: %w", err)
+	}
+	defer procs.Close()
+	for procs.Next() {
+		var num int
+		var fn string
+		if err := procs.Scan(&num, &fn); err != nil {
+			return "", fmt.Errorf("scan operator class function: %w", err)
+		}
+		members = append(members, fmt.Sprintf("FUNCTION %d %s", num, fn))
+	}
+	if err := procs.Err(); err != nil {
+		return "", err
+	}
+	return strings.Join(members, ", "), nil
 }
 
 func (d *Dumper) dumpAggregates(w io.Writer, dbName string) error {
@@ -1344,8 +2165,82 @@ func (d *Dumper) DumpGlobals(w io.Writer) error {
 		}
 	}
 
+	if err := d.dumpTablespaces(w); err != nil {
+		return err
+	}
+
 	fmt.Fprintf(w, "\n-- Globals dump completed\n")
 	return rows.Err()
+}
+
+func buildTablespace(name, owner, location string, opts []optionPair) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "DROP TABLESPACE IF EXISTS %s;\n", quotePGIdent(name))
+	fmt.Fprintf(&sb, "CREATE TABLESPACE %s", quotePGIdent(name))
+	fmt.Fprintf(&sb, " OWNER %s", quotePGIdent(owner))
+	fmt.Fprintf(&sb, " LOCATION '%s'", strings.ReplaceAll(location, "'", "''"))
+	if len(opts) > 0 {
+		parts := make([]string, 0, len(opts))
+		for _, o := range opts {
+			parts = append(parts, quotePGIdent(o.name)+" = '"+escapePGLiteral(o.value)+"'")
+		}
+		fmt.Fprintf(&sb, " WITH (%s)", strings.Join(parts, ", "))
+	}
+	sb.WriteString(";")
+	return sb.String()
+}
+
+func (d *Dumper) dumpTablespaces(w io.Writer) error {
+	rows, err := d.conn.Query(d.ctxOrBg(),
+		"SELECT s.spcname, r.rolname, pg_catalog.pg_tablespace_location(s.oid), o.option_name, o.option_value FROM pg_catalog.pg_tablespace s "+
+			"JOIN pg_catalog.pg_roles r ON r.oid = s.spcowner "+
+			"LEFT JOIN LATERAL pg_catalog.pg_options_to_table(s.spcoptions) o ON true "+
+			"WHERE s.spcname NOT LIKE 'pg\\_%' ORDER BY s.spcname, o.option_name")
+	if err != nil {
+		return fmt.Errorf("tablespaces: %w", err)
+	}
+	defer rows.Close()
+	type spaceDef struct {
+		owner, location string
+		opts            []optionPair
+	}
+	var order []string
+	spaces := map[string]*spaceDef{}
+	for rows.Next() {
+		var name, owner, location string
+		var optName, optValue sql.NullString
+		if err := rows.Scan(&name, &owner, &location, &optName, &optValue); err != nil {
+			return fmt.Errorf("scan tablespace: %w", err)
+		}
+		if location == "" {
+			continue
+		}
+		sd, ok := spaces[name]
+		if !ok {
+			sd = &spaceDef{owner: owner, location: location}
+			spaces[name] = sd
+			order = append(order, name)
+		}
+		if optName.Valid {
+			val := ""
+			if optValue.Valid {
+				val = optValue.String
+			}
+			sd.opts = append(sd.opts, optionPair{name: optName.String, value: val})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(order) == 0 {
+		return nil
+	}
+	fmt.Fprintf(w, "\n-- Tablespaces (locations are cluster-specific and may need editing)\n")
+	for _, name := range order {
+		sd := spaces[name]
+		fmt.Fprintf(w, "%s\n", buildTablespace(name, sd.owner, sd.location, sd.opts))
+	}
+	return nil
 }
 
 func (d *Dumper) dumpPartitions(w io.Writer, dbName, schema, table string, schemaOnly bool, depth int) ([]string, string, string, error) {

@@ -6,6 +6,7 @@ package redis
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net"
@@ -145,6 +146,18 @@ func ParseDBIndex(name string) (int, error) {
 	return n, nil
 }
 
+func encodeRestoreBlob(data string) string {
+	return base64.StdEncoding.EncodeToString([]byte(data))
+}
+
+func decodeRestoreBlob(s string) (string, error) {
+	raw, err := base64.StdEncoding.DecodeString(s)
+	if err != nil {
+		return "", fmt.Errorf("bad restore blob: %w", err)
+	}
+	return string(raw), nil
+}
+
 func strconvFormatFloat(f float64) string {
 	return strconv.FormatFloat(f, 'f', -1, 64)
 }
@@ -198,7 +211,11 @@ func (d *Dumper) authMode() string {
 }
 
 func QuoteRedis(s string) string {
-	return fmt.Sprintf("\"%s\"", strings.ReplaceAll(s, "\"", "\\\""))
+	s = strings.ReplaceAll(s, "\\", "\\\\")
+	s = strings.ReplaceAll(s, "\"", "\\\"")
+	s = strings.ReplaceAll(s, "\n", "\\n")
+	s = strings.ReplaceAll(s, "\r", "\\r")
+	return fmt.Sprintf("\"%s\"", s)
 }
 func (d *Dumper) SetConnectivity(cfg *config.ConnectivityConfig) {
 	if cfg != nil {
@@ -275,12 +292,12 @@ func (d *Dumper) dumpKey(ctx context.Context, w io.Writer, key string) error {
 		}
 		d.writeRestoreStream(w, qKey, msgs, groups, ttl)
 	default:
-
-		val, err := d.client.Get(ctx, key).Result()
+		blob, err := d.client.Dump(ctx, key).Result()
 		if err != nil {
-			return fmt.Errorf("get fallback: %w", err)
+			return fmt.Errorf("dump fallback: %w", err)
 		}
-		d.writeWithTTL(w, qKey, val, ttl)
+		fmt.Fprintln(w, "RESTOREBLOB", qKey, encodeRestoreBlob(blob))
+		writeKeyTTL(w, qKey, ttl)
 	}
 	return nil
 }

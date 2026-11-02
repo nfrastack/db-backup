@@ -1,7 +1,32 @@
+## 5.0.8 2026-11-03 <code at nfrastack dot com>
+
+   ### Changed
+     - dump modifications
+       - (couch) fetch attachment bodies during dump
+       - (mssql) dump constraints, indexes, routines, triggers, and routines
+       - (mssql) skip computed columns in table inserts
+       - (mssql) stop escaping backslashes in strings
+       - (mongo) bump linecap to 64MB to handle base64 attachments better
+       - (mongo) grab collection options with collections
+       - (mongo) dump view definitions instead of view data
+       - (mongo) include index definitions with collections
+       - (mongo) use extended json for operations
+       - (postgres) dump event triggers, FDW objects, text search, casts, conversions,
+                    operator classes, orphan large objects and tablespaces
+       - (redis) dump module keys as restore blobs
+       - (redis) escape backslashes and newlines in values
+       - (sqlite) dump indexes, views, and triggers after tables
+       - (sqlite) preserve auto increment watermarks
+       - (sqlite) preserve query planner data
+       - (sqlite) save datetime as raw values
+       - (sqlite) skip generated columns in table inserts
+       - (sqlite) skip shadow fts tables from appearing in output
+       - (sqlite) wrap entire operation in a transaction
+
+
 ## 5.0.7 2026-10-30 <code at nfrastack dot com>
 
    ### Changed
-
      - dedupe repeated config files and stop unecessary warnings
      - dump modifications
        - fix per job backend settings to respect DEFAULT_BACKUP_LOCATION
@@ -12,6 +37,7 @@
        - (postgres) include REVOKE statements before GRANTS
        - (postgres) use ALTER DEFAULT PRIVILEGES so role targeted defaults survive restore
        - (postgres) write serial sequences as int instead of bigint
+
 
 ## 5.0.6 2026-10-26 <code at nfrastack dot com>
 

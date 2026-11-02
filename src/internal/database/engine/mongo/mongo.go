@@ -8,11 +8,11 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 
@@ -153,26 +153,32 @@ func (d *Dumper) SetTableFilter(f *config.TableFilter, schemaOnly bool) {
 	d.SchemaOnly = schemaOnly
 }
 
-func bsonToJSON(doc bson.M) string {
-	var sb strings.Builder
-	sb.WriteString("{")
-	first := true
-	for k, v := range doc {
-		if first {
-			first = false
-		} else {
-			sb.WriteString(", ")
-		}
-		sb.WriteString(fmt.Sprintf("\"%s\": %s", k, mongoValue(v)))
-	}
-	sb.WriteString("}")
-	return sb.String()
-}
 func (d *Dumper) ctxOrBg() context.Context {
 	if d.ctx != nil {
 		return d.ctx
 	}
 	return context.Background()
+}
+
+func (d *Dumper) dumpCollectionOptions(w io.Writer, dbName string, col collectionInfo) error {
+	if len(col.options) == 0 {
+		return nil
+	}
+	spec := bson.M{}
+	for _, k := range []string{"capped", "size", "max", "validator", "validationLevel", "validationAction", "timeseries", "changeStreamPreAndPostImages", "clusteredIndex"} {
+		if v, ok := col.options[k]; ok {
+			spec[k] = v
+		}
+	}
+	if len(spec) == 0 {
+		return nil
+	}
+	raw, err := bson.MarshalExtJSON(spec, true, false)
+	if err != nil {
+		return fmt.Errorf("encode collection options %s: %w", col.name, err)
+	}
+	fmt.Fprintf(w, "db.%s.createCollection(%s)\n", col.name, string(raw))
+	return nil
 }
 
 func (d *Dumper) dumpCollection(ctx context.Context, w io.Writer, dbName, col string) error {
@@ -194,7 +200,11 @@ func (d *Dumper) dumpCollection(ctx context.Context, w io.Writer, dbName, col st
 			return fmt.Errorf("decode: %w", err)
 		}
 
-		json := bsonToJSON(doc)
+		raw, err := bson.MarshalExtJSON(doc, true, false)
+		if err != nil {
+			return fmt.Errorf("encode: %w", err)
+		}
+		json := string(raw)
 		if docCount == 0 {
 			fmt.Fprintf(w, "db.%s.insertMany([\n", col)
 		} else {
@@ -210,9 +220,95 @@ func (d *Dumper) dumpCollection(ctx context.Context, w io.Writer, dbName, col st
 	if err := cursor.Err(); err != nil {
 		return err
 	}
+	if err := d.dumpIndexes(ctx, w, dbName, col); err != nil {
+		return err
+	}
 	log.Trace("mongo", "collection done",
 		"database", dbName, "collection", col, "docs", docCount,
 		"elapsed", time.Since(colStart).Round(time.Millisecond).String())
+	return nil
+}
+
+func (d *Dumper) dumpIndexes(ctx context.Context, w io.Writer, dbName, col string) error {
+	cursor, err := d.client.Database(dbName).Collection(col).Indexes().List(ctx)
+	if err != nil {
+		log.Warn("mongo", "skipping indexes - list failed", "database", dbName, "collection", col, "error", err.Error())
+		return nil
+	}
+	defer cursor.Close(ctx)
+	var specs []string
+	for cursor.Next(ctx) {
+		var spec bson.M
+		if err := cursor.Decode(&spec); err != nil {
+			return fmt.Errorf("decode index %s: %w", col, err)
+		}
+		if name, _ := spec["name"].(string); name == "_id_" {
+			continue
+		}
+		delete(spec, "ns")
+		delete(spec, "v")
+		raw, err := bson.MarshalExtJSON(spec, true, false)
+		if err != nil {
+			return fmt.Errorf("encode index %s: %w", col, err)
+		}
+		specs = append(specs, string(raw))
+	}
+	if err := cursor.Err(); err != nil {
+		return err
+	}
+	if len(specs) == 0 {
+		return nil
+	}
+	fmt.Fprintf(w, "db.%s.createIndexes([%s])\n\n", col, strings.Join(specs, ", "))
+	return nil
+}
+
+type collectionInfo struct {
+	name, kind string
+	options    bson.M
+}
+
+func (d *Dumper) listCollections(ctx context.Context, dbName string) ([]collectionInfo, error) {
+	cursor, err := d.client.Database(dbName).ListCollections(ctx, bson.D{})
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+	var out []collectionInfo
+	for cursor.Next(ctx) {
+		var m bson.M
+		if err := cursor.Decode(&m); err != nil {
+			return nil, fmt.Errorf("decode collection: %w", err)
+		}
+		info := collectionInfo{}
+		info.name, _ = m["name"].(string)
+		info.kind, _ = m["type"].(string)
+		info.options, _ = m["options"].(bson.M)
+		if info.name == "" || strings.HasPrefix(info.name, "system.") {
+			continue
+		}
+		out = append(out, info)
+	}
+	if err := cursor.Err(); err != nil {
+		return nil, err
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].name < out[j].name })
+	return out, nil
+}
+
+func (d *Dumper) dumpView(w io.Writer, dbName string, col collectionInfo) error {
+	viewOn, _ := col.options["viewOn"].(string)
+	if viewOn == "" {
+		log.Warn("mongo", "skipping view - no viewOn", "database", dbName, "view", col.name)
+		return nil
+	}
+	spec := bson.M{"viewOn": viewOn, "pipeline": col.options["pipeline"]}
+	raw, err := bson.MarshalExtJSON(spec, true, false)
+	if err != nil {
+		return fmt.Errorf("encode view %s: %w", col.name, err)
+	}
+	fmt.Fprintf(w, "// View: %s\n", col.name)
+	fmt.Fprintf(w, "db.%s.createView(%s)\n\n", col.name, string(raw))
 	return nil
 }
 
@@ -220,7 +316,7 @@ func (d *Dumper) dumpDatabase(ctx context.Context, w io.Writer, dbName string) e
 	dbStart := time.Now()
 	fmt.Fprintf(w, "\n// Database: %s\n\n", dbName)
 
-	collections, err := d.client.Database(dbName).ListCollectionNames(ctx, bson.D{})
+	collections, err := d.listCollections(ctx, dbName)
 	if err != nil {
 		return fmt.Errorf("list collections: %w", err)
 	}
@@ -229,15 +325,24 @@ func (d *Dumper) dumpDatabase(ctx context.Context, w io.Writer, dbName string) e
 
 	for _, col := range collections {
 		if d.Tables != nil {
-			included, _ := d.Tables.Apply(col)
+			included, _ := d.Tables.Apply(col.name)
 			if !included {
 				log.Trace("mongo", "collection excluded by filter",
-					"database", dbName, "collection", col)
+					"database", dbName, "collection", col.name)
 				continue
 			}
 		}
-		common.TraceTable(ctx, dbName, col)
-		if err := d.dumpCollection(ctx, w, dbName, col); err != nil {
+		common.TraceTable(ctx, dbName, col.name)
+		if col.kind == "view" {
+			if err := d.dumpView(w, dbName, col); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := d.dumpCollectionOptions(w, dbName, col); err != nil {
+			return err
+		}
+		if err := d.dumpCollection(ctx, w, dbName, col.name); err != nil {
 			return err
 		}
 	}
@@ -248,60 +353,10 @@ func (d *Dumper) dumpDatabase(ctx context.Context, w io.Writer, dbName string) e
 	return nil
 }
 
-func escapeJSON(s string) string {
-	s = strings.ReplaceAll(s, "\\", "\\\\")
-	s = strings.ReplaceAll(s, "\"", "\\\"")
-	s = strings.ReplaceAll(s, "\n", "\\n")
-	s = strings.ReplaceAll(s, "\r", "\\r")
-	s = strings.ReplaceAll(s, "\t", "\\t")
-	return s
-}
-
 func isSystemDB(name string) bool {
 	switch name {
 	case "admin", "config", "local":
 		return true
 	}
 	return false
-}
-
-func mongoValue(v any) string {
-	switch val := v.(type) {
-	case nil:
-		return "null"
-	case string:
-		return fmt.Sprintf("\"%s\"", escapeJSON(val))
-	case bool:
-		if val {
-			return "true"
-		}
-		return "false"
-	case int, int32, int64:
-		return fmt.Sprintf("%d", val)
-	case float64:
-		return fmt.Sprintf("%v", val)
-	case primitive.ObjectID:
-		return fmt.Sprintf("ObjectId(\"%s\")", val.Hex())
-	case primitive.DateTime:
-		t := time.UnixMilli(int64(val))
-		return fmt.Sprintf("ISODate(\"%s\")", t.Format("2006-01-02T15:04:05.000Z"))
-	case primitive.A:
-		var items []string
-		for _, item := range val {
-			items = append(items, mongoValue(item))
-		}
-		return "[" + strings.Join(items, ", ") + "]"
-	case primitive.M:
-		return bsonToJSON(bson.M(val))
-	case map[string]any:
-		return bsonToJSON(val)
-	case []any:
-		var items []string
-		for _, item := range val {
-			items = append(items, mongoValue(item))
-		}
-		return "[" + strings.Join(items, ", ") + "]"
-	default:
-		return fmt.Sprintf("\"%v\"", escapeJSON(fmt.Sprintf("%v", v)))
-	}
 }

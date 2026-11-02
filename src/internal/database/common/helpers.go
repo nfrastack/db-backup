@@ -55,6 +55,12 @@ func SplitRedisArgs(s string) []string {
 	inQuote := false
 	for i := 0; i < len(s); i++ {
 		c := s[i]
+		if inQuote && c == '\\' && i+1 < len(s) {
+			cur.WriteByte(c)
+			i++
+			cur.WriteByte(s[i])
+			continue
+		}
 		if c == '"' {
 			inQuote = !inQuote
 			cur.WriteByte(c)
@@ -100,7 +106,27 @@ func UnquoteRedisArg(s string) string {
 	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
 		s = s[1 : len(s)-1]
 	}
-	s = strings.ReplaceAll(s, "\\\"", "\"")
-	s = strings.ReplaceAll(s, "\\\\", "\\")
-	return s
+	var out strings.Builder
+	out.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) {
+			i++
+			switch s[i] {
+			case '\\':
+				out.WriteByte('\\')
+			case '"':
+				out.WriteByte('"')
+			case 'n':
+				out.WriteByte('\n')
+			case 'r':
+				out.WriteByte('\r')
+			default:
+				out.WriteByte('\\')
+				out.WriteByte(s[i])
+			}
+			continue
+		}
+		out.WriteByte(s[i])
+	}
+	return out.String()
 }

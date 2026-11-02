@@ -81,7 +81,9 @@ func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
 		return err
 	}
 	log.Debug("sqlite", "tables listed", "path", d.path, "count", len(tables))
+	fmt.Fprintf(w, "PRAGMA foreign_keys=OFF;\nBEGIN TRANSACTION;\n\n")
 
+	rowsByTable := make(map[string]int, len(tables))
 	var totalRows int
 	for _, table := range tables {
 		if d.Tables != nil {
@@ -96,10 +98,22 @@ func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
 		if err != nil {
 			return fmt.Errorf("dump %s: %w", table, err)
 		}
+		rowsByTable[table] = n
 		totalRows += n
 	}
+	if err := d.dumpQueryStats(w, rowsByTable); err != nil {
+		return err
+	}
+	if err := d.dumpSequences(w, rowsByTable); err != nil {
+		return err
+	}
+	extras, err := d.dumpSchemaObjects(w)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(w, "COMMIT;\n")
 	log.Debug("sqlite", "backup done",
-		"path", d.path, "tables", len(tables), "rows", totalRows,
+		"path", d.path, "tables", len(tables), "rows", totalRows, "extras", extras,
 		"elapsed", time.Since(start).Round(time.Millisecond).String())
 	return nil
 }
@@ -189,20 +203,55 @@ func (d *Dumper) dumpTable(w io.Writer, table string) (int, error) {
 		return 0, nil
 	}
 
-	rows, err := d.db.QueryContext(ctx, "SELECT * FROM "+quoteSQLiteIdent(table))
+	colRows, err := d.db.QueryContext(ctx, "SELECT * FROM "+quoteSQLiteIdent(table)+" LIMIT 0")
+	if err != nil {
+		return 0, fmt.Errorf("select: %w", err)
+	}
+	cols, err := colRows.Columns()
+	colRows.Close()
+	if err != nil {
+		return 0, fmt.Errorf("columns: %w", err)
+	}
+	genRows, err := d.db.QueryContext(ctx, "SELECT name FROM pragma_table_xinfo('"+strings.ReplaceAll(table, "'", "''")+"') WHERE hidden IN (2, 3)")
+	if err != nil {
+		return 0, fmt.Errorf("generated columns: %w", err)
+	}
+	generated := map[string]bool{}
+	for genRows.Next() {
+		var g string
+		if err := genRows.Scan(&g); err != nil {
+			genRows.Close()
+			return 0, fmt.Errorf("scan generated column: %w", err)
+		}
+		generated[g] = true
+	}
+	genRows.Close()
+	if err := genRows.Err(); err != nil {
+		return 0, fmt.Errorf("generated columns: %w", err)
+	}
+	insertCols := make([]string, 0, len(cols))
+	for _, c := range cols {
+		if !generated[c] {
+			insertCols = append(insertCols, c)
+		}
+	}
+	if len(insertCols) == 0 {
+		return d.dumpDefaultRows(w, table)
+	}
+	quoted := make([]string, len(insertCols))
+	for i, c := range insertCols {
+		quoted[i] = "quote(" + quoteSQLiteIdent(c) + ")"
+	}
+	rows, err := d.db.QueryContext(ctx, "SELECT "+strings.Join(quoted, ", ")+" FROM "+quoteSQLiteIdent(table))
 	if err != nil {
 		return 0, fmt.Errorf("select: %w", err)
 	}
 	defer rows.Close()
 
-	cols, err := rows.Columns()
-	if err != nil {
-		return 0, fmt.Errorf("columns: %w", err)
-	}
 	var rowCount int
 	for rows.Next() {
-		vals := make([]any, len(cols))
-		valPtrs := make([]any, len(cols))
+		vals := make([]sql.NullString, len(insertCols))
+		valPtrs := make([]any, len(insertCols))
 		for i := range vals {
 			valPtrs[i] = &vals[i]
 		}
@@ -211,8 +260,8 @@ func (d *Dumper) dumpTable(w io.Writer, table string) (int, error) {
 		}
 
 		if rowCount == 0 {
-			qCols := make([]string, len(cols))
-			for i, c := range cols {
+			qCols := make([]string, len(insertCols))
+			for i, c := range insertCols {
 				qCols[i] = quoteSQLiteIdent(c)
 			}
 			fmt.Fprintf(w, "INSERT INTO %s (%s) VALUES\n", quoteSQLiteIdent(table), strings.Join(qCols, ", "))
@@ -220,27 +269,12 @@ func (d *Dumper) dumpTable(w io.Writer, table string) (int, error) {
 			fmt.Fprintf(w, ",\n")
 		}
 
-		var parts []string
-		for _, v := range vals {
-			switch val := v.(type) {
-			case nil:
-				parts = append(parts, "NULL")
-			case []byte:
-				parts = append(parts, fmt.Sprintf("x'%x'", val))
-			case int64:
-				parts = append(parts, fmt.Sprintf("%d", val))
-			case float64:
-				parts = append(parts, fmt.Sprintf("%v", val))
-			case bool:
-				if val {
-					parts = append(parts, "1")
-				} else {
-					parts = append(parts, "0")
-				}
-			case string:
-				parts = append(parts, fmt.Sprintf("'%s'", escapeSQLite(val)))
-			default:
-				parts = append(parts, fmt.Sprintf("'%s'", escapeSQLite(fmt.Sprintf("%v", val))))
+		parts := make([]string, len(insertCols))
+		for i, v := range vals {
+			if v.Valid {
+				parts[i] = v.String
+			} else {
+				parts[i] = "NULL"
 			}
 		}
 		fmt.Fprintf(w, "(%s)", strings.Join(parts, ", "))
@@ -258,9 +292,161 @@ func (d *Dumper) dumpTable(w io.Writer, table string) (int, error) {
 	return rowCount, nil
 }
 
-func escapeSQLite(s string) string {
-	s = strings.ReplaceAll(s, "'", "''")
-	return s
+func (d *Dumper) dumpDefaultRows(w io.Writer, table string) (int, error) {
+	rows, err := d.db.QueryContext(d.ctxOrBg(), "SELECT 1 FROM "+quoteSQLiteIdent(table))
+	if err != nil {
+		return 0, fmt.Errorf("select: %w", err)
+	}
+	defer rows.Close()
+	var rowCount int
+	for rows.Next() {
+		fmt.Fprintf(w, "INSERT INTO %s DEFAULT VALUES;\n", quoteSQLiteIdent(table))
+		rowCount++
+	}
+	if rowCount > 0 {
+		fmt.Fprintf(w, "\n")
+	}
+	if err := rows.Err(); err != nil {
+		return rowCount, err
+	}
+	log.Trace("sqlite", "table done",
+		"table", table, "rows", rowCount)
+	return rowCount, nil
+}
+
+func (d *Dumper) dumpQueryStats(w io.Writer, rowsByTable map[string]int) error {
+	var one int
+	if err := d.db.QueryRowContext(d.ctxOrBg(), "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sqlite_stat1'").Scan(&one); err != nil {
+		return nil
+	}
+	rows, err := d.db.QueryContext(d.ctxOrBg(), "SELECT tbl, quote(tbl), quote(idx), quote(stat) FROM sqlite_stat1 ORDER BY rowid")
+	if err != nil {
+		return fmt.Errorf("read query stats: %w", err)
+	}
+	defer rows.Close()
+	var lines []string
+	for rows.Next() {
+		var tbl sql.NullString
+		var qtbl, qidx, qstat string
+		if err := rows.Scan(&tbl, &qtbl, &qidx, &qstat); err != nil {
+			return fmt.Errorf("scan query stat row: %w", err)
+		}
+		if tbl.Valid {
+			if _, ok := rowsByTable[tbl.String]; !ok {
+				continue
+			}
+		}
+		lines = append(lines, "INSERT INTO sqlite_stat1 (tbl, idx, stat) VALUES ("+qtbl+", "+qidx+", "+qstat+");")
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(lines) == 0 {
+		return nil
+	}
+	fmt.Fprintf(w, "ANALYZE sqlite_schema;\nDELETE FROM sqlite_stat1;\n")
+	for _, l := range lines {
+		fmt.Fprintf(w, "%s\n", l)
+	}
+	fmt.Fprintf(w, "\n")
+	return nil
+}
+
+func (d *Dumper) dumpSequences(w io.Writer, rowsByTable map[string]int) error {
+	var one int
+	if err := d.db.QueryRowContext(d.ctxOrBg(), "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sqlite_sequence'").Scan(&one); err != nil {
+		return nil
+	}
+	rows, err := d.db.QueryContext(d.ctxOrBg(), "SELECT name, seq FROM sqlite_sequence ORDER BY name")
+	if err != nil {
+		return fmt.Errorf("read sequences: %w", err)
+	}
+	defer rows.Close()
+	var lines []string
+	for rows.Next() {
+		var name string
+		var seq int64
+		if err := rows.Scan(&name, &seq); err != nil {
+			return fmt.Errorf("scan sequence row: %w", err)
+		}
+		if rowsByTable[name] == 0 {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("UPDATE sqlite_sequence SET seq=%d WHERE name='%s';", seq, strings.ReplaceAll(name, "'", "''")))
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, l := range lines {
+		fmt.Fprintf(w, "%s\n", l)
+	}
+	if len(lines) > 0 {
+		fmt.Fprintf(w, "\n")
+	}
+	return nil
+}
+
+func (d *Dumper) dumpSchemaObjects(w io.Writer) (int, error) {
+	rows, err := d.db.QueryContext(d.ctxOrBg(), "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE type IN ('index', 'view', 'trigger') AND sql IS NOT NULL ORDER BY rowid")
+	if err != nil {
+		return 0, fmt.Errorf("list schema objects: %w", err)
+	}
+	defer rows.Close()
+	var count int
+	for rows.Next() {
+		var typ, name, tbl, objSQL string
+		if err := rows.Scan(&typ, &name, &tbl, &objSQL); err != nil {
+			return count, fmt.Errorf("scan schema object row: %w", err)
+		}
+		if d.Tables != nil {
+			included, _ := d.Tables.Apply(tbl)
+			if !included {
+				log.Trace("sqlite", "schema object excluded by filter", "type", typ, "name", name)
+				continue
+			}
+		}
+		common.TraceTable(d.ctxOrBg(), "", name)
+		switch typ {
+		case "index":
+			fmt.Fprintf(w, "DROP INDEX IF EXISTS %s;\n", quoteSQLiteIdent(name))
+		case "view":
+			fmt.Fprintf(w, "DROP VIEW IF EXISTS %s;\n", quoteSQLiteIdent(name))
+		case "trigger":
+			fmt.Fprintf(w, "DROP TRIGGER IF EXISTS %s;\n", quoteSQLiteIdent(name))
+		default:
+			continue
+		}
+		fmt.Fprintf(w, "%s;\n\n", strings.TrimSuffix(strings.TrimSpace(objSQL), ";"))
+		count++
+	}
+	return count, rows.Err()
+}
+
+func (d *Dumper) shadowTables() (map[string]bool, error) {
+	rows, err := d.db.QueryContext(d.ctxOrBg(), "SELECT name, sql FROM sqlite_master WHERE type='table'")
+	if err != nil {
+		return nil, fmt.Errorf("list virtual tables: %w", err)
+	}
+	defer rows.Close()
+	suffixes := []string{"_data", "_idx", "_content", "_docsize", "_config", "_segments", "_segdir", "_stat", "_node", "_rowid", "_parent"}
+	out := map[string]bool{}
+	for rows.Next() {
+		var name string
+		var createSQL sql.NullString
+		if err := rows.Scan(&name, &createSQL); err != nil {
+			return nil, fmt.Errorf("scan virtual table row: %w", err)
+		}
+		if !createSQL.Valid {
+			continue
+		}
+		if !strings.HasPrefix(strings.ToUpper(strings.TrimSpace(createSQL.String)), "CREATE VIRTUAL TABLE") {
+			continue
+		}
+		for _, s := range suffixes {
+			out[name+s] = true
+		}
+	}
+	return out, rows.Err()
 }
 
 func (d *Dumper) listTables() ([]string, error) {
@@ -277,7 +463,22 @@ func (d *Dumper) listTables() ([]string, error) {
 		}
 		tables = append(tables, t)
 	}
-	return tables, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	shadows, err := d.shadowTables()
+	if err != nil {
+		return nil, err
+	}
+	kept := tables[:0]
+	for _, t := range tables {
+		if shadows[t] {
+			log.Trace("sqlite", "shadow table skipped", "table", t)
+			continue
+		}
+		kept = append(kept, t)
+	}
+	return kept, nil
 }
 func quoteSQLiteIdent(s string) string {
 	return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`

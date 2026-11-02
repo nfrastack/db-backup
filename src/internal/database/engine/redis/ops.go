@@ -165,6 +165,15 @@ func restoreLine(ctx context.Context, rdb *redis.Client, parts []string) error {
 			vals[args[i]] = args[i+1]
 		}
 		return rdb.XAdd(ctx, &redis.XAddArgs{Stream: args[0], ID: args[1], Values: vals}).Err()
+	case "RESTOREBLOB":
+		if len(args) != 2 {
+			return fmt.Errorf("RESTOREBLOB needs key and payload")
+		}
+		blob, err := decodeRestoreBlob(args[1])
+		if err != nil {
+			return err
+		}
+		return rdb.Do(ctx, "RESTORE", args[0], 0, blob, "REPLACE").Err()
 	case "XGROUP":
 		if len(args) < 4 || !strings.EqualFold(args[0], "CREATE") {
 			return fmt.Errorf("XGROUP only supports CREATE key group id [MKSTREAM]")

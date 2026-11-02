@@ -7,9 +7,9 @@ package mongo
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 
 	"go.mongodb.org/mongo-driver/bson"
@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	mongoMaxLineBytes     = 16 * 1024 * 1024
+	mongoMaxLineBytes     = 64 * 1024 * 1024
 	mongoRestoreBatchSize = 1000
 )
 
@@ -84,6 +84,7 @@ func Restore(r io.Reader, host string, port int, user, pass, dbName, authSource 
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 64*1024), mongoMaxLineBytes)
 	var collection string
+	var lineNo int
 	batcher := &docBatcher{size: mongoRestoreBatchSize}
 	inInsert := false
 	insert := func(docs []bson.M) error {
@@ -97,8 +98,30 @@ func Restore(r io.Reader, host string, port int, user, pass, dbName, authSource 
 	}
 
 	for scanner.Scan() {
+		lineNo++
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, "//") {
+			continue
+		}
+
+		if strings.HasPrefix(line, "db.") && strings.Contains(line, ".createCollection(") {
+			if err := createCollectionLine(ctx, client, firstDB, line); err != nil {
+				return err
+			}
+			continue
+		}
+
+		if strings.HasPrefix(line, "db.") && strings.Contains(line, ".createView(") {
+			if err := createViewLine(ctx, client, firstDB, line); err != nil {
+				return err
+			}
+			continue
+		}
+
+		if strings.HasPrefix(line, "db.") && strings.Contains(line, ".createIndexes([") {
+			if err := createIndexesLine(ctx, client, firstDB, line); err != nil {
+				return err
+			}
 			continue
 		}
 
@@ -131,7 +154,13 @@ func Restore(r io.Reader, host string, port int, user, pass, dbName, authSource 
 			}
 		}
 	}
-	return scanner.Err()
+	if err := scanner.Err(); err != nil {
+		if collection == "" {
+			return fmt.Errorf("read dump at line %d: %w", lineNo, err)
+		}
+		return fmt.Errorf("read dump at line %d (collection %s): %w", lineNo, collection, err)
+	}
+	return nil
 }
 
 type docBatcher struct {
@@ -156,6 +185,103 @@ func (b *docBatcher) take() []bson.M {
 	return full
 }
 
+func parseCreateCollectionLine(line string) (string, bson.M, error) {
+	rest := strings.TrimPrefix(line, "db.")
+	idx := strings.Index(rest, ".createCollection(")
+	if idx < 0 {
+		return "", nil, fmt.Errorf("bad createCollection line")
+	}
+	collection := rest[:idx]
+	payload := rest[idx+len(".createCollection("):]
+	if !strings.HasSuffix(payload, ")") {
+		return "", nil, fmt.Errorf("bad createCollection line")
+	}
+	var opts bson.M
+	if err := bson.UnmarshalExtJSON([]byte(payload[:len(payload)-1]), false, &opts); err != nil {
+		return "", nil, fmt.Errorf("parse collection options: %w", err)
+	}
+	return collection, opts, nil
+}
+
+func createCollectionLine(ctx context.Context, client *mongo.Client, db, line string) error {
+	collection, opts, err := parseCreateCollectionLine(line)
+	if err != nil {
+		return err
+	}
+	if len(opts) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(opts))
+	for k := range opts {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	cmd := bson.D{{Key: "create", Value: collection}}
+	for _, k := range keys {
+		cmd = append(cmd, bson.E{Key: k, Value: opts[k]})
+	}
+	return client.Database(db).RunCommand(ctx, cmd).Err()
+}
+
+func parseCreateViewLine(line string) (string, string, any, error) {
+	rest := strings.TrimPrefix(line, "db.")
+	idx := strings.Index(rest, ".createView(")
+	if idx < 0 {
+		return "", "", nil, fmt.Errorf("bad createView line")
+	}
+	view := rest[:idx]
+	payload := rest[idx+len(".createView("):]
+	if !strings.HasSuffix(payload, ")") {
+		return "", "", nil, fmt.Errorf("bad createView line")
+	}
+	var spec bson.M
+	if err := bson.UnmarshalExtJSON([]byte(payload[:len(payload)-1]), false, &spec); err != nil {
+		return "", "", nil, fmt.Errorf("parse view: %w", err)
+	}
+	viewOn, _ := spec["viewOn"].(string)
+	if viewOn == "" {
+		return "", "", nil, fmt.Errorf("bad createView line")
+	}
+	return view, viewOn, spec["pipeline"], nil
+}
+
+func createViewLine(ctx context.Context, client *mongo.Client, db, line string) error {
+	view, viewOn, pipeline, err := parseCreateViewLine(line)
+	if err != nil {
+		return err
+	}
+	return client.Database(db).RunCommand(ctx, bson.D{{Key: "create", Value: view}, {Key: "viewOn", Value: viewOn}, {Key: "pipeline", Value: pipeline}}).Err()
+}
+
+func parseCreateIndexesLine(line string) (string, []bson.M, error) {
+	rest := strings.TrimPrefix(line, "db.")
+	idx := strings.Index(rest, ".createIndexes([")
+	if idx < 0 {
+		return "", nil, fmt.Errorf("bad createIndexes line")
+	}
+	collection := rest[:idx]
+	payload := rest[idx+len(".createIndexes(["):]
+	if !strings.HasSuffix(payload, ")") {
+		return "", nil, fmt.Errorf("bad createIndexes line")
+	}
+	var specs []bson.M
+	if err := bson.UnmarshalExtJSON([]byte("["+strings.TrimSuffix(payload, ")")), false, &specs); err != nil {
+		return "", nil, fmt.Errorf("parse indexes: %w", err)
+	}
+	return collection, specs, nil
+}
+
+func createIndexesLine(ctx context.Context, client *mongo.Client, db, line string) error {
+	collection, specs, err := parseCreateIndexesLine(line)
+	if err != nil {
+		return err
+	}
+	if len(specs) == 0 {
+		return nil
+	}
+	return client.Database(db).RunCommand(ctx, bson.D{{Key: "createIndexes", Value: collection}, {Key: "indexes", Value: specs}}).Err()
+}
+
 func extractCollection(line string) string {
 	rest := strings.TrimPrefix(line, "db.")
 	idx := strings.Index(rest, ".insertMany")
@@ -172,7 +298,7 @@ func parseDocLine(line string) (doc bson.M, ok bool, err error) {
 		return nil, false, nil
 	}
 	var d bson.M
-	if err := json.Unmarshal([]byte(line), &d); err != nil {
+	if err := bson.UnmarshalExtJSON([]byte(line), false, &d); err != nil {
 		return nil, false, fmt.Errorf("parse doc: %w", err)
 	}
 	return d, true, nil
