@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	mongoMaxLineBytes     = 16 * 1024 * 1024
+	mongoMaxLineBytes     = 64 * 1024 * 1024
 	mongoRestoreBatchSize = 1000
 )
 
@@ -84,6 +84,7 @@ func Restore(r io.Reader, host string, port int, user, pass, dbName, authSource 
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 64*1024), mongoMaxLineBytes)
 	var collection string
+	var lineNo int
 	batcher := &docBatcher{size: mongoRestoreBatchSize}
 	inInsert := false
 	insert := func(docs []bson.M) error {
@@ -97,6 +98,7 @@ func Restore(r io.Reader, host string, port int, user, pass, dbName, authSource 
 	}
 
 	for scanner.Scan() {
+		lineNo++
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, "//") {
 			continue
@@ -152,7 +154,13 @@ func Restore(r io.Reader, host string, port int, user, pass, dbName, authSource 
 			}
 		}
 	}
-	return scanner.Err()
+	if err := scanner.Err(); err != nil {
+		if collection == "" {
+			return fmt.Errorf("read dump at line %d: %w", lineNo, err)
+		}
+		return fmt.Errorf("read dump at line %d (collection %s): %w", lineNo, collection, err)
+	}
+	return nil
 }
 
 type docBatcher struct {
