@@ -1,6 +1,7 @@
 ## dev <code at nfrastack dot com>
 
    ### Changed
+     - run pre hooks for unsplit database jobs
      - dump modifications
        - (postgres) fix dictoptions failure introduced in 5.0.8
        - (postgres) skip ephmeral schemas in default priveleges

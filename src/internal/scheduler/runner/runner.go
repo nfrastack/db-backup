@@ -157,11 +157,12 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 		return LogFail(job, "backup failed", "tls", err)
 	}
 
-	if !job.SplitDB {
+	splitting := job.SplitDB && job.Databases != nil && shouldSplitDatabases(job.Databases.Include)
+	if !splitting {
 		RunHooks(job, "pre", "backup", dbName, nil)
 	}
 
-	if job.SplitDB && job.Databases != nil && shouldSplitDatabases(job.Databases.Include) {
+	if splitting {
 		dbs := splitDatabaseList(job.Databases.Include)
 		if hasAllToken(job.Databases.Include) {
 			JLog(log.LevelDebug, job, "listing databases",
