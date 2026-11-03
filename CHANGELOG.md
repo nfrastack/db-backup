@@ -1,3 +1,9 @@
+## dev <code at nfrastack dot com>
+
+   ### Changed
+     - dump modifications
+       - (postgres) fix dictoptions failure introduced in 5.0.8
+
 ## 5.0.8 2026-11-03 <code at nfrastack dot com>
 
    ### Changed

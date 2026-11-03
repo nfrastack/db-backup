@@ -1550,9 +1550,13 @@ func buildTextSearchTemplate(schema, name, lexize string) string {
 		quotePGIdent(schema), quotePGIdent(name), quotePGIdent(schema), quotePGIdent(name), lexize)
 }
 
-func buildTextSearchDictionary(schema, name, template string, opts []optionPair) string {
+func buildTextSearchDictionary(schema, name, template, initoption string) string {
+	opts := ""
+	if strings.TrimSpace(initoption) != "" {
+		opts = ", " + strings.TrimSpace(initoption)
+	}
 	return fmt.Sprintf("DROP TEXT SEARCH DICTIONARY IF EXISTS %s.%s;\nCREATE TEXT SEARCH DICTIONARY %s.%s (TEMPLATE = %s%s);",
-		quotePGIdent(schema), quotePGIdent(name), quotePGIdent(schema), quotePGIdent(name), template, buildOptionsClause(opts))
+		quotePGIdent(schema), quotePGIdent(name), quotePGIdent(schema), quotePGIdent(name), template, opts)
 }
 
 func buildTextSearchConfiguration(schema, name, parser string, mappings []string) string {
@@ -1626,51 +1630,31 @@ func (d *Dumper) dumpTextSearch(w io.Writer, dbName string) error {
 		return err
 	}
 	dicts, err := d.conn.Query(d.ctxOrBg(),
-		"SELECT n.nspname, dd.dictname, tn.nspname, t.tmplname, o.option_name, o.option_value, dd.oid FROM pg_catalog.pg_ts_dict dd "+
+		"SELECT n.nspname, dd.dictname, tn.nspname, t.tmplname, dd.dictinitoption FROM pg_catalog.pg_ts_dict dd "+
 			"JOIN pg_catalog.pg_namespace n ON n.oid = dd.dictnamespace "+
 			"JOIN pg_catalog.pg_ts_template t ON t.oid = dd.dicttemplate "+
 			"JOIN pg_catalog.pg_namespace tn ON tn.oid = t.tmplnamespace "+
-			"LEFT JOIN LATERAL pg_catalog.pg_options_to_table(dd.dictoptions) o ON true "+
 			"WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dx WHERE dx.objid = dd.oid AND dx.deptype = 'e') "+
-			"ORDER BY n.nspname, dd.dictname, o.option_name")
+			"ORDER BY n.nspname, dd.dictname")
 	if err != nil {
 		return fmt.Errorf("text search dictionaries: %w", err)
 	}
 	defer dicts.Close()
-	type dictDef struct {
-		schema, name, template string
-		opts                   []optionPair
-	}
-	var dictOrder []string
-	dictDefs := map[string]*dictDef{}
 	for dicts.Next() {
 		var schema, name, tschema, tmpl string
-		var optName, optValue sql.NullString
-		var oid int64
-		if err := dicts.Scan(&schema, &name, &tschema, &tmpl, &optName, &optValue, &oid); err != nil {
+		var initoption sql.NullString
+		if err := dicts.Scan(&schema, &name, &tschema, &tmpl, &initoption); err != nil {
 			return fmt.Errorf("scan text search dictionary: %w", err)
 		}
-		key := schema + "." + name
-		dd, ok := dictDefs[key]
-		if !ok {
-			dd = &dictDef{schema: schema, name: name, template: quotePGIdent(tschema) + "." + quotePGIdent(tmpl)}
-			dictDefs[key] = dd
-			dictOrder = append(dictOrder, key)
-		}
-		if optName.Valid {
-			val := ""
-			if optValue.Valid {
-				val = optValue.String
+		opt := ""
+		if initoption.Valid {
+			opt = initoption.String
 			}
-			dd.opts = append(dd.opts, optionPair{name: optName.String, value: val})
-		}
+		fmt.Fprintf(w, "\n-- Text search dictionary: %s.%s\n%s\n", schema, name,
+			buildTextSearchDictionary(schema, name, quotePGIdent(tschema)+"."+quotePGIdent(tmpl), opt))
 	}
 	if err := dicts.Err(); err != nil {
 		return err
-	}
-	for _, key := range dictOrder {
-		dd := dictDefs[key]
-		fmt.Fprintf(w, "\n-- Text search dictionary: %s\n%s\n", key, buildTextSearchDictionary(dd.schema, dd.name, dd.template, dd.opts))
 	}
 	configs, err := d.conn.Query(d.ctxOrBg(),
 		"SELECT n.nspname, c.cfgname, pn.nspname, p.prsname, c.oid FROM pg_catalog.pg_ts_config c "+
