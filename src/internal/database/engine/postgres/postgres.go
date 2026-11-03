@@ -589,6 +589,7 @@ func (d *Dumper) dumpDefaultPrivileges(w io.Writer, dbName string) error {
 			"FROM pg_catalog.pg_default_acl d "+
 			"LEFT JOIN pg_catalog.pg_namespace n ON n.oid = d.defaclnamespace "+
 			"CROSS JOIN LATERAL aclexplode(d.defaclacl) x "+
+			"WHERE n.oid IS NULL OR (n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname NOT LIKE 'pg\\_%') "+
 			"ORDER BY 1, 2, 3, 5")
 	if err != nil {
 		return fmt.Errorf("query default privileges: %w", err)

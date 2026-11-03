@@ -3,6 +3,7 @@
    ### Changed
      - dump modifications
        - (postgres) fix dictoptions failure introduced in 5.0.8
+       - (postgres) skip ephmeral schemas in default priveleges
        - (postgres) quote role names once in grants and owners
 
 ## 5.0.8 2026-11-03 <code at nfrastack dot com>
