@@ -374,6 +374,7 @@ dbbackup_generate_configuration() {
         port="$(_dbbackup_getv "${inst}" PORT "")"
         influx_version="$(_dbbackup_getv "${inst}" INFLUX_VERSION "")"
         influx_mode="$(_dbbackup_getv "${inst}" INFLUX_MODE "")"
+        mssql_mode="$(_dbbackup_getv "${inst}" MSSQL_MODE "")"
         auth_source="$(_dbbackup_getv "${inst}" AUTH_SOURCE "")"
         legacy_auth="$(_dbbackup_getv "${inst}" AUTH "")"
         if [ -z "${auth_source}" ] && [ -n "${legacy_auth}" ]; then
@@ -412,6 +413,10 @@ dbbackup_generate_configuration() {
         if [ -n "${influx_mode}" ]; then
             DBB_INFLUX_MODE="${influx_mode,,}"
             yq -i '.profiles.connections[strenv(DBB_REF)].influx_mode = strenv(DBB_INFLUX_MODE)' "${CONFIG_FILE_PATH}"
+        fi
+        if [ -n "${mssql_mode}" ]; then
+            DBB_MSSQL_MODE="${mssql_mode,,}"
+            yq -i '.profiles.connections[strenv(DBB_REF)].mssql_mode = strenv(DBB_MSSQL_MODE)' "${CONFIG_FILE_PATH}"
         fi
         if [ -n "${auth_source}" ]; then
             DBB_AUTH_SOURCE="$auth_source"

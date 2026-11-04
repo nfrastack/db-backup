@@ -27,7 +27,9 @@ ARG \
     DBBACKUP_VERSION \
     DBBACKUP_COMMIT \
     DBBACKUP_CHANNEL="auto" \
-    GOLANG_VERSION="1.26.10"
+    DOTNET_VERSION="8.0.413" \
+    GOLANG_VERSION="1.26.10" \
+    SQLPACKAGE_VERSION="170.1.61"
 
 HEALTHCHECK \
                 --interval=30s \
@@ -43,6 +45,16 @@ COPY / /usr/src/db-backup/
 RUN echo "" && \
     DBBACKUP_BUILD_DEPS_ALPINE=" \
                                     make \
+                                " \
+                                && \
+    DBBACKUP_RUN_DEPS_ALPINE=" \
+                                    icu-libs \
+                                    krb5-libs \
+                                    libgcc \
+                                    libintl \
+                                    libssl3 \
+                                    libstdc++ \
+                                    zlib \
                                 " \
                                 && \
     dbbver="${DBBACKUP_VERSION}"; \
@@ -76,6 +88,7 @@ RUN echo "" && \
     package upgrade && \
     package install \
                     DBBACKUP_BUILD_DEPS \
+                    DBBACKUP_RUN_DEPS \
                     && \
     \
     package build go buildtime && \
@@ -96,6 +109,18 @@ RUN echo "" && \
     cp -R contrib/config/dbbackup.yaml.example /container/data/db-backup/dbbackup.yaml.example && \
     \
     cp -aR /usr/src/db-backup/container/rootfs/* / && \
+    \
+    curl -sSL https://dot.net/v1/dotnet-install.sh | bash /dev/stdin --version ${DOTNET_VERSION} --install-dir /usr/share/dotnet && \
+    /usr/share/dotnet/dotnet tool install Microsoft.SqlPackage --version ${SQLPACKAGE_VERSION} --tool-path /opt/sqlpackage && \
+    rm -rf \
+            /opt/sqlpackage/.store/microsoft.sqlpackage/*/microsoft.sqlpackage/*/*.nupkg \
+            /usr/share/dotnet/packs \
+            /usr/share/dotnet/sdk \
+            /usr/share/dotnet/sdk-manifests \
+            /usr/share/dotnet/shared/Microsoft.AspNetCore.App \
+            /usr/share/dotnet/templates \
+            && \
+    ln -s /opt/sqlpackage/sqlpackage /usr/local/bin/sqlpackage && \
     \
     container_build_log add "DB Backup" "${dbbver}" "${IMAGE_REPO_URL}" && \
     package remove DBBACKUP_BUILD_DEPS && \

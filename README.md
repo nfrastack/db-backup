@@ -19,6 +19,10 @@ db-backup is a cross platform tool that backs up, restores, verifies, and mainta
 - Maintenance  analyze, optimize, vacuum, reindex, compact, memory purge on succesful backup or independently.
 - Hooks & observability - pre/post hooks, live progress, detailed logging via text or json
 
+### SQL Server with sqlpackage (fork addition)
+
+Set `DB01_MSSQL_MODE=sqlpackage` (or `mssql_mode: sqlpackage` on a connection or job) to back up one SQL Server database per job as a `.dacpac` with `sqlpackage /Action:Extract`, schema and data included. The file keeps the `.sql` extension so retention still matches it. `restore` recognises the dacpac and publishes it with `sqlpackage /Action:Publish` into the target database.
+
 Most features work out of the box in the free Community edition. Some advanced features require a [Supporter license](https://nfrastack.com/db-backup/editions).
 
 ## Get Started

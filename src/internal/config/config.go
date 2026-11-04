@@ -84,6 +84,7 @@ type ConnConfig struct {
 	Pass         string              `yaml:"pass"`
 	Version      int                 `yaml:"version,omitempty"`
 	InfluxMode   string              `yaml:"influx_mode,omitempty"`
+	MssqlMode    string              `yaml:"mssql_mode,omitempty"`
 	Connectivity *ConnectivityConfig `yaml:"connectivity,omitempty"`
 	TLS          *TLSConfig          `yaml:"tls,omitempty"`
 	AuthSource   string              `yaml:"auth_source,omitempty"`
@@ -716,6 +717,9 @@ func (c *Config) resolveJob(job *JobConfig) {
 						}
 						if job.InfluxMode == "" && !job.unsetKey("influx_mode") {
 							job.InfluxMode = conn.InfluxMode
+						}
+						if job.MssqlMode == "" && !job.unsetKey("mssql_mode") {
+							job.MssqlMode = conn.MssqlMode
 						}
 						if job.AuthSource == "" && !job.unsetKey("auth_source") {
 							job.AuthSource = conn.AuthSource
