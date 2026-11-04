@@ -5,6 +5,7 @@
      - dump modifications
        - (postgres) exclude system text search objects
        - (postgres) fix dictoptions failure introduced in 5.0.8
+       - (postgres) fix for grabbing partitions OF
        - (postgres) scan oids as uint32 for binary protocol
        - (postgres) skip ephmeral schemas in default priveleges
        - (postgres) quote role names once in grants and owners

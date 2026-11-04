@@ -3678,6 +3678,9 @@ func (d *Dumper) getCreateTable(schema, table string) (string, error) {
 	if checkSQL, err := d.getCheckConstraints(schema, table); err == nil {
 		sb.WriteString("\n" + checkSQL)
 	}
+	if partSQL, err := d.getPartitions(schema, table); err == nil && partSQL != "" {
+		sb.WriteString("\n" + partSQL)
+	}
 
 	return sb.String(), nil
 }
@@ -3823,6 +3826,32 @@ func (d *Dumper) getIndexes(schema, table string) (string, error) {
 		sb.WriteString(idxDef + ";\n")
 	}
 	return sb.String(), rows.Err()
+}
+
+func (d *Dumper) getPartitions(schema, table string) (string, error) {
+	rows, err := d.conn.Query(d.ctxOrBg(),
+		"SELECT n.nspname, c.relname, pg_catalog.pg_get_expr(c.relpartbound, c.oid) "+
+			"FROM pg_catalog.pg_inherits i "+
+			"JOIN pg_catalog.pg_class c ON c.oid = i.inhrelid "+
+			"JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "+
+			"JOIN pg_catalog.pg_class p ON p.oid = i.inhparent "+
+			"JOIN pg_catalog.pg_namespace pn ON pn.oid = p.relnamespace "+
+			"WHERE pn.nspname = $1 AND p.relname = $2 ORDER BY c.relname",
+		schema, table)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	var sb strings.Builder
+	for rows.Next() {
+		var cschema, cname, bound string
+		if err := rows.Scan(&cschema, &cname, &bound); err != nil {
+			return "", err
+		}
+		fmt.Fprintf(&sb, "CREATE TABLE %s.%s PARTITION OF %s.%s %s;\n",
+			quotePGIdent(cschema), quotePGIdent(cname), quotePGIdent(schema), quotePGIdent(table), bound)
+	}
+	return strings.TrimRight(sb.String(), "\n"), rows.Err()
 }
 
 func (d *Dumper) getPartitionInfo(schema, table string) (string, error) {
