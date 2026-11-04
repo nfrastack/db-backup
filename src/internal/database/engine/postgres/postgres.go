@@ -1739,8 +1739,9 @@ func (d *Dumper) dumpCasts(w io.Writer, dbName string) error {
 			"FROM pg_catalog.pg_cast c "+
 			"LEFT JOIN pg_catalog.pg_proc p ON p.oid = c.castfunc "+
 			"LEFT JOIN pg_catalog.pg_namespace fn ON fn.oid = p.pronamespace "+
-			"WHERE (c.castfunc <> 0 AND fn.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')) "+
-			"OR (c.castfunc = 0 AND EXISTS (SELECT 1 FROM pg_catalog.pg_type t JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace WHERE t.oid IN (c.castsource, c.casttarget) AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast'))) "+
+			"WHERE ((c.castfunc <> 0 AND fn.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')) "+
+			"OR (c.castfunc = 0 AND EXISTS (SELECT 1 FROM pg_catalog.pg_type t JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace WHERE t.oid IN (c.castsource, c.casttarget) AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')))) "+
+			"AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = c.oid AND dd.deptype IN ('e', 'i')) "+
 			"ORDER BY 1, 2")
 	if err != nil {
 		return fmt.Errorf("casts: %w", err)
