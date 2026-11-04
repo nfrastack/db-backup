@@ -1583,7 +1583,7 @@ func (d *Dumper) dumpTextSearch(w io.Writer, dbName string) error {
 			"JOIN pg_catalog.pg_proc ep ON ep.oid = p.prsend JOIN pg_catalog.pg_namespace es ON es.oid = ep.pronamespace "+
 			"JOIN pg_catalog.pg_proc dp ON dp.oid = p.prsheadline JOIN pg_catalog.pg_namespace ds ON ds.oid = dp.pronamespace "+
 			"JOIN pg_catalog.pg_proc lp ON lp.oid = p.prslextype JOIN pg_catalog.pg_namespace ls ON ls.oid = lp.pronamespace "+
-			"WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = p.oid AND dd.deptype = 'e') "+
+			"WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = p.oid AND dd.deptype = 'e') AND n.nspname NOT IN ('pg_catalog', 'information_schema') "+
 			"ORDER BY n.nspname, p.prsname")
 	if err != nil {
 		return fmt.Errorf("text search parsers: %w", err)
@@ -1613,7 +1613,7 @@ func (d *Dumper) dumpTextSearch(w io.Writer, dbName string) error {
 		"SELECT n.nspname, t.tmplname, ln.nspname, p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) "+
 			"FROM pg_catalog.pg_ts_template t JOIN pg_catalog.pg_namespace n ON n.oid = t.tmplnamespace "+
 			"JOIN pg_catalog.pg_proc p ON p.oid = t.tmpllexize JOIN pg_catalog.pg_namespace ln ON ln.oid = p.pronamespace "+
-			"WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = t.oid AND dd.deptype = 'e') "+
+			"WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = t.oid AND dd.deptype = 'e') AND n.nspname NOT IN ('pg_catalog', 'information_schema') "+
 			"ORDER BY n.nspname, t.tmplname")
 	if err != nil {
 		return fmt.Errorf("text search templates: %w", err)
@@ -1635,7 +1635,7 @@ func (d *Dumper) dumpTextSearch(w io.Writer, dbName string) error {
 			"JOIN pg_catalog.pg_namespace n ON n.oid = dd.dictnamespace "+
 			"JOIN pg_catalog.pg_ts_template t ON t.oid = dd.dicttemplate "+
 			"JOIN pg_catalog.pg_namespace tn ON tn.oid = t.tmplnamespace "+
-			"WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dx WHERE dx.objid = dd.oid AND dx.deptype = 'e') "+
+			"WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dx WHERE dx.objid = dd.oid AND dx.deptype = 'e') AND n.nspname NOT IN ('pg_catalog', 'information_schema') "+
 			"ORDER BY n.nspname, dd.dictname")
 	if err != nil {
 		return fmt.Errorf("text search dictionaries: %w", err)
@@ -1662,7 +1662,7 @@ func (d *Dumper) dumpTextSearch(w io.Writer, dbName string) error {
 			"JOIN pg_catalog.pg_namespace n ON n.oid = c.cfgnamespace "+
 			"JOIN pg_catalog.pg_ts_parser p ON p.oid = c.cfgparser "+
 			"JOIN pg_catalog.pg_namespace pn ON pn.oid = p.prsnamespace "+
-			"WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = c.oid AND dd.deptype = 'e') "+
+			"WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = c.oid AND dd.deptype = 'e') AND n.nspname NOT IN ('pg_catalog', 'information_schema') "+
 			"ORDER BY n.nspname, c.cfgname")
 	if err != nil {
 		return fmt.Errorf("text search configurations: %w", err)

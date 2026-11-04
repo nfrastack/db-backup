@@ -3,6 +3,7 @@
    ### Changed
      - run pre hooks for unsplit database jobs
      - dump modifications
+       - (postgres) exclude system text search objects
        - (postgres) fix dictoptions failure introduced in 5.0.8
        - (postgres) scan oids as uint32 for binary protocol
        - (postgres) skip ephmeral schemas in default priveleges
