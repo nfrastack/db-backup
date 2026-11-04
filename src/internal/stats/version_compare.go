@@ -20,7 +20,10 @@ func IsNewer(current, candidate string) bool {
 	curCore, curTag, curOK := splitVersion(current)
 	candCore, candTag, candOK := splitVersion(candidate)
 	if !curOK || !candOK {
-		return !strings.EqualFold(strings.TrimSpace(current), strings.TrimSpace(candidate))
+		if isBranchVersion(current) {
+			return !strings.EqualFold(strings.TrimSpace(current), strings.TrimSpace(candidate))
+		}
+		return false
 	}
 	switch compareCores(curCore, candCore) {
 	case 1:
@@ -36,6 +39,17 @@ func IsNewer(current, candidate string) bool {
 	default:
 		return candTag > curTag
 	}
+}
+
+func isBranchVersion(v string) bool {
+	v = strings.ToLower(strings.TrimSpace(v))
+	for _, p := range []string{"develop-", "develop_", "dev-", "dev_",
+		"beta-", "beta_", "edge-", "edge_", "alpha-", "alpha_", "rc-", "rc_"} {
+		if strings.HasPrefix(v, p) {
+			return true
+		}
+	}
+	return false
 }
 
 func compareCores(a, b string) int {
