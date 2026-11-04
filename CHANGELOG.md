@@ -1,4 +1,4 @@
-## dev <code at nfrastack dot com>
+## 5.0.9 2026-11-04 <code at nfrastack dot com>
 
    ### Changed
      - run pre hooks for unsplit database jobs
