@@ -222,7 +222,7 @@ func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
 	log.Debug("postgres", "backup start",
 		"host", d.host, "port", d.port, "server", d.serverVer,
 		"databases", strings.Join(dbNames, ","))
-	d.writeHeader(w, dbNames)
+	d.writeHeader(w)
 
 	for _, dbName := range dbNames {
 		if strings.ToLower(dbName) == "all" {
@@ -1150,7 +1150,7 @@ func pgTagList(raw string) []string {
 	return out
 }
 
-func (d *Dumper) dumpEventTriggers(w io.Writer, dbName string) error {
+func (d *Dumper) dumpEventTriggers(w io.Writer, _ string) error {
 	rows, err := d.conn.Query(d.ctxOrBg(),
 		"SELECT e.evtname, e.evtevent, e.evttags::text, fn.nspname, p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid), e.evtenabled FROM pg_catalog.pg_event_trigger e "+
 			"JOIN pg_catalog.pg_proc p ON p.oid = e.evtfoid "+
@@ -1233,7 +1233,7 @@ func buildForeignTable(schema, name, server string, cols []foreignColumnDef, opt
 	return sb.String()
 }
 
-func (d *Dumper) dumpForeignServers(w io.Writer, dbName string) error {
+func (d *Dumper) dumpForeignServers(w io.Writer, _ string) error {
 	rows, err := d.conn.Query(d.ctxOrBg(),
 		"SELECT s.srvname, w.fdwname, r.rolname, o.option_name, o.option_value FROM pg_catalog.pg_foreign_server s "+
 			"JOIN pg_catalog.pg_foreign_data_wrapper w ON w.oid = s.srvfdw "+
@@ -1281,7 +1281,7 @@ func (d *Dumper) dumpForeignServers(w io.Writer, dbName string) error {
 	return nil
 }
 
-func (d *Dumper) dumpUserMappings(w io.Writer, dbName string) error {
+func (d *Dumper) dumpUserMappings(w io.Writer, _ string) error {
 	rows, err := d.conn.Query(d.ctxOrBg(),
 		"SELECT s.srvname, r.rolname, o.option_name, o.option_value FROM pg_catalog.pg_user_mapping u "+
 			"JOIN pg_catalog.pg_foreign_server s ON s.oid = u.umserver "+
@@ -1500,7 +1500,7 @@ func buildLanguage(name string, trusted bool, handler, inline, validator string)
 	return sb.String()
 }
 
-func (d *Dumper) dumpLanguages(w io.Writer, dbName string) error {
+func (d *Dumper) dumpLanguages(w io.Writer, _ string) error {
 	rows, err := d.conn.Query(d.ctxOrBg(),
 		"SELECT l.lanname, l.lanpltrusted, hn.nspname, p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid), "+
 			"insp.nspname, ip.proname, pg_catalog.pg_get_function_identity_arguments(ip.oid), "+
@@ -1570,7 +1570,7 @@ func buildTextSearchConfiguration(schema, name, parser string, mappings []string
 	return sb.String()
 }
 
-func (d *Dumper) dumpTextSearch(w io.Writer, dbName string) error {
+func (d *Dumper) dumpTextSearch(w io.Writer, _ string) error {
 	parsers, err := d.conn.Query(d.ctxOrBg(),
 		"SELECT n.nspname, p.prsname, hs.nspname, hp.proname, pg_catalog.pg_get_function_identity_arguments(hp.oid), "+
 			"ts.nspname, tp.proname, pg_catalog.pg_get_function_identity_arguments(tp.oid), "+
@@ -1732,7 +1732,7 @@ func buildCast(source, target, function, context string) string {
 	return sb.String()
 }
 
-func (d *Dumper) dumpCasts(w io.Writer, dbName string) error {
+func (d *Dumper) dumpCasts(w io.Writer, _ string) error {
 	rows, err := d.conn.Query(d.ctxOrBg(),
 		"SELECT pg_catalog.format_type(c.castsource, NULL), pg_catalog.format_type(c.casttarget, NULL), "+
 			"CASE WHEN c.castfunc = 0 THEN '' ELSE pg_catalog.quote_ident(fn.nspname) || '.' || pg_catalog.quote_ident(p.proname) || '(' || pg_catalog.pg_get_function_identity_arguments(p.oid) || ')' END, c.castcontext::text "+
@@ -1769,7 +1769,7 @@ func buildConversion(name, source, target, function, def string) string {
 	return sb.String()
 }
 
-func (d *Dumper) dumpConversions(w io.Writer, dbName string) error {
+func (d *Dumper) dumpConversions(w io.Writer, _ string) error {
 	rows, err := d.conn.Query(d.ctxOrBg(),
 		"SELECT c.conname, pg_catalog.pg_encoding_to_char(c.conforencoding), pg_catalog.pg_encoding_to_char(c.contoencoding), fn.nspname, p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid), c.condefault::text "+
 			"FROM pg_catalog.pg_conversion c JOIN pg_catalog.pg_proc p ON p.oid = c.conproc JOIN pg_catalog.pg_namespace fn ON fn.oid = p.pronamespace "+
@@ -1804,7 +1804,7 @@ func buildOpClassDef(name, family, method, datatype, isDefault, members string) 
 		quotePGIdent(name), quotePGIdent(method), quotePGIdent(name), datatype, quotePGIdent(method), quotePGIdent(family), members)
 }
 
-func (d *Dumper) dumpOpClasses(w io.Writer, dbName string) error {
+func (d *Dumper) dumpOpClasses(w io.Writer, _ string) error {
 	fams, err := d.conn.Query(d.ctxOrBg(),
 		"SELECT o.opfname, a.amname FROM pg_catalog.pg_opfamily o JOIN pg_catalog.pg_am a ON a.oid = o.opfmethod "+
 			"WHERE o.opfnamespace <> 'pg_catalog'::regnamespace AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = o.oid AND dd.deptype = 'e') "+
@@ -4222,21 +4222,6 @@ type pgGrant struct {
 	grantable bool
 }
 
-func pgTypeName(base string, charMaxLen, numPrec, numScale *int) string {
-	switch {
-	case base == "character varying" && charMaxLen != nil:
-		return fmt.Sprintf("character varying(%d)", *charMaxLen)
-	case base == "character" && charMaxLen != nil:
-		return fmt.Sprintf("character(%d)", *charMaxLen)
-	case base == "numeric" && numPrec != nil && numScale != nil:
-		return fmt.Sprintf("numeric(%d,%d)", *numPrec, *numScale)
-	case base == "numeric" && numPrec != nil:
-		return fmt.Sprintf("numeric(%d)", *numPrec)
-	default:
-		return base
-	}
-}
-
 func plural(n int32) string {
 	if n == 1 || n == -1 {
 		return ""
@@ -4259,14 +4244,6 @@ func quotePGRole(name string) string {
 		name = strings.ReplaceAll(name[1:len(name)-1], `""`, `"`)
 	}
 	return quotePGIdent(name)
-}
-
-func quoteQualifiedPGIdent(qualified string) string {
-	parts := strings.Split(qualified, ".")
-	for i, p := range parts {
-		parts[i] = quotePGIdent(p)
-	}
-	return strings.Join(parts, ".")
 }
 
 func (d *Dumper) relationGrants(schema, name string) ([]pgGrant, error) {
@@ -4467,7 +4444,7 @@ func (d *Dumper) writeFooter(w io.Writer) {
 	fmt.Fprintf(w, "-- Dump completed\n")
 }
 
-func (d *Dumper) writeHeader(w io.Writer, dbNames []string) {
+func (d *Dumper) writeHeader(w io.Writer) {
 	fmt.Fprint(w, common.DumpBanner("--", "PostgreSQL",
 		fmt.Sprintf("Host: %s  Server: %s", d.host, d.server.Display())))
 	fmt.Fprintf(w, `--
