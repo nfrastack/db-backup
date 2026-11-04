@@ -222,7 +222,7 @@ func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
 	log.Debug("postgres", "backup start",
 		"host", d.host, "port", d.port, "server", d.serverVer,
 		"databases", strings.Join(dbNames, ","))
-	d.writeHeader(w, dbNames)
+	d.writeHeader(w)
 
 	for _, dbName := range dbNames {
 		if strings.ToLower(dbName) == "all" {
@@ -363,7 +363,7 @@ func (d *Dumper) dumpACLs(w io.Writer, dbName string, tables []string) error {
 				fmt.Fprintf(w, "\n-- ACL: %s %s.%s(%s)\n", objType, schema, name, args)
 				emitted = true
 			}
-			fmt.Fprintf(w, "ALTER %s %s OWNER TO %s;\n", objType, ident, quotePGIdent(owner))
+			fmt.Fprintf(w, "ALTER %s %s OWNER TO %s;\n", objType, ident, quotePGRole(owner))
 		}
 		if f.acl != "" && f.acl != "{}" {
 			grants, err := d.funcGrants(schema, name, args)
@@ -553,7 +553,7 @@ func (d *Dumper) dumpPublications(w io.Writer, dbName string) error {
 		log.Trace("postgres", "publication dumped", "database", dbName, "publication", p.name)
 		fmt.Fprintf(w, "\n-- Publication: %s\n%s\n", p.name, sb.String())
 		if p.owner != "" {
-			fmt.Fprintf(w, "ALTER PUBLICATION %s OWNER TO %s;\n", quotePGIdent(p.name), quotePGIdent(p.owner))
+			fmt.Fprintf(w, "ALTER PUBLICATION %s OWNER TO %s;\n", quotePGIdent(p.name), quotePGRole(p.owner))
 		}
 	}
 	return nil
@@ -589,6 +589,7 @@ func (d *Dumper) dumpDefaultPrivileges(w io.Writer, dbName string) error {
 			"FROM pg_catalog.pg_default_acl d "+
 			"LEFT JOIN pg_catalog.pg_namespace n ON n.oid = d.defaclnamespace "+
 			"CROSS JOIN LATERAL aclexplode(d.defaclacl) x "+
+			"WHERE n.oid IS NULL OR (n.nspname NOT IN ('pg_catalog', 'information_schema') AND n.nspname NOT LIKE 'pg\\_%') "+
 			"ORDER BY 1, 2, 3, 5")
 	if err != nil {
 		return fmt.Errorf("query default privileges: %w", err)
@@ -642,7 +643,7 @@ func (d *Dumper) dumpDefaultPrivileges(w io.Writer, dbName string) error {
 				"SELECT rolname FROM pg_catalog.pg_roles WHERE oid = $1", r.grantee).Scan(&rn); err != nil || rn == "" {
 				continue
 			}
-			to = quotePGIdent(rn)
+			to = quotePGRole(rn)
 		}
 		k := key{r.role, r.schema, objWord, r.priv, r.grantable}
 		if _, ok := groups[k]; !ok {
@@ -654,7 +655,7 @@ func (d *Dumper) dumpDefaultPrivileges(w io.Writer, dbName string) error {
 		var sb strings.Builder
 		sb.WriteString("ALTER DEFAULT PRIVILEGES")
 		if k.role != "" {
-			sb.WriteString(" FOR ROLE " + quotePGIdent(k.role))
+			sb.WriteString(" FOR ROLE " + quotePGRole(k.role))
 		}
 		if k.schema != "" {
 			sb.WriteString(" IN SCHEMA " + quotePGIdent(k.schema))
@@ -1149,7 +1150,7 @@ func pgTagList(raw string) []string {
 	return out
 }
 
-func (d *Dumper) dumpEventTriggers(w io.Writer, dbName string) error {
+func (d *Dumper) dumpEventTriggers(w io.Writer, _ string) error {
 	rows, err := d.conn.Query(d.ctxOrBg(),
 		"SELECT e.evtname, e.evtevent, e.evttags::text, fn.nspname, p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid), e.evtenabled FROM pg_catalog.pg_event_trigger e "+
 			"JOIN pg_catalog.pg_proc p ON p.oid = e.evtfoid "+
@@ -1191,7 +1192,7 @@ func buildForeignServer(name, fdw, owner string, opts []optionPair) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "DROP SERVER IF EXISTS %s CASCADE;\n", quotePGIdent(name))
 	fmt.Fprintf(&sb, "CREATE SERVER %s FOREIGN DATA WRAPPER %s%s;\n", quotePGIdent(name), quotePGIdent(fdw), buildOptionsClause(opts))
-	fmt.Fprintf(&sb, "ALTER SERVER %s OWNER TO %s;", quotePGIdent(name), quotePGIdent(owner))
+	fmt.Fprintf(&sb, "ALTER SERVER %s OWNER TO %s;", quotePGIdent(name), quotePGRole(owner))
 	return sb.String()
 }
 
@@ -1232,7 +1233,7 @@ func buildForeignTable(schema, name, server string, cols []foreignColumnDef, opt
 	return sb.String()
 }
 
-func (d *Dumper) dumpForeignServers(w io.Writer, dbName string) error {
+func (d *Dumper) dumpForeignServers(w io.Writer, _ string) error {
 	rows, err := d.conn.Query(d.ctxOrBg(),
 		"SELECT s.srvname, w.fdwname, r.rolname, o.option_name, o.option_value FROM pg_catalog.pg_foreign_server s "+
 			"JOIN pg_catalog.pg_foreign_data_wrapper w ON w.oid = s.srvfdw "+
@@ -1280,7 +1281,7 @@ func (d *Dumper) dumpForeignServers(w io.Writer, dbName string) error {
 	return nil
 }
 
-func (d *Dumper) dumpUserMappings(w io.Writer, dbName string) error {
+func (d *Dumper) dumpUserMappings(w io.Writer, _ string) error {
 	rows, err := d.conn.Query(d.ctxOrBg(),
 		"SELECT s.srvname, r.rolname, o.option_name, o.option_value FROM pg_catalog.pg_user_mapping u "+
 			"JOIN pg_catalog.pg_foreign_server s ON s.oid = u.umserver "+
@@ -1499,7 +1500,7 @@ func buildLanguage(name string, trusted bool, handler, inline, validator string)
 	return sb.String()
 }
 
-func (d *Dumper) dumpLanguages(w io.Writer, dbName string) error {
+func (d *Dumper) dumpLanguages(w io.Writer, _ string) error {
 	rows, err := d.conn.Query(d.ctxOrBg(),
 		"SELECT l.lanname, l.lanpltrusted, hn.nspname, p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid), "+
 			"insp.nspname, ip.proname, pg_catalog.pg_get_function_identity_arguments(ip.oid), "+
@@ -1550,9 +1551,13 @@ func buildTextSearchTemplate(schema, name, lexize string) string {
 		quotePGIdent(schema), quotePGIdent(name), quotePGIdent(schema), quotePGIdent(name), lexize)
 }
 
-func buildTextSearchDictionary(schema, name, template string, opts []optionPair) string {
+func buildTextSearchDictionary(schema, name, template, initoption string) string {
+	opts := ""
+	if strings.TrimSpace(initoption) != "" {
+		opts = ", " + strings.TrimSpace(initoption)
+	}
 	return fmt.Sprintf("DROP TEXT SEARCH DICTIONARY IF EXISTS %s.%s;\nCREATE TEXT SEARCH DICTIONARY %s.%s (TEMPLATE = %s%s);",
-		quotePGIdent(schema), quotePGIdent(name), quotePGIdent(schema), quotePGIdent(name), template, buildOptionsClause(opts))
+		quotePGIdent(schema), quotePGIdent(name), quotePGIdent(schema), quotePGIdent(name), template, opts)
 }
 
 func buildTextSearchConfiguration(schema, name, parser string, mappings []string) string {
@@ -1565,7 +1570,7 @@ func buildTextSearchConfiguration(schema, name, parser string, mappings []string
 	return sb.String()
 }
 
-func (d *Dumper) dumpTextSearch(w io.Writer, dbName string) error {
+func (d *Dumper) dumpTextSearch(w io.Writer, _ string) error {
 	parsers, err := d.conn.Query(d.ctxOrBg(),
 		"SELECT n.nspname, p.prsname, hs.nspname, hp.proname, pg_catalog.pg_get_function_identity_arguments(hp.oid), "+
 			"ts.nspname, tp.proname, pg_catalog.pg_get_function_identity_arguments(tp.oid), "+
@@ -1578,7 +1583,7 @@ func (d *Dumper) dumpTextSearch(w io.Writer, dbName string) error {
 			"JOIN pg_catalog.pg_proc ep ON ep.oid = p.prsend JOIN pg_catalog.pg_namespace es ON es.oid = ep.pronamespace "+
 			"JOIN pg_catalog.pg_proc dp ON dp.oid = p.prsheadline JOIN pg_catalog.pg_namespace ds ON ds.oid = dp.pronamespace "+
 			"JOIN pg_catalog.pg_proc lp ON lp.oid = p.prslextype JOIN pg_catalog.pg_namespace ls ON ls.oid = lp.pronamespace "+
-			"WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = p.oid AND dd.deptype = 'e') "+
+			"WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = p.oid AND dd.deptype = 'e') AND n.nspname NOT IN ('pg_catalog', 'information_schema') "+
 			"ORDER BY n.nspname, p.prsname")
 	if err != nil {
 		return fmt.Errorf("text search parsers: %w", err)
@@ -1608,7 +1613,7 @@ func (d *Dumper) dumpTextSearch(w io.Writer, dbName string) error {
 		"SELECT n.nspname, t.tmplname, ln.nspname, p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) "+
 			"FROM pg_catalog.pg_ts_template t JOIN pg_catalog.pg_namespace n ON n.oid = t.tmplnamespace "+
 			"JOIN pg_catalog.pg_proc p ON p.oid = t.tmpllexize JOIN pg_catalog.pg_namespace ln ON ln.oid = p.pronamespace "+
-			"WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = t.oid AND dd.deptype = 'e') "+
+			"WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = t.oid AND dd.deptype = 'e') AND n.nspname NOT IN ('pg_catalog', 'information_schema') "+
 			"ORDER BY n.nspname, t.tmplname")
 	if err != nil {
 		return fmt.Errorf("text search templates: %w", err)
@@ -1626,58 +1631,38 @@ func (d *Dumper) dumpTextSearch(w io.Writer, dbName string) error {
 		return err
 	}
 	dicts, err := d.conn.Query(d.ctxOrBg(),
-		"SELECT n.nspname, dd.dictname, tn.nspname, t.tmplname, o.option_name, o.option_value, dd.oid FROM pg_catalog.pg_ts_dict dd "+
+		"SELECT n.nspname, dd.dictname, tn.nspname, t.tmplname, dd.dictinitoption FROM pg_catalog.pg_ts_dict dd "+
 			"JOIN pg_catalog.pg_namespace n ON n.oid = dd.dictnamespace "+
 			"JOIN pg_catalog.pg_ts_template t ON t.oid = dd.dicttemplate "+
 			"JOIN pg_catalog.pg_namespace tn ON tn.oid = t.tmplnamespace "+
-			"LEFT JOIN LATERAL pg_catalog.pg_options_to_table(dd.dictoptions) o ON true "+
-			"WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dx WHERE dx.objid = dd.oid AND dx.deptype = 'e') "+
-			"ORDER BY n.nspname, dd.dictname, o.option_name")
+			"WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dx WHERE dx.objid = dd.oid AND dx.deptype = 'e') AND n.nspname NOT IN ('pg_catalog', 'information_schema') "+
+			"ORDER BY n.nspname, dd.dictname")
 	if err != nil {
 		return fmt.Errorf("text search dictionaries: %w", err)
 	}
 	defer dicts.Close()
-	type dictDef struct {
-		schema, name, template string
-		opts                   []optionPair
-	}
-	var dictOrder []string
-	dictDefs := map[string]*dictDef{}
 	for dicts.Next() {
 		var schema, name, tschema, tmpl string
-		var optName, optValue sql.NullString
-		var oid int64
-		if err := dicts.Scan(&schema, &name, &tschema, &tmpl, &optName, &optValue, &oid); err != nil {
+		var initoption sql.NullString
+		if err := dicts.Scan(&schema, &name, &tschema, &tmpl, &initoption); err != nil {
 			return fmt.Errorf("scan text search dictionary: %w", err)
 		}
-		key := schema + "." + name
-		dd, ok := dictDefs[key]
-		if !ok {
-			dd = &dictDef{schema: schema, name: name, template: quotePGIdent(tschema) + "." + quotePGIdent(tmpl)}
-			dictDefs[key] = dd
-			dictOrder = append(dictOrder, key)
+		opt := ""
+		if initoption.Valid {
+			opt = initoption.String
 		}
-		if optName.Valid {
-			val := ""
-			if optValue.Valid {
-				val = optValue.String
-			}
-			dd.opts = append(dd.opts, optionPair{name: optName.String, value: val})
-		}
+		fmt.Fprintf(w, "\n-- Text search dictionary: %s.%s\n%s\n", schema, name,
+			buildTextSearchDictionary(schema, name, quotePGIdent(tschema)+"."+quotePGIdent(tmpl), opt))
 	}
 	if err := dicts.Err(); err != nil {
 		return err
-	}
-	for _, key := range dictOrder {
-		dd := dictDefs[key]
-		fmt.Fprintf(w, "\n-- Text search dictionary: %s\n%s\n", key, buildTextSearchDictionary(dd.schema, dd.name, dd.template, dd.opts))
 	}
 	configs, err := d.conn.Query(d.ctxOrBg(),
 		"SELECT n.nspname, c.cfgname, pn.nspname, p.prsname, c.oid FROM pg_catalog.pg_ts_config c "+
 			"JOIN pg_catalog.pg_namespace n ON n.oid = c.cfgnamespace "+
 			"JOIN pg_catalog.pg_ts_parser p ON p.oid = c.cfgparser "+
 			"JOIN pg_catalog.pg_namespace pn ON pn.oid = p.prsnamespace "+
-			"WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = c.oid AND dd.deptype = 'e') "+
+			"WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = c.oid AND dd.deptype = 'e') AND n.nspname NOT IN ('pg_catalog', 'information_schema') "+
 			"ORDER BY n.nspname, c.cfgname")
 	if err != nil {
 		return fmt.Errorf("text search configurations: %w", err)
@@ -1685,7 +1670,7 @@ func (d *Dumper) dumpTextSearch(w io.Writer, dbName string) error {
 	defer configs.Close()
 	type configDef struct {
 		schema, name, parser string
-		oid                  int64
+		oid                  uint32
 	}
 	var configDefs []configDef
 	for configs.Next() {
@@ -1747,15 +1732,16 @@ func buildCast(source, target, function, context string) string {
 	return sb.String()
 }
 
-func (d *Dumper) dumpCasts(w io.Writer, dbName string) error {
+func (d *Dumper) dumpCasts(w io.Writer, _ string) error {
 	rows, err := d.conn.Query(d.ctxOrBg(),
 		"SELECT pg_catalog.format_type(c.castsource, NULL), pg_catalog.format_type(c.casttarget, NULL), "+
-			"CASE WHEN c.castfuncid = 0 THEN '' ELSE pg_catalog.quote_ident(fn.nspname) || '.' || pg_catalog.quote_ident(p.proname) || '(' || pg_catalog.pg_get_function_identity_arguments(p.oid) || ')' END, c.castcontext::text "+
+			"CASE WHEN c.castfunc = 0 THEN '' ELSE pg_catalog.quote_ident(fn.nspname) || '.' || pg_catalog.quote_ident(p.proname) || '(' || pg_catalog.pg_get_function_identity_arguments(p.oid) || ')' END, c.castcontext::text "+
 			"FROM pg_catalog.pg_cast c "+
-			"LEFT JOIN pg_catalog.pg_proc p ON p.oid = c.castfuncid "+
+			"LEFT JOIN pg_catalog.pg_proc p ON p.oid = c.castfunc "+
 			"LEFT JOIN pg_catalog.pg_namespace fn ON fn.oid = p.pronamespace "+
-			"WHERE (c.castfuncid <> 0 AND fn.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')) "+
-			"OR (c.castfuncid = 0 AND EXISTS (SELECT 1 FROM pg_catalog.pg_type t JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace WHERE t.oid IN (c.castsource, c.casttarget) AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast'))) "+
+			"WHERE ((c.castfunc <> 0 AND fn.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')) "+
+			"OR (c.castfunc = 0 AND EXISTS (SELECT 1 FROM pg_catalog.pg_type t JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace WHERE t.oid IN (c.castsource, c.casttarget) AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')))) "+
+			"AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = c.oid AND dd.deptype IN ('e', 'i')) "+
 			"ORDER BY 1, 2")
 	if err != nil {
 		return fmt.Errorf("casts: %w", err)
@@ -1783,7 +1769,7 @@ func buildConversion(name, source, target, function, def string) string {
 	return sb.String()
 }
 
-func (d *Dumper) dumpConversions(w io.Writer, dbName string) error {
+func (d *Dumper) dumpConversions(w io.Writer, _ string) error {
 	rows, err := d.conn.Query(d.ctxOrBg(),
 		"SELECT c.conname, pg_catalog.pg_encoding_to_char(c.conforencoding), pg_catalog.pg_encoding_to_char(c.contoencoding), fn.nspname, p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid), c.condefault::text "+
 			"FROM pg_catalog.pg_conversion c JOIN pg_catalog.pg_proc p ON p.oid = c.conproc JOIN pg_catalog.pg_namespace fn ON fn.oid = p.pronamespace "+
@@ -1818,7 +1804,7 @@ func buildOpClassDef(name, family, method, datatype, isDefault, members string) 
 		quotePGIdent(name), quotePGIdent(method), quotePGIdent(name), datatype, quotePGIdent(method), quotePGIdent(family), members)
 }
 
-func (d *Dumper) dumpOpClasses(w io.Writer, dbName string) error {
+func (d *Dumper) dumpOpClasses(w io.Writer, _ string) error {
 	fams, err := d.conn.Query(d.ctxOrBg(),
 		"SELECT o.opfname, a.amname FROM pg_catalog.pg_opfamily o JOIN pg_catalog.pg_am a ON a.oid = o.opfmethod "+
 			"WHERE o.opfnamespace <> 'pg_catalog'::regnamespace AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = o.oid AND dd.deptype = 'e') "+
@@ -1848,7 +1834,7 @@ func (d *Dumper) dumpOpClasses(w io.Writer, dbName string) error {
 	defer classes.Close()
 	for classes.Next() {
 		var name, family, method, datatype, isDefault string
-		var oid int64
+		var oid uint32
 		if err := classes.Scan(&name, &family, &method, &datatype, &isDefault, &oid); err != nil {
 			return fmt.Errorf("scan operator class: %w", err)
 		}
@@ -1861,7 +1847,7 @@ func (d *Dumper) dumpOpClasses(w io.Writer, dbName string) error {
 	return classes.Err()
 }
 
-func (d *Dumper) opClassMembers(oid int64) (string, error) {
+func (d *Dumper) opClassMembers(oid uint32) (string, error) {
 	ops, err := d.conn.Query(d.ctxOrBg(),
 		"SELECT m.amopstrategy, pg_catalog.quote_ident(fn.nspname) || '.' || pg_catalog.quote_ident(p.proname) || '(' || pg_catalog.pg_get_function_identity_arguments(p.oid) || ')' "+
 			"FROM pg_catalog.pg_amop m JOIN pg_catalog.pg_operator o ON o.oid = m.amopopr JOIN pg_catalog.pg_proc p ON p.oid = m.amopfunction JOIN pg_catalog.pg_namespace fn ON fn.oid = p.pronamespace "+
@@ -2289,7 +2275,7 @@ func (d *Dumper) dumpPartitions(w io.Writer, dbName, schema, table string, schem
 		fmt.Fprintf(w, "\n-- Partition: %s (of %s.%s)\n%s\n\n", qualified, schema, table, createSQL)
 		if owner, err := d.ownerOf(pschema, pname); err == nil && owner != "" {
 			fmt.Fprintf(w, "ALTER TABLE %s.%s OWNER TO %s;\n\n",
-				quotePGIdent(pschema), quotePGIdent(pname), quotePGIdent(owner))
+				quotePGIdent(pschema), quotePGIdent(pname), quotePGRole(owner))
 		} else if err != nil {
 			log.Warn("postgres", "owner unavailable", "database", dbName,
 				"table", pschema+"."+pname, "error", err.Error())
@@ -2348,7 +2334,7 @@ func (d *Dumper) dumpSchemas(w io.Writer, dbName string, included []string) erro
 		fmt.Fprintf(w, "CREATE SCHEMA IF NOT EXISTS %s;\n", quotePGIdent(s.name))
 		if s.owner != "" {
 			fmt.Fprintf(w, "ALTER SCHEMA %s OWNER TO %s;\n",
-				quotePGIdent(s.name), quotePGIdent(s.owner))
+				quotePGIdent(s.name), quotePGRole(s.owner))
 		}
 		if grants, err := d.schemaGrants(s.name); err != nil {
 			log.Warn("postgres", "schema grants unavailable", "database", dbName,
@@ -2391,7 +2377,7 @@ func (d *Dumper) dumpSequences(w io.Writer, dbName string) error {
 		fmt.Fprintf(w, "\n-- Sequence: %s.%s\n", schema, name)
 		fmt.Fprintf(w, "CREATE SEQUENCE IF NOT EXISTS %s AS %s %s;\n", qn, seqType, opts)
 		if owner != "" {
-			fmt.Fprintf(w, "ALTER SEQUENCE %s OWNER TO %s;\n", qn, quotePGIdent(owner))
+			fmt.Fprintf(w, "ALTER SEQUENCE %s OWNER TO %s;\n", qn, quotePGRole(owner))
 		}
 	}
 	log.Debug("postgres", "sequences done", "database", dbName,
@@ -2466,7 +2452,7 @@ func (d *Dumper) dumpTable(w io.Writer, dbName, table string) ([]string, string,
 	fmt.Fprintf(w, "\n-- Table: %s.%s\n%s\n\n", schema, tableName, createSQL)
 	if owner, err := d.ownerOf(schema, tableName); err == nil && owner != "" {
 		fmt.Fprintf(w, "ALTER TABLE %s.%s OWNER TO %s;\n\n",
-			quotePGIdent(schema), quotePGIdent(tableName), quotePGIdent(owner))
+			quotePGIdent(schema), quotePGIdent(tableName), quotePGRole(owner))
 	} else if err != nil {
 		log.Warn("postgres", "owner unavailable", "database", dbName,
 			"table", schema+"."+tableName, "error", err.Error())
@@ -2583,7 +2569,7 @@ func (d *Dumper) dumpRowSecurity(w io.Writer, dbName string, tables []string) er
 		rows, err := d.conn.Query(d.ctxOrBg(),
 			"SELECT p.polname, p.polpermissive, "+
 				"CASE WHEN p.polroles = '{0}'::oid[] THEN 'PUBLIC' "+
-				"ELSE (SELECT string_agg(quote_ident(r::regrole::text), ', ' ORDER BY r::regrole::text) FROM unnest(p.polroles) AS r) END, "+
+				"ELSE (SELECT string_agg(quote_ident(r2.rolname), ', ' ORDER BY r2.rolname) FROM unnest(p.polroles) AS r JOIN pg_catalog.pg_roles r2 ON r2.oid = r) END, "+
 				"p.polcmd, pg_get_expr(p.polqual, p.polrelid), pg_get_expr(p.polwithcheck, p.polrelid) "+
 				"FROM pg_catalog.pg_policy p "+
 				"JOIN pg_catalog.pg_class c ON c.oid = p.polrelid "+
@@ -2745,7 +2731,7 @@ func (d *Dumper) dumpStatistics(w io.Writer, dbName string, tables []string) err
 			quotePGIdent(s.schema), quotePGIdent(s.name))
 		fmt.Fprintf(w, "%s;\n", def)
 		fmt.Fprintf(w, "ALTER STATISTICS %s.%s OWNER TO %s;\n",
-			quotePGIdent(s.schema), quotePGIdent(s.name), quotePGIdent(s.owner))
+			quotePGIdent(s.schema), quotePGIdent(s.name), quotePGRole(s.owner))
 	}
 	log.Debug("postgres", "statistics done", "database", dbName,
 		"count", count, "elapsed", time.Since(start).Round(time.Millisecond).String())
@@ -2948,7 +2934,7 @@ func (d *Dumper) dumpTypes(w io.Writer, dbName string) ([]string, error) {
 				kw = "DOMAIN"
 			}
 			fmt.Fprintf(w, "ALTER %s %s.%s OWNER TO %s;\n", kw,
-				quotePGIdent(schema), quotePGIdent(name), quotePGIdent(owner))
+				quotePGIdent(schema), quotePGIdent(name), quotePGRole(owner))
 		}
 		if grants, err := d.typeGrants(schema, name); err != nil {
 			log.Warn("postgres", "grants unavailable", "database", dbName,
@@ -3007,7 +2993,7 @@ func (d *Dumper) dumpViews(w io.Writer, dbName string) error {
 			quotePGIdent(schema), quotePGIdent(name), def)
 		if owner, err := d.ownerOf(schema, name); err == nil && owner != "" {
 			fmt.Fprintf(w, "ALTER VIEW %s.%s OWNER TO %s;\n",
-				quotePGIdent(schema), quotePGIdent(name), quotePGIdent(owner))
+				quotePGIdent(schema), quotePGIdent(name), quotePGRole(owner))
 		} else if err != nil {
 			log.Warn("postgres", "owner unavailable", "database", dbName,
 				"view", schema+"."+name, "error", err.Error())
@@ -3055,7 +3041,7 @@ func (d *Dumper) dumpMatviews(w io.Writer, dbName string) ([]string, error) {
 		def := strings.TrimSuffix(strings.TrimSpace(m.def), ";")
 		fmt.Fprintf(w, "CREATE MATERIALIZED VIEW %s AS\n%s\nWITH NO DATA;\n", qt, def)
 		if m.owner != "" {
-			fmt.Fprintf(w, "ALTER MATERIALIZED VIEW %s OWNER TO %s;\n", qt, quotePGIdent(m.owner))
+			fmt.Fprintf(w, "ALTER MATERIALIZED VIEW %s OWNER TO %s;\n", qt, quotePGRole(m.owner))
 		}
 		if idxSQL, err := d.getIndexes(m.schema, m.name); err == nil && idxSQL != "" {
 			fmt.Fprint(w, idxSQL)
@@ -3499,7 +3485,7 @@ func formatGrants(target string, grants []pgGrant) string {
 	for _, k := range order {
 		to := k.grantee
 		if to != "PUBLIC" {
-			to = quotePGIdent(to)
+			to = quotePGRole(to)
 		}
 		line := fmt.Sprintf("GRANT %s ON %s TO %s",
 			strings.Join(privs[k], ", "), target, to)
@@ -3693,6 +3679,9 @@ func (d *Dumper) getCreateTable(schema, table string) (string, error) {
 	if checkSQL, err := d.getCheckConstraints(schema, table); err == nil {
 		sb.WriteString("\n" + checkSQL)
 	}
+	if partSQL, err := d.getPartitions(schema, table); err == nil && partSQL != "" {
+		sb.WriteString("\n" + partSQL)
+	}
 
 	return sb.String(), nil
 }
@@ -3838,6 +3827,32 @@ func (d *Dumper) getIndexes(schema, table string) (string, error) {
 		sb.WriteString(idxDef + ";\n")
 	}
 	return sb.String(), rows.Err()
+}
+
+func (d *Dumper) getPartitions(schema, table string) (string, error) {
+	rows, err := d.conn.Query(d.ctxOrBg(),
+		"SELECT n.nspname, c.relname, pg_catalog.pg_get_expr(c.relpartbound, c.oid) "+
+			"FROM pg_catalog.pg_inherits i "+
+			"JOIN pg_catalog.pg_class c ON c.oid = i.inhrelid "+
+			"JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "+
+			"JOIN pg_catalog.pg_class p ON p.oid = i.inhparent "+
+			"JOIN pg_catalog.pg_namespace pn ON pn.oid = p.relnamespace "+
+			"WHERE pn.nspname = $1 AND p.relname = $2 ORDER BY c.relname",
+		schema, table)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	var sb strings.Builder
+	for rows.Next() {
+		var cschema, cname, bound string
+		if err := rows.Scan(&cschema, &cname, &bound); err != nil {
+			return "", err
+		}
+		fmt.Fprintf(&sb, "CREATE TABLE %s.%s PARTITION OF %s.%s %s;\n",
+			quotePGIdent(cschema), quotePGIdent(cname), quotePGIdent(schema), quotePGIdent(table), bound)
+	}
+	return strings.TrimRight(sb.String(), "\n"), rows.Err()
 }
 
 func (d *Dumper) getPartitionInfo(schema, table string) (string, error) {
@@ -4207,21 +4222,6 @@ type pgGrant struct {
 	grantable bool
 }
 
-func pgTypeName(base string, charMaxLen, numPrec, numScale *int) string {
-	switch {
-	case base == "character varying" && charMaxLen != nil:
-		return fmt.Sprintf("character varying(%d)", *charMaxLen)
-	case base == "character" && charMaxLen != nil:
-		return fmt.Sprintf("character(%d)", *charMaxLen)
-	case base == "numeric" && numPrec != nil && numScale != nil:
-		return fmt.Sprintf("numeric(%d,%d)", *numPrec, *numScale)
-	case base == "numeric" && numPrec != nil:
-		return fmt.Sprintf("numeric(%d)", *numPrec)
-	default:
-		return base
-	}
-}
-
 func plural(n int32) string {
 	if n == 1 || n == -1 {
 		return ""
@@ -4239,12 +4239,11 @@ func quotePGIdent(s string) string {
 	return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
 }
 
-func quoteQualifiedPGIdent(qualified string) string {
-	parts := strings.Split(qualified, ".")
-	for i, p := range parts {
-		parts[i] = quotePGIdent(p)
+func quotePGRole(name string) string {
+	if len(name) >= 2 && strings.HasPrefix(name, `"`) && strings.HasSuffix(name, `"`) {
+		name = strings.ReplaceAll(name[1:len(name)-1], `""`, `"`)
 	}
-	return strings.Join(parts, ".")
+	return quotePGIdent(name)
 }
 
 func (d *Dumper) relationGrants(schema, name string) ([]pgGrant, error) {
@@ -4445,7 +4444,7 @@ func (d *Dumper) writeFooter(w io.Writer) {
 	fmt.Fprintf(w, "-- Dump completed\n")
 }
 
-func (d *Dumper) writeHeader(w io.Writer, dbNames []string) {
+func (d *Dumper) writeHeader(w io.Writer) {
 	fmt.Fprint(w, common.DumpBanner("--", "PostgreSQL",
 		fmt.Sprintf("Host: %s  Server: %s", d.host, d.server.Display())))
 	fmt.Fprintf(w, `--

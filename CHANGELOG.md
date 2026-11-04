@@ -1,3 +1,17 @@
+## 5.0.9 2026-11-04 <code at nfrastack dot com>
+
+   ### Changed
+     - run pre hooks for unsplit database jobs
+     - dump modifications
+       - (postgres) exclude system text search objects
+       - (postgres) fix dictoptions failure introduced in 5.0.8
+       - (postgres) fix for grabbing partitions OF
+       - (postgres) scan oids as uint32 for binary protocol
+       - (postgres) skip auto generated and extension casts
+       - (postgres) skip ephmeral schemas in default priveleges
+       - (postgres) quote role names once in grants and owners
+       - (postgres) use correct pg_cast.castfunc column
+
 ## 5.0.8 2026-11-03 <code at nfrastack dot com>
 
    ### Changed
