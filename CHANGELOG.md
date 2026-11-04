@@ -7,6 +7,7 @@
        - (postgres) scan oids as uint32 for binary protocol
        - (postgres) skip ephmeral schemas in default priveleges
        - (postgres) quote role names once in grants and owners
+       - (postgres) use correct pg_cast.castfunc column
 
 ## 5.0.8 2026-11-03 <code at nfrastack dot com>
 

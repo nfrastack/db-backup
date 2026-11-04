@@ -1735,12 +1735,12 @@ func buildCast(source, target, function, context string) string {
 func (d *Dumper) dumpCasts(w io.Writer, dbName string) error {
 	rows, err := d.conn.Query(d.ctxOrBg(),
 		"SELECT pg_catalog.format_type(c.castsource, NULL), pg_catalog.format_type(c.casttarget, NULL), "+
-			"CASE WHEN c.castfuncid = 0 THEN '' ELSE pg_catalog.quote_ident(fn.nspname) || '.' || pg_catalog.quote_ident(p.proname) || '(' || pg_catalog.pg_get_function_identity_arguments(p.oid) || ')' END, c.castcontext::text "+
+			"CASE WHEN c.castfunc = 0 THEN '' ELSE pg_catalog.quote_ident(fn.nspname) || '.' || pg_catalog.quote_ident(p.proname) || '(' || pg_catalog.pg_get_function_identity_arguments(p.oid) || ')' END, c.castcontext::text "+
 			"FROM pg_catalog.pg_cast c "+
-			"LEFT JOIN pg_catalog.pg_proc p ON p.oid = c.castfuncid "+
+			"LEFT JOIN pg_catalog.pg_proc p ON p.oid = c.castfunc "+
 			"LEFT JOIN pg_catalog.pg_namespace fn ON fn.oid = p.pronamespace "+
-			"WHERE (c.castfuncid <> 0 AND fn.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')) "+
-			"OR (c.castfuncid = 0 AND EXISTS (SELECT 1 FROM pg_catalog.pg_type t JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace WHERE t.oid IN (c.castsource, c.casttarget) AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast'))) "+
+			"WHERE (c.castfunc <> 0 AND fn.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')) "+
+			"OR (c.castfunc = 0 AND EXISTS (SELECT 1 FROM pg_catalog.pg_type t JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace WHERE t.oid IN (c.castsource, c.casttarget) AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast'))) "+
 			"ORDER BY 1, 2")
 	if err != nil {
 		return fmt.Errorf("casts: %w", err)
