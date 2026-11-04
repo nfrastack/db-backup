@@ -1,3 +1,9 @@
+## 5.0.10 2026-11-04 <code at nfrastack dot com>
+
+   ### Changed
+     - dump modifications
+       - (postgres) don't grab restricted catalogs as non superuser
+
 ## 5.0.9 2026-11-04 <code at nfrastack dot com>
 
    ### Changed

@@ -759,6 +759,13 @@ func (d *Dumper) dumpOrphanBlobs(w io.Writer, dbName string, seen map[uint32]boo
 }
 
 func (d *Dumper) writeBlobs(w io.Writer, dbName string, ordered []uint32) error {
+	var canRead bool
+	if err := d.conn.QueryRow(d.ctxOrBg(),
+		"SELECT has_table_privilege('pg_catalog.pg_largeobject', 'SELECT')").Scan(&canRead); err != nil || !canRead {
+		log.Warn("postgres", "large object payload not readable by current role - skipping blobs", "database", dbName,
+			"count", len(ordered))
+		return nil
+	}
 	start := time.Now()
 	for _, oid := range ordered {
 		fmt.Fprintf(w, "DO $$BEGIN IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_largeobject_metadata WHERE oid = %d) THEN PERFORM pg_catalog.lo_create(%d); END IF; END$$;\n", oid, oid)
@@ -1283,12 +1290,10 @@ func (d *Dumper) dumpForeignServers(w io.Writer, _ string) error {
 
 func (d *Dumper) dumpUserMappings(w io.Writer, _ string) error {
 	rows, err := d.conn.Query(d.ctxOrBg(),
-		"SELECT s.srvname, r.rolname, o.option_name, o.option_value FROM pg_catalog.pg_user_mapping u "+
-			"JOIN pg_catalog.pg_foreign_server s ON s.oid = u.umserver "+
-			"LEFT JOIN pg_catalog.pg_roles r ON r.oid = u.umuser "+
-			"LEFT JOIN LATERAL pg_catalog.pg_options_to_table(u.umoptions) o ON true "+
-			"WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = u.oid AND dd.deptype = 'e') "+
-			"ORDER BY s.srvname, r.rolname")
+		"SELECT m.srvname, m.usename, o.option_name, o.option_value FROM pg_catalog.pg_user_mappings m "+
+			"LEFT JOIN LATERAL pg_catalog.pg_options_to_table(m.umoptions) o ON true "+
+			"WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = m.umid AND dd.deptype = 'e') "+
+			"ORDER BY m.srvname, m.usename")
 	if err != nil {
 		return fmt.Errorf("user mappings: %w", err)
 	}
@@ -1300,15 +1305,18 @@ func (d *Dumper) dumpUserMappings(w io.Writer, _ string) error {
 	var order []string
 	mappings := map[string]*mappingDef{}
 	for rows.Next() {
-		var server string
-		var user, optName, optValue sql.NullString
+		var server, user string
+		var optName, optValue sql.NullString
 		if err := rows.Scan(&server, &user, &optName, &optValue); err != nil {
 			return fmt.Errorf("scan user mapping: %w", err)
 		}
-		key := server + "." + user.String
+		if user == "public" {
+			user = ""
+		}
+		key := server + "." + user
 		md, ok := mappings[key]
 		if !ok {
-			md = &mappingDef{user: user.String, server: server}
+			md = &mappingDef{user: user, server: server}
 			mappings[key] = md
 			order = append(order, key)
 		}
@@ -2678,7 +2686,7 @@ func (d *Dumper) dumpStatistics(w io.Writer, dbName string, tables []string) err
 		"SELECT DISTINCT n.nspname, s.stxname, pg_get_statisticsobjdef(s.oid), r.rolname, tn.nspname, tc.relname "+
 			"FROM pg_catalog.pg_statistic_ext s "+
 			"JOIN pg_catalog.pg_namespace n ON n.oid = s.stxnamespace "+
-			"JOIN pg_catalog.pg_authid r ON r.oid = s.stxowner "+
+			"JOIN pg_catalog.pg_roles r ON r.oid = s.stxowner "+
 			"JOIN pg_catalog.pg_depend dd ON dd.objid = s.oid AND dd.classid = 'pg_statistic_ext'::regclass AND dd.refclassid = 'pg_class'::regclass "+
 			"JOIN pg_catalog.pg_class tc ON tc.oid = dd.refobjid "+
 			"JOIN pg_catalog.pg_namespace tn ON tn.oid = tc.relnamespace "+
