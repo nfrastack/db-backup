@@ -1670,7 +1670,7 @@ func (d *Dumper) dumpTextSearch(w io.Writer, dbName string) error {
 	defer configs.Close()
 	type configDef struct {
 		schema, name, parser string
-		oid                  int64
+		oid                  uint32
 	}
 	var configDefs []configDef
 	for configs.Next() {
@@ -1833,7 +1833,7 @@ func (d *Dumper) dumpOpClasses(w io.Writer, dbName string) error {
 	defer classes.Close()
 	for classes.Next() {
 		var name, family, method, datatype, isDefault string
-		var oid int64
+		var oid uint32
 		if err := classes.Scan(&name, &family, &method, &datatype, &isDefault, &oid); err != nil {
 			return fmt.Errorf("scan operator class: %w", err)
 		}
@@ -1846,7 +1846,7 @@ func (d *Dumper) dumpOpClasses(w io.Writer, dbName string) error {
 	return classes.Err()
 }
 
-func (d *Dumper) opClassMembers(oid int64) (string, error) {
+func (d *Dumper) opClassMembers(oid uint32) (string, error) {
 	ops, err := d.conn.Query(d.ctxOrBg(),
 		"SELECT m.amopstrategy, pg_catalog.quote_ident(fn.nspname) || '.' || pg_catalog.quote_ident(p.proname) || '(' || pg_catalog.pg_get_function_identity_arguments(p.oid) || ')' "+
 			"FROM pg_catalog.pg_amop m JOIN pg_catalog.pg_operator o ON o.oid = m.amopopr JOIN pg_catalog.pg_proc p ON p.oid = m.amopfunction JOIN pg_catalog.pg_namespace fn ON fn.oid = p.pronamespace "+
