@@ -1,3 +1,9 @@
+## dev
+
+   ### Changed
+     - dump modifications
+       - (sqlite) preserve auto increment for emptied tables
+
 ## 5.0.10 2026-11-04 <code at nfrastack dot com>
 
    ### Changed
