@@ -118,8 +118,16 @@ RUN echo "" && \
             /usr/share/dotnet/sdk \
             /usr/share/dotnet/sdk-manifests \
             /usr/share/dotnet/shared/Microsoft.AspNetCore.App \
+            /usr/share/dotnet/shared/Microsoft.NETCore.App/*/createdump \
+            /usr/share/dotnet/shared/Microsoft.NETCore.App/*/libmscordaccore.so \
+            /usr/share/dotnet/shared/Microsoft.NETCore.App/*/libmscordbi.so \
             /usr/share/dotnet/templates \
+            /opt/sqlpackage/.store/microsoft.sqlpackage/*/microsoft.sqlpackage/*/tools/net8.0/any/runtimes/win* \
+            /opt/sqlpackage/.store/microsoft.sqlpackage/*/microsoft.sqlpackage/*/tools/net8.0/any/x64 \
+            /opt/sqlpackage/.store/microsoft.sqlpackage/*/microsoft.sqlpackage/*/tools/net8.0/any/x86 \
             && \
+    find /opt/sqlpackage/.store \( -name '*.resources.dll' -o -name '*.pdb' -o \( -name '*.xml' ! -name DotnetToolSettings.xml \) \) -delete && \
+    find /opt/sqlpackage/.store -type d -empty -delete && \
     ln -s /opt/sqlpackage/sqlpackage /usr/local/bin/sqlpackage && \
     \
     container_build_log add "DB Backup" "${dbbver}" "${IMAGE_REPO_URL}" && \
