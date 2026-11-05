@@ -1,0 +1,14 @@
+*.exe
+*_test.go
+.direnv
+/dbb
+/docs/
+/src/dbb
+/testing/
+dbb_*_amd64
+dbb_*_arm64
+dbb_*_darwin_*
+dbb_*_freebsd_*
+dbb_*_openbsd_*
+dbb_*_windows_*
+result/

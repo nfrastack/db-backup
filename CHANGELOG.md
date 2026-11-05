@@ -1,3 +1,284 @@
+## 5.0.10 2026-11-04 <code at nfrastack dot com>
+
+   ### Changed
+     - dump modifications
+       - (postgres) don't grab restricted catalogs as non superuser
+
+## 5.0.9 2026-11-04 <code at nfrastack dot com>
+
+   ### Changed
+     - run pre hooks for unsplit database jobs
+     - dump modifications
+       - (postgres) exclude system text search objects
+       - (postgres) fix dictoptions failure introduced in 5.0.8
+       - (postgres) fix for grabbing partitions OF
+       - (postgres) scan oids as uint32 for binary protocol
+       - (postgres) skip auto generated and extension casts
+       - (postgres) skip ephmeral schemas in default priveleges
+       - (postgres) quote role names once in grants and owners
+       - (postgres) use correct pg_cast.castfunc column
+
+## 5.0.8 2026-11-03 <code at nfrastack dot com>
+
+   ### Changed
+     - dump modifications
+       - (couch) fetch attachment bodies during dump
+       - (mssql) dump constraints, indexes, routines, triggers, and routines
+       - (mssql) skip computed columns in table inserts
+       - (mssql) stop escaping backslashes in strings
+       - (mongo) bump linecap to 64MB to handle base64 attachments better
+       - (mongo) grab collection options with collections
+       - (mongo) dump view definitions instead of view data
+       - (mongo) include index definitions with collections
+       - (mongo) use extended json for operations
+       - (postgres) dump event triggers, FDW objects, text search, casts, conversions,
+                    operator classes, orphan large objects and tablespaces
+       - (redis) dump module keys as restore blobs
+       - (redis) escape backslashes and newlines in values
+       - (sqlite) dump indexes, views, and triggers after tables
+       - (sqlite) preserve auto increment watermarks
+       - (sqlite) preserve query planner data
+       - (sqlite) save datetime as raw values
+       - (sqlite) skip generated columns in table inserts
+       - (sqlite) skip shadow fts tables from appearing in output
+       - (sqlite) wrap entire operation in a transaction
+
+
+## 5.0.7 2026-10-30 <code at nfrastack dot com>
+
+   ### Changed
+     - dedupe repeated config files and stop unecessary warnings
+     - dump modifications
+       - fix per job backend settings to respect DEFAULT_BACKUP_LOCATION
+       - (postgres) copy temporal and interval columns as raw text to fix timestamptz year-10000 dump failure
+       - (postgres) fix globals dump aborting on roles with infinity valid-until
+       - (postgres) fix publication column lists dropped by nested query on open rows
+       - (postgres) force UTC session
+       - (postgres) include REVOKE statements before GRANTS
+       - (postgres) use ALTER DEFAULT PRIVILEGES so role targeted defaults survive restore
+       - (postgres) write serial sequences as int instead of bigint
+
+
+## 5.0.6 2026-10-26 <code at nfrastack dot com>
+
+  15 day trials are available to test features such as incremental/differential backups, archiving and more..  https://www.nfrastack.com/db-backup/license/trial
+
+   ### Changed
+      - add cron scheduling validation
+      - version check extra messaging
+      - force go 1.26.10 as minimum version
+      - (sqlite) warn on unwritable directory for wal
+      - (scheduler) fix false missed-run warning on anchored schedules
+      - dump modifications
+        - (postgres) create indexes on materialized views
+        - (postgres) switch to ALTER TABLE (drop ONLY) for paritioned foreign keys
+        - (postgres) use ALTER procedure for procedure grants and ownership
+
+
+## 5.0.5 2026-10-07 <code at nfrastack dot com>
+
+   ### Changed
+      - fix encryption profile refs rejected as uknown type
+      - pretty print sidecars
+      - warn when limits reached on version checked on community edition
+      - (container) fix default scheduling begin and interval configuration generation
+      - (scheduler) time interval repeats are anchored to clock start not finish
+      - (scheduler) warn on every missed scheduled slot when overrun
+      - dump modifications
+         - (mysql) try to query server for SQL mode - fallback to writing backticks everywhere
+         - (mongo) chunk large operations
+         - (mssql) fix trailing GO statements leaking into another batch
+         - (postgres) encode TIME columns in COPY format
+         - (postgres) allow auth-source db to be used instead of postgres for list ops
+         - (postgres) skip views with unreadable definitions instead of aborting
+      - restore modifications
+         - add progress meter for chained incremental restores
+         - seperate progress meter from operations to avoid hanging
+         - (influx) change buffer to 16mb
+         - (mssql) switch to streaming
+         - (mysql) switch to streaming
+         - (postgres) allow auth-source db to be used instead of hardcoding postgres
+         - (sqlite) switch to streaming
+     - (storage/s3) chunk uploads into 8mb pieces and parallelize uploads
+
+
+## 5.0.4 2026-09-24 <code at nfrastack dot com>
+
+   ### Changed
+      - Fixed version_check channel defaulting to edge on stable versions
+
+## 5.0.3 2026-09-23 <code at nfrastack dot com>
+
+   ### Added
+      - add additional version detail in dump bannner comments
+      - add %dbs% filename tag to expand database names when ALL+split_db:false
+      - add warning if running a stale develop build
+      - add restore.create_db and cli create-db variable to control auto db creation
+      - add engine version/arch detection routines
+      - fail spectacularly when encountering an error in restore
+      - record database server version in sidecars and usage stats
+      - default connectivity.enabled to true on partial blocks
+      - default compression type/level on partial blocks
+      - warn when engine version is different when restoring
+      - (container) support undocumented trace log level
+      - (mysql) experimental dump raw_blobs option to write blobs as escaped raw strings
+      - (postgres) additional trace output
+      - (postgres) avoid server timeout with long operations
+      - (storage/azure) add additional debug and trace verbosity
+      - (storage/s3) add aditional debug and trace verbosity
+      - (storage/webdav) add additional debug and trace verbosity
+
+   ### Changed
+      - change name: ALL database backups with split_db: false to be filename _all_
+      - default backup filename tag omits empty db/host components
+      - split_db revert to default true
+      - update stats schema to 5
+      - version check on beta/edge also notifies if stable updated
+      - (backup) create_latest strips empty parameters when naming
+      - (container) wasn't reading DBBACKUP_LICENSE in certain cases
+      - (container) halt container and output error code value when manual_run_forever=false
+      - (container) s3 tls configuration properly generates in config
+      - (influx) use http as default
+      - (mysql) refine auto detection to solve dump and restore variances
+      - (mysql) dump parity
+        - dump escape null bytes
+        - dump verify max_allowed_packet
+      - (mysql) restore parity
+        - add explicit USE statements if missing
+        - enforce binlog session for incremental/differential
+        - split inserts into 1mb batches
+        - strip DEFINER and own by restoring user
+        - shrink insert batches on small max_allowed_packet
+      - (postgres) pg_dump parity
+        - dump partitions as CREATE plus ATTACH with one COPY/partition
+        - dump comments, constraints, extensions, grants, materialized views, rules, statistics
+        - dump custom collations and per column COLLATE
+        - dump default privileges
+        - dump domain CHECKs after functions
+        - dump encode geometric types explicitly
+        - dump exclusion constraints post data dump
+        - dump extensions in dependency order
+        - dump functions before tables
+        - dump inherited tables with inline INHERITS, parents first
+        - dump create multiranges via multirange_type_name
+        - dump partition and inheritance data with ONLY statements
+        - dump PUBLCIATIONS with tables and options and skip SUBSCRIPTIONs
+        - dump user aggregates as CREATE AGGREGATE
+        - dump named not NULLs
+        - dump referenced largeobjects from oid columns
+        - dump skip auto generatied columns
+        - dump quoting rules for json data
+        - dump encode (var)bit, bytea, (multi)range, uuid as plain text
+        - dump seperate a constraint per transaction
+        - dump warn on COPY fall back columns
+      - (postgres) restore parity
+        - allow jsonb values properly
+        - change order of foreign key creation
+        - compatibility with pg_restore --clean
+        - create empty tables with strange dump characters
+        - don't precreate identity backed sequences
+        - truncation on json rows wider than 1mb
+      - (redis) hard error on ALL
+      - (redis) allow name: int for backup and restore
+      - (redis) dump streams
+      - (sqlite) normalize NAME/HOST file path into a single filename token
+      - (storage) fixes
+        - (azure/s3/webdav) open new handle on each connection attempt
+        - (s3) default to https if url is not passed
+
+
+## 5.0.2 2026-09-12 <code at nfrastack dot com>
+
+   ### Added
+      - (container) `backup-now` / `backup##-now` allows passing log level as argument eg `backup-now debug`
+      - influx2 incremental/differential support
+      - progress meter logs throughput to file on tty runs
+
+   ### Changed
+      - (container) quality of life config auto detections
+      - emit version on dump / restore one shots
+      - update stats schema to 3
+      - update sidecar schema to 2
+      - (couch) additional tracing output
+      - (couch) chunk large operations
+      - (influx2) additional debugging and tracing output
+      - (influx2) optimizations
+         - split into physical and logical backups for 2.1+ (influx_mode)
+         - logical switch to csv export
+         - logical add parallel workers
+         - logical chunk measurement dumps with large amount of datapoints
+         - implement incremental/differential support
+         - rewrite restore functionality to support both modes
+      - (mysql) additional tracing output
+      - (mssql) additional tracing output
+      - (redis) additional tracing output
+      - (redis) restore pexpireat routines
+      - (sqlite) additional tracing output
+      - (postgres) additional tracing output
+
+
+## 5.0.1 2026-09-08 <code at nfrastack dot com>
+
+   ### Added
+      - Allow explicit names alongside ALL db_name.include declarations
+      - Allow excluding names when db_name.include=ALL
+      - (mysql) introduce toggles for events, stored procedures, triggers and views
+
+   ### Changed
+      - (mysql) accomodate differences between mysql 8.x and mariadb sub operations
+      - Refine container detection routines
+      - Development versions are more descriptive
+      - More debug verbosity
+      - Delay version check on first startup
+      - Fix job ids not emitting during prune operations
+
+## 5.0.0 2026-09-03 <code at nfrastack dot com>
+
+   ### Added
+
+      - Complete rewrite of application - See documentation https://nfrastack.com/db-backup
+
+# 4.9.2 2026-08-24 <code at nfrastack dot com>
+
+   ### Changed
+      - Fix MSSQL libraries not getting installed
+
+
+## 4.9.1 2026-08-06 <code at nfrastack dot com>
+
+   ### Changed
+      - Fix issue with MySQL pre backup connectivity check when ssl disabled
+
+
+## 4.9.0 2026-07-29 <code at nfrastack dot com>
+
+The db-backup:4.9.x series will be the last before the 5.x.x release which is expected in August of 2026.
+The tool is being rewritten from ground up, this last branch solves present day pain points and is seen as maintenance releases.
+
+   ### Added
+      - Convert to nfrastack/base container base image
+      - Alpine 3.24
+      - Update MySQL to 9.7.2
+      - Minor bug fixes with service start and shutdowns
+
+
+## 4.1.100 2026-03-13 <dave at tiredofit dot ca>
+
+   ### Changed
+      - Repush of 4.1.99
+
+
+## 4.1.99 2026-03-12 <dave at tiredofit dot ca>
+
+This the final tiredofit/db-backup release - All development and releases will reside under the nfrastack/container-db-backup namespace going forward.
+
+   ### Added
+      - Postgreaql 18 support
+      - AWS CLI 1.44.56
+      - MySQL 8.4.8
+      - MSSQL 18.6.1-1
+
+
 ## 4.1.21 2025-08-08 <dave at tiredofit dot ca>
 
    ### Changed

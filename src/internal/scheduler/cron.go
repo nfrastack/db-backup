@@ -1,0 +1,252 @@
+// SPDX-FileCopyrightText: © 2026 Nfrastack <code@nfrastack.com>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+package scheduler
+
+import (
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/nfrastack/db-backup/internal/config"
+)
+
+func cronMatch(expr string, t time.Time) bool {
+	parts := strings.Fields(expr)
+	if len(parts) != 5 {
+		return false
+	}
+	return fieldMatch(parts[0], t.Minute(), 0, 59) &&
+		fieldMatch(parts[1], t.Hour(), 0, 23) &&
+		fieldMatch(parts[2], t.Day(), 1, 31) &&
+		fieldMatch(parts[3], int(t.Month()), 1, 12) &&
+		fieldMatch(parts[4], int(t.Weekday()), 0, 6)
+}
+
+func fieldMatch(field string, val, min, max int) bool {
+	if field == "*" {
+		return true
+	}
+	if strings.ContainsAny(field, "\"'") {
+		return false
+	}
+	if strings.Contains(field, ",") {
+		for _, p := range strings.Split(field, ",") {
+			if fieldMatch(p, val, min, max) {
+				return true
+			}
+		}
+		return false
+	}
+	if strings.Contains(field, "/") {
+		parts := strings.SplitN(field, "/", 2)
+		step, err := strconv.Atoi(parts[1])
+		if err != nil || step <= 0 {
+			return false
+		}
+		if parts[0] == "*" {
+			return (val-min)%step == 0
+		}
+		start, err := strconv.Atoi(parts[0])
+		if err != nil {
+			return false
+		}
+		return val >= start && (val-start)%step == 0
+	}
+	if strings.Contains(field, "-") {
+		a, err1 := strconv.Atoi(strings.SplitN(field, "-", 2)[0])
+		b, err2 := strconv.Atoi(strings.SplitN(field, "-", 2)[1])
+		if err1 != nil || err2 != nil {
+			return false
+		}
+		return val >= a && val <= b
+	}
+	n, err := strconv.Atoi(field)
+	if err != nil {
+		return false
+	}
+	return val == n
+}
+
+func nextCron(expr string) time.Duration {
+	return nextCronAt(expr, time.Now())
+}
+
+func nextCronAt(expr string, now time.Time) time.Duration {
+	next := now.Add(time.Minute).Truncate(time.Minute)
+	for i := 0; i < 525600; i++ {
+		if cronMatch(expr, next) {
+			return next.Sub(now)
+		}
+		next = next.Add(time.Minute)
+	}
+	return 0
+}
+
+func nextJobDuration(s *config.Schedule) time.Duration {
+	return nextJobDurationAt(s, time.Now())
+}
+
+func nextJobDurationAt(s *config.Schedule, now time.Time) time.Duration {
+	if s == nil {
+		return 0
+	}
+	if s.Cron != "" {
+		return nextCronAt(s.Cron, now)
+	}
+	if s.Interval > 0 {
+		if !s.Time.Empty() {
+			return nextAnchoredDuration(s.Time, s.Interval, now)
+		}
+		return time.Duration(s.Interval) * time.Minute
+	}
+	if s.Begin != "" {
+		return parseBeginAt(s.Begin, now)
+	}
+	if !s.Time.Empty() {
+		if next, ok := s.Time.Next(now); ok {
+			return next.Sub(now)
+		}
+		return 0
+	}
+	return 0
+}
+
+func parseBegin(begin string) time.Duration {
+	return parseBeginAt(begin, time.Now())
+}
+
+func parseBeginAt(begin string, now time.Time) time.Duration {
+	if strings.HasPrefix(begin, "+") {
+		var m int
+		fmt.Sscanf(begin, "+%d", &m)
+		if m > 0 {
+			return time.Duration(m) * time.Minute
+		}
+		return 0
+	}
+	if len(begin) == 4 {
+		var h, m int
+		fmt.Sscanf(begin, "%2d%2d", &h, &m)
+		target := time.Date(now.Year(), now.Month(), now.Day(), h, m, 0, 0, now.Location())
+		if target.Before(now) {
+			target = target.Add(24 * time.Hour)
+		}
+		return target.Sub(now)
+	}
+	return 0
+}
+
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
+}
+
+func roundDur(d time.Duration) string {
+	d = d.Round(time.Millisecond)
+	if d == 0 {
+		return "0s"
+	}
+	if d < time.Second {
+		return fmt.Sprintf("%dms", d.Milliseconds())
+	}
+	h := d / time.Hour
+	d -= h * time.Hour
+	m := d / time.Minute
+	d -= m * time.Minute
+	s := d / time.Second
+	ms := d / time.Millisecond % 1000
+	if h > 0 {
+		return fmt.Sprintf("%dh%dm%ds", h, m, s)
+	}
+	if m > 0 {
+		return fmt.Sprintf("%dm%ds", m, s)
+	}
+	if ms > 0 {
+		return fmt.Sprintf("%ds%03dms", s, ms)
+	}
+	return fmt.Sprintf("%ds", s)
+}
+
+func timeAnchorWait(s *config.Schedule, now time.Time) (time.Duration, bool) {
+	if s == nil || s.Time.Empty() {
+		return 0, false
+	}
+	next, ok := s.Time.Next(now)
+	if !ok {
+		return 0, false
+	}
+	return next.Sub(now), true
+}
+
+func nextAnchoredDuration(anchors config.TimeList, intervalMin int, now time.Time) time.Duration {
+	if len(anchors) == 0 || intervalMin <= 0 {
+		return 0
+	}
+	step := time.Duration(intervalMin) * time.Minute
+	best := time.Duration(0)
+	for _, a := range anchors {
+		epoch := time.Date(now.Year(), now.Month(), now.Day(), a/60, a%60, 0, 0, now.Location())
+		rem := now.Sub(epoch) % step
+		if rem < 0 {
+			rem += step
+		}
+		var d time.Duration
+		if rem == 0 {
+			d = step
+		} else {
+			d = step - rem
+		}
+		if best == 0 || d < best {
+			best = d
+		}
+	}
+	return best
+}
+
+func missedGridPoints(anchors config.TimeList, intervalMin int, prev, end time.Time) (int, []time.Time) {
+	if len(anchors) == 0 || intervalMin <= 0 || !end.After(prev) {
+		return 0, nil
+	}
+	step := time.Duration(intervalMin) * time.Minute
+	var samples []time.Time
+	seen := map[int64]bool{}
+	count := 0
+	for _, a := range anchors {
+		epoch := time.Date(prev.Year(), prev.Month(), prev.Day(), a/60, a%60, 0, 0, prev.Location())
+		diff := prev.Sub(epoch)
+		rem := diff % step
+		if rem < 0 {
+			rem += step
+		}
+		for g := prev.Add(step - rem); g.Before(end); g = g.Add(step) {
+			if seen[g.Unix()] {
+				continue
+			}
+			seen[g.Unix()] = true
+			count++
+			if len(samples) < 3 {
+				samples = append(samples, g)
+			}
+		}
+	}
+	return count, samples
+}
+
+func formatMissedTimes(times []time.Time, now time.Time) string {
+	parts := make([]string, 0, len(times))
+	ny, nm, nd := now.Date()
+	for _, t := range times {
+		ty, tm, td := t.Date()
+		if ty == ny && tm == nm && td == nd {
+			parts = append(parts, t.Format("15:04"))
+		} else {
+			parts = append(parts, t.Format("Mon 15:04"))
+		}
+	}
+	return strings.Join(parts, ", ")
+}

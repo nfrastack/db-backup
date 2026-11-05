@@ -1,0 +1,163 @@
+// SPDX-FileCopyrightText: © 2026 Nfrastack <code@nfrastack.com>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"runtime"
+	"strings"
+	"time"
+
+	"github.com/nfrastack/db-backup/internal/stats"
+	versionPkg "github.com/nfrastack/db-backup/internal/version"
+)
+
+func cmdVersion(args []string) int {
+	format := "text"
+	filtered := args
+	if len(args) > 0 && strings.EqualFold(args[0], "check") {
+		filtered = args[1:]
+	}
+	for i := 0; i < len(filtered); i++ {
+		switch filtered[i] {
+		case "--format", "-format":
+			if i+1 < len(filtered) {
+				format = filtered[i+1]
+				i++
+			}
+		case "--format=json", "-format=json":
+			format = "json"
+		}
+	}
+	if len(args) > 0 && strings.EqualFold(args[0], "check") {
+		return versionCheckCmd(format)
+	}
+	if format == "json" {
+		type versionJSON struct {
+			Binary    string `json:"binary"`
+			Version   string `json:"version"`
+			Commit    string `json:"commit"`
+			BuildDate string `json:"build_date"`
+			GOOS      string `json:"goos"`
+			GOARCH    string `json:"goarch"`
+			Edition   string `json:"edition"`
+			Mode      string `json:"mode"`
+			License   string `json:"license"`
+		}
+		out := versionJSON{
+			Binary:    "db-backup",
+			Version:   Version,
+			Commit:    displayCommit(),
+			BuildDate: buildDate,
+			GOOS:      runtime.GOOS,
+			GOARCH:    runtime.GOARCH,
+			Edition:   buildEdition,
+			Mode:      runtimeMode(),
+			License:   licenseLabel(),
+		}
+		if note := runtimeNote(); note != "" {
+			out.License = licenseLabel() + " (" + note + ")"
+		}
+		b, err := json.MarshalIndent(out, "", "  ")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "rendering version: %v\n", err)
+			return 1
+		}
+		fmt.Println(string(b))
+		return 0
+	}
+	fmt.Printf("db-backup %s (built %s; %s/%s)\n", Version, buildDate, runtime.GOOS, runtime.GOARCH)
+	fmt.Printf("commit:  %s\n", displayCommit())
+	fmt.Printf("build:   %s\n", buildEdition)
+	fmt.Printf("mode:    %s\n", runtimeMode())
+	if note := runtimeNote(); note != "" {
+		fmt.Printf("note:    %s\n", note)
+	}
+	fmt.Printf("license: %s\n", licenseLabel())
+	if stale, age := versionPkg.StaleDevBuild(time.Now()); stale {
+		fmt.Printf("warning: develop build is %d days old (built %s) and is likely stale. move to a stable relelease or rebuild from develop for latest fixes\n", age, buildDate)
+	}
+	return 0
+}
+
+func runVersionCheck() (*stats.VersionResponse, error) {
+	ctx := context.Background()
+	if statsMgr != nil {
+		return statsMgr.CheckVersionNow(ctx, Version, statsOpts())
+	}
+	client := stats.NewClient("", stats.SharedKey())
+	return client.CheckVersion(ctx, stats.CheckPayload(stats.ToolDBBackup, Version, statsOpts()))
+}
+
+func updateNotice(resp *stats.VersionResponse) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "New version available: %s (released %s)\n", resp.Latest, resp.DateReleased)
+	if resp.Critical {
+		b.WriteString("This release is marked critical. Upgrade is strongly recommended.\n")
+	}
+	if resp.DownloadURL != "" {
+		fmt.Fprintf(&b, "Download: %s\n", resp.DownloadURL)
+	}
+	if resp.ChangelogURL != "" {
+		fmt.Fprintf(&b, "Changelog: %s\n", resp.ChangelogURL)
+	}
+	if resp.Message != "" {
+		fmt.Fprintf(&b, "%s\n", resp.Message)
+	}
+	return b.String()
+}
+
+func versionCheckCmd(format string) int {
+	resp, err := runVersionCheck()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "version check failed: %s\n", stats.DescribeError(err))
+		if stats.IsRateLimited(err) && statsOpts().LicenseID == "" {
+			fmt.Fprintln(os.Stderr, "the version check is rate limited - consider supporting the project with a Supporter license: https://www.nfrastack.com/db-backup/license/buy")
+		}
+		return 1
+	}
+	if resp == nil || resp.Latest == "" {
+		fmt.Println("No new version information.")
+		return 0
+	}
+	reportLicenseVerdict(resp.LicenseRevoked)
+	if format == "json" {
+		b, err := json.MarshalIndent(resp, "", "  ")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "rendering response: %v\n", err)
+			return 1
+		}
+		fmt.Println(string(b))
+		return 0
+	}
+	maybePrintLicenseWarning(resp.LicenseRevoked)
+	if !stats.IsNewer(Version, resp.Latest) {
+		fmt.Printf("Already running the latest version (%s). Server reports: %s\n", Version, resp.Latest)
+	} else {
+		fmt.Print(updateNotice(resp))
+	}
+	for _, n := range resp.Notices {
+		if n.Text == "" {
+			continue
+		}
+		sev := n.Severity
+		if sev == "" {
+			sev = "info"
+		}
+		fmt.Printf("notice [%s]: %s\n", sev, n.Text)
+	}
+	if img := stats.ImageVersion(); stats.IsImageStale(img, resp.ImageLatest) {
+		fmt.Printf("New container image available: %s (running %s)\n", resp.ImageLatest, img)
+	}
+	if resp.Stable != nil && resp.Stable.Latest != "" && resp.Stable.Latest != resp.Latest &&
+		stats.IsNewer(Version, resp.Stable.Latest) {
+		fmt.Printf("Stable release available: %s (released %s) - you are running %s on the %s channel\n",
+			resp.Stable.Latest, resp.Stable.DateReleased, Version, resp.Channel)
+	}
+	return 0
+}

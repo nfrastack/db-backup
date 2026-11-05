@@ -1,0 +1,320 @@
+# Nfrastack Supporter License v1 (NSLv1)
+
+PLEASE CAREFULLY READ THIS NFRASTACK SUPPORTER LICENSE AGREEMENT
+("AGREEMENT"). THIS AGREEMENT IS A LEGALLY BINDING AGREEMENT BETWEEN YOU AND
+NFRASTACK AND GOVERNS YOUR USE OF THE SOFTWARE (DEFINED BELOW). IF YOU DO NOT
+AGREE WITH THIS AGREEMENT, YOU MAY NOT USE THE SOFTWARE. IF YOU ARE USING THE
+SOFTWARE ON BEHALF OF A LEGAL ENTITY, YOU REPRESENT AND WARRANT THAT YOU HAVE
+AUTHORITY TO AGREE TO THIS AGREEMENT ON BEHALF OF SUCH ENTITY. IF YOU DO NOT
+HAVE SUCH AUTHORITY, DO NOT USE THE SOFTWARE IN ANY MANNER.
+
+## 1. DEFINITIONS
+
+1.1. "Software" means the Nfrastack developed Supporter edition software, including all
+versions, updates, modifications, accompanying documentation, and related
+materials, as made available by Nfrastack.
+
+1.2. "Subscription" means the paid access to the Software provided by
+Nfrastack to Licensee, billed on a monthly or annual basis.
+
+1.3. "Licensor" means Nfrastack, the entity providing the Software.
+
+1.4. "Licensee" means the individual or entity installing, accessing, or using
+the Software with a valid Subscription.
+
+1.5. "License Key" means the unique signed artifact provided by Nfrastack upon
+purchasing a Subscription which activates the full features of the Software.
+
+1.6. "Source Code" means the human-readable version of the Software's code.
+
+1.7. "Confidential Information" has the meaning set out in Section 9.
+
+## 2. GRANT OF LICENSE
+
+2.1. Nfrastack grants Licensee a non-exclusive, non-transferable,
+non-sublicensable, limited license to download, install, and use the Software
+during the Subscription term, subject to this Agreement.
+
+2.2. Use of the Software is conditioned upon Licensee maintaining an active
+and valid paid Subscription.
+
+2.3. This license permits use of the Software for both personal and commercial
+purposes on an unlimited number of devices within Licensee's organization.
+Licensee is expressly prohibited from reselling, leasing, sublicensing, or
+otherwise redistributing the Software itself.
+
+2.4. This license is further governed by any licensing agreements separately
+executed between Nfrastack and Licensee. In the event of a conflict, the signed
+agreement controls.
+
+2.5. No rights are granted beyond those expressly stated herein.
+
+## 3. LICENSE KEYS
+
+3.1. The Software shall not be used without a valid License Key issued by
+Nfrastack.
+
+3.2. Licensee must use valid License Keys to run the Software, including
+modified versions. Any attempt to bypass the License Key requirement is a
+violation of this Agreement.
+
+3.3. Distribution or sharing of License Keys to third parties not associated
+with Licensee is strictly prohibited.
+
+3.4. License Keys are bound to the Subscription period. Should a Subscription
+expire or be cancelled, the corresponding License Keys become invalid the expiration
+or cancellation date.
+
+3.5. Any instance of the Software using such an expired key reverts to
+Community edition functionality.
+
+## 4. SOURCE CODE USAGE
+
+4.1. Licensee may view, copy, and modify the Software's Source Code, as made
+available by Nfrastack, solely for Licensee's internal business use and in
+compliance with this Agreement.
+
+4.2. Modifications to the Source Code do not grant Licensee any ownership
+rights. All rights, title, and interest remain with Nfrastack.
+
+4.3. Licensee is prohibited from altering, removing, or tampering with the
+License Key validation system within the Software. Such unauthorized
+modifications are a material breach and may result in legal action.
+
+4.4. The Software and its Source Code are not open source and remain
+proprietary to Nfrastack under this license. Access to the Source Code does not
+confer rights typically associated with open source software, including the
+right to freely sublicense or create derivative works for public distribution.
+
+4.5. Licensee may copy the Source Code for development and testing purposes
+without requiring a Subscription.
+
+## 5. INTELLECTUAL PROPERTY RIGHTS
+
+5.1. Nfrastack retains all rights, title, and interest in and to the Software,
+including all intellectual property rights therein.
+
+5.2. Licensee must not remove, alter, or obscure any proprietary notices
+(including copyright and trademark notices) on the Software.
+
+## 6. SUBSCRIPTION TERMS, RENEWAL, AND CANCELLATION
+
+6.1. Subscriptions are available on a monthly or annual basis. The applicable
+fees and billing cycle are set out at the time of purchase or as subsequently
+agreed in writing.
+
+6.2. Where Licensee provides a valid payment method on file, the Subscription
+automatically renews at the end of each billing cycle at the then-current rate,
+unless Licensee removes the payment method or cancels before the renewal date.
+
+6.3. Where Licensee pays by invoice, the Subscription does not automatically
+renew; renewal requires receipt of payment.
+
+6.4. Upon cancellation before the end of a paid billing cycle, Licensee is
+entitled to a prorated refund for the unused portion.
+
+6.5. Nfrastack may modify Subscription fees upon renewal, communicated at
+least thirty (30) days in advance.
+
+## 7. SUPPORT AND SERVICE LEVELS
+
+7.1. All Licensees with an active Subscription have access to standard
+community support resources, including documentation and community forums.
+
+7.2. Priority support is available exclusively to Licensees whose Subscription
+includes the "support" entitlement. Priority support inquiries receive an
+initial response within the time commitment set out in the applicable support
+plan.
+
+7.3. In the event Nfrastack consistently fails to meet the response-time
+commitment over a period of thirty (30) consecutive days, the affected
+Licensee's sole remedy is the right to terminate the Subscription and receive a
+prorated refund for the unused portion.
+
+7.4. The Software is self-hosted by Licensee on its own infrastructure.
+Nfrastack does not provide hosting services and makes no guarantees regarding
+uptime, availability, or performance of Licensee's self-hosted deployment.
+
+## 8. TERMINATION
+
+8.1. Nfrastack may terminate this Agreement immediately upon written notice if
+Licensee commits a material breach and fails to cure within thirty (30) days of
+written notice.
+
+8.2. Nfrastack may terminate this Agreement for convenience upon thirty (30)
+days' written notice; Licensee receives a prorated refund of any prepaid
+unused fees.
+
+8.3. Upon termination, all rights granted cease and Licensee must promptly
+cease all use of the Software and destroy or delete all copies in its
+possession, except that Licensee may retain copies of the Source Code obtained
+prior to termination solely for archival purposes, subject to continuing
+obligations of confidentiality and intellectual property protection.
+
+## 9. CONFIDENTIALITY
+
+9.1. Each party holds the other's Confidential Information in strict
+confidence and discloses it only to employees, contractors, or agents with a
+need to know who are bound by confidentiality obligations no less protective.
+
+9.2. Confidential Information excludes information that: (a) is or becomes
+publicly available through no fault of the receiving party; (b) was rightfully
+in the receiving party's possession prior to disclosure; (c) is independently
+developed without use of the disclosing party's Confidential Information; or
+(d) is rightfully obtained from a third party without restriction.
+
+9.3. A party may disclose Confidential Information to the extent required by
+applicable law, regulation, or court order, with prompt written notice where
+legally permissible.
+
+9.4. Confidentiality obligations survive termination for three (3) years.
+
+## 10. LIMITATION OF LIABILITY
+
+10.1. In no event will Nfrastack be liable for any indirect, incidental,
+special, consequential, or punitive damages, or any loss of profits, revenues,
+data, use, goodwill, or other intangible losses, resulting from Licensee's use
+of or inability to use the Software.
+
+10.2. Except for liability arising from death or personal injury caused by
+negligence, fraud, willful misconduct, or indemnification obligations,
+Nfrastack's total aggregate liability for any and all claims is limited to the
+total Subscription fees paid by Licensee in the twelve (12) months immediately
+preceding the event giving rise to the claim.
+
+## 11. INDEMNIFICATION
+
+11.1. Licensee agrees to indemnify, defend, and hold harmless Nfrastack and its
+officers, directors, employees, agents, and licensors from all claims, losses,
+expenses, damages, and costs, including reasonable attorneys' fees, resulting
+from Licensee's violation of this Agreement or its use or misuse of the
+Software.
+
+11.2. Nfrastack agrees to indemnify, defend, and hold harmless Licensee from
+any third-party claim that the Software, as provided, infringes a third party's
+patent, copyright, trademark, or trade secret, subject to conditions including
+prompt notice, control of defense, and reasonable cooperation.
+
+11.3. If the Software becomes the subject of an infringement claim, Nfrastack
+may, at its option and expense: (a) procure the right to continue using the
+Software; (b) modify or replace it to be non-infringing while maintaining
+substantially equivalent functionality; or (c) if neither is commercially
+practicable, terminate the Agreement and provide a prorated refund.
+
+11.4. Nfrastack has no obligation for claims arising from modifications made
+by Licensee, use in combination with third-party products where the
+infringement would not have occurred but for the combination, or continued use
+of a version after notification of a non-infringing update.
+
+## 12. DATA PROTECTION AND PRIVACY
+
+12.1. The Software is self-hosted by Licensee, and Licensee retains sole
+responsibility for all data stored and processed within its deployment.
+
+12.2. To the extent Nfrastack processes personal data on behalf of Licensee in
+connection with support services or license management, such processing
+complies with applicable data protection laws, including the Personal Information
+Protection Act (PIPA) of British Coumbia, the Personal Information Protection and
+Electronic Documents Act (PIPEDA) of Canada and, where applicable, the GDPR and
+CCPA.
+
+12.3. Where required by applicable law, the parties enter into a separate
+Data Processing Agreement.
+
+12.4. In the event of a data breach affecting personal data processed by
+Nfrastack, Nfrastack notifies Licensee without undue delay and cooperates in
+investigation and remediation.
+
+## 13. EXPORT COMPLIANCE
+
+13.1. The Software may be subject to export control laws of Canada and other
+jurisdictions. Licensee agrees to comply with all applicable export control
+laws, including Canada's Export Control List and, where applicable, U.S.
+re-export regulations.
+
+## 14. GOVERNING LAW AND DISPUTE RESOLUTION
+
+14.1. This Agreement is governed by and construed under the laws of the
+Province of British Columbia, Canada, and the federal laws of Canada applicable
+therein, without regard to conflict-of-laws principles.
+
+14.2. Any dispute arising out of or relating to this Agreement shall first be
+attempted through good faith negotiation for thirty (30) days following written
+notice.
+
+14.3. If not resolved through negotiation, the dispute shall be finally
+resolved by the courts of the Province of British Columbia, Canada. Each party
+irrevocably attorns to the exclusive jurisdiction of those courts.
+
+14.4. Notwithstanding the foregoing, either party may seek injunctive or
+equitable relief in any court of competent jurisdiction to protect its
+intellectual property rights or Confidential Information.
+
+## 15. NOTICES
+
+15.1. Notices are in writing and effectively given upon personal delivery,
+confirmed email transmission, or one (1) business day after deposit with a
+nationally recognized courier.
+
+15.2. Notices to Nfrastack: `hello@nfrastack.com`. Notices to Licensee: the
+email provided at registration or as subsequently updated.
+
+## 16. ASSIGNMENT
+
+16.1. Licensee may not assign this Agreement without prior written consent,
+except in connection with a merger, acquisition, corporate reorganization, or
+sale of all or substantially all assets, provided the assignee agrees in
+writing to be bound.
+
+16.2. Nfrastack may assign this Agreement without restriction.
+
+## 17. DISCLAIMERS AND WARRANTIES
+
+17.1. The Software is provided "AS IS" and "AS AVAILABLE", without warranty of
+any kind, express or implied, including merchantability, fitness for a
+particular purpose, and non-infringement.
+
+17.2. Nfrastack does not warrant that the Software will be error-free,
+uninterrupted, or that defects will be corrected.
+
+17.3. Nfrastack warrants that, as of the date of delivery, the Software will
+perform substantially in accordance with the accompanying documentation for
+ninety (90) days. Licensee's sole remedy for breach is, at Nfrastack's option,
+repair or replacement, or a refund of the fees paid for the period during which
+the Software was non-conforming.
+
+## 18. FORCE MAJEURE
+
+18.1. Neither party is liable for delay or failure caused by events beyond its
+reasonable control, including acts of God, elements, earthquakes, floods,
+fires, epidemics, riots, failures or delays in transportation or
+communications, or acts of government. If such an event continues more than
+ninety (90) days, either party may terminate upon written notice.
+
+## 19. SURVIVAL
+
+19.1. The following sections survive termination: Section 1 (Definitions),
+4.2 (Ownership), 4.4 (Proprietary Nature), 5 (Intellectual Property Rights),
+9 (Confidentiality), 10 (Limitation of Liability), 11 (Indemnification),
+12 (Data Protection and Privacy), 13 (Export Compliance), 14 (Governing Law and
+Dispute Resolution), and 19 (Survival).
+
+## 20. SEVERABILITY AND ENTIRE AGREEMENT
+
+20.1. If any provision is held unenforceable or invalid, it is reformed to the
+extent necessary to make it enforceable and consistent with the intent of the
+parties; remaining provisions remain in full force.
+
+20.2. This Agreement is the entire agreement between the parties respecting
+its subject matter and supersedes all prior or contemporaneous understandings.
+No amendment is binding unless in writing and signed by Nfrastack.
+
+## 21. ACCEPTANCE
+
+21.1. By downloading, installing, or using the Software, even without
+explicitly clicking an "I Agree" button, Licensee acknowledges reading,
+understanding, and agreeing to be bound by this Agreement.
+
+## 22. CONTACT INFORMATION
+
+For questions about this Agreement, contact Nfrastack at `hello@nfrastack.com`.

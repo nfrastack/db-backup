@@ -1,0 +1,979 @@
+// SPDX-FileCopyrightText: © 2026 Nfrastack <code@nfrastack.com>
+//
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+package mysql
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"io"
+	"strings"
+	"time"
+
+	_ "github.com/go-sql-driver/mysql"
+
+	"github.com/nfrastack/db-backup/internal/config"
+	"github.com/nfrastack/db-backup/internal/database/common"
+	"github.com/nfrastack/db-backup/internal/log"
+)
+
+type Dumper struct {
+	host           string
+	port           int
+	user           string
+	pass           string
+	db             *sql.DB
+	isMariaDB      bool
+	serverVer      string
+	server         common.ServerVersion
+	configuredType string
+	detectedType   string
+	connCfg        *config.ConnectivityConfig
+	tlsCfg         *config.TLSConfig
+	tlsName        string
+	ctx            context.Context
+
+	SingleTransaction bool
+	Events            bool
+	Routines          bool
+	Triggers          bool
+	Views             bool
+	RawBlobs          bool
+	SplitDB           bool
+	Tables            *config.TableFilter
+	SchemaOnly        bool
+}
+
+type querier interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+type queryExecer interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+func (d *Dumper) Close() error {
+	if d.db != nil {
+		return d.db.Close()
+	}
+	return nil
+}
+
+func (d *Dumper) ctxOrBg() context.Context {
+	if d.ctx != nil {
+		return d.ctx
+	}
+	return context.Background()
+}
+
+func (d *Dumper) DetectedType() string {
+	if d.detectedType != "" {
+		return d.detectedType
+	}
+	return DetectType(d.serverVer)
+}
+
+func DetectType(version string) string {
+	if version == "" {
+		return ""
+	}
+	if strings.Contains(strings.ToLower(version), "mariadb") {
+		return "mariadb"
+	}
+	return "mysql"
+}
+
+func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
+	start := time.Now()
+	log.Debug("mysql", "backup start",
+		"host", d.host, "port", d.port, "server", d.serverVer,
+		"databases", strings.Join(dbNames, ","))
+	var tx *sql.Tx
+	var err error
+
+	if d.SingleTransaction {
+		tx, err = d.db.BeginTx(d.ctxOrBg(), nil)
+		if err != nil {
+			return fmt.Errorf("begin transaction: %w", err)
+		}
+		defer tx.Rollback()
+	}
+
+	conn := d.db
+
+	d.writeHeader(w)
+	d.writeVersion(w)
+
+	if len(dbNames) == 1 && strings.ToLower(dbNames[0]) == "all" {
+		var err error
+		dbNames, err = d.listDatabases()
+		if err != nil {
+			return err
+		}
+	}
+
+	for _, dbName := range dbNames {
+		if err := d.dumpDatabase(w, conn, tx, dbName); err != nil {
+			return fmt.Errorf("dump %s: %w", dbName, err)
+		}
+	}
+
+	if d.SingleTransaction {
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit: %w", err)
+		}
+	}
+
+	d.writeFooter(w)
+	log.Debug("mysql", "backup done",
+		"databases", len(dbNames),
+		"elapsed", time.Since(start).Round(time.Millisecond).String())
+	return nil
+}
+
+func (d *Dumper) dumpDatabase(w io.Writer, conn *sql.DB, tx *sql.Tx, dbName string) error {
+	dbStart := time.Now()
+	tables, views, err := d.listTables(conn, tx, dbName)
+	if err != nil {
+		return err
+	}
+	log.Debug("mysql", "dumping database",
+		"database", dbName, "tables", len(tables), "views", len(views))
+
+	fmt.Fprintf(w, "\n-- Database: %s\n", dbName)
+	fmt.Fprintf(w, "USE %s;\n\n", quoteMySQLIdent(dbName))
+
+	var trigByTable map[string][]string
+	if d.Triggers {
+		trigByTable, err = d.listTriggersByTable(conn, tx, dbName)
+		if err != nil {
+			return err
+		}
+	}
+
+	for _, table := range tables {
+		if d.Tables != nil {
+			included, _ := d.Tables.Apply(table)
+			if !included {
+				continue
+			}
+		}
+		common.TraceTable(d.ctxOrBg(), dbName, table)
+		if err := d.dumpTable(w, conn, tx, dbName, table); err != nil {
+			return err
+		}
+		if d.Triggers {
+			if err := d.dumpTriggersForTable(w, conn, tx, dbName, table, trigByTable[table]); err != nil {
+				return err
+			}
+		}
+	}
+
+	if d.Triggers {
+		seen := map[string]bool{}
+		for _, t := range tables {
+			seen[t] = true
+		}
+		for tbl, names := range trigByTable {
+			if seen[tbl] {
+				continue
+			}
+			if err := d.dumpTriggersForTable(w, conn, tx, dbName, tbl, names); err != nil {
+				return err
+			}
+		}
+	}
+
+	if d.Views {
+		for _, view := range views {
+			if d.Tables != nil {
+				included, _ := d.Tables.Apply(view)
+				if !included {
+					continue
+				}
+			}
+			if err := d.dumpView(w, conn, tx, dbName, view); err != nil {
+				return err
+			}
+		}
+	}
+
+	if d.Routines {
+		if err := d.dumpRoutines(w, conn, tx, dbName); err != nil {
+			return err
+		}
+	}
+
+	if d.Events {
+		if err := d.dumpEvents(w, conn, tx, dbName); err != nil {
+			return err
+		}
+	}
+
+	log.Debug("mysql", "database done",
+		"database", dbName, "tables", len(tables), "views", len(views),
+		"elapsed", time.Since(dbStart).Round(time.Millisecond).String())
+	return nil
+}
+
+func (d *Dumper) dumpEvents(w io.Writer, conn *sql.DB, tx *sql.Tx, dbName string) error {
+	names, err := queryNames(conn, tx, d.ctxOrBg(),
+		"SELECT EVENT_NAME FROM information_schema.EVENTS WHERE EVENT_SCHEMA = ? ORDER BY EVENT_NAME", dbName)
+	if err != nil {
+		return fmt.Errorf("list events: %w", err)
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	fmt.Fprintf(w, "\n-- Events for %s\n", dbName)
+	for _, name := range names {
+		createSQL, err := d.showCreate(conn, tx,
+			"SHOW CREATE EVENT "+quoteMySQLIdent(dbName)+"."+quoteMySQLIdent(name))
+		if err != nil {
+			return fmt.Errorf("show create event %s: %w", name, err)
+		}
+		fmt.Fprintf(w, "DROP EVENT IF EXISTS %s;\n", quoteMySQLIdent(name))
+		fmt.Fprintf(w, "DELIMITER ;;\n%s;;\nDELIMITER ;\n\n", strings.TrimSuffix(strings.TrimSpace(createSQL), ";"))
+	}
+	return nil
+}
+
+func (d *Dumper) dumpRoutines(w io.Writer, conn *sql.DB, tx *sql.Tx, dbName string) error {
+	ctx := d.ctxOrBg()
+	procs, err := queryNames(conn, tx, ctx,
+		"SELECT ROUTINE_NAME FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = ? AND ROUTINE_TYPE = 'PROCEDURE' ORDER BY ROUTINE_NAME", dbName)
+	if err != nil {
+		return fmt.Errorf("list procedures: %w", err)
+	}
+	funcs, err := queryNames(conn, tx, ctx,
+		"SELECT ROUTINE_NAME FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = ? AND ROUTINE_TYPE = 'FUNCTION' ORDER BY ROUTINE_NAME", dbName)
+	if err != nil {
+		return fmt.Errorf("list functions: %w", err)
+	}
+	if len(procs) == 0 && len(funcs) == 0 {
+		return nil
+	}
+	fmt.Fprintf(w, "\n-- Stored routines for %s\n", dbName)
+	for _, name := range procs {
+		createSQL, err := d.showCreate(conn, tx,
+			"SHOW CREATE PROCEDURE "+quoteMySQLIdent(dbName)+"."+quoteMySQLIdent(name))
+		if err != nil {
+			return fmt.Errorf("show create procedure %s: %w", name, err)
+		}
+		fmt.Fprintf(w, "DROP PROCEDURE IF EXISTS %s;\n", quoteMySQLIdent(name))
+		fmt.Fprintf(w, "DELIMITER ;;\n%s;;\nDELIMITER ;\n\n", strings.TrimSuffix(strings.TrimSpace(createSQL), ";"))
+	}
+	for _, name := range funcs {
+		createSQL, err := d.showCreate(conn, tx,
+			"SHOW CREATE FUNCTION "+quoteMySQLIdent(dbName)+"."+quoteMySQLIdent(name))
+		if err != nil {
+			return fmt.Errorf("show create function %s: %w", name, err)
+		}
+		fmt.Fprintf(w, "DROP FUNCTION IF EXISTS %s;\n", quoteMySQLIdent(name))
+		fmt.Fprintf(w, "DELIMITER ;;\n%s;;\nDELIMITER ;\n\n", strings.TrimSuffix(strings.TrimSpace(createSQL), ";"))
+	}
+	return nil
+}
+
+func (d *Dumper) dumpTable(w io.Writer, conn *sql.DB, tx *sql.Tx, dbName, table string) error {
+	fmt.Fprintf(w, "\n-- Table: %s\n", table)
+
+	ctx := d.ctxOrBg()
+	var createSQL string
+	q := "SHOW CREATE TABLE " + quoteMySQLIdent(dbName) + "." + quoteMySQLIdent(table)
+	sess, done, err := d.showSession(conn, tx)
+	if err != nil {
+		return fmt.Errorf("show create %s: %w", table, err)
+	}
+	defer done()
+	if err := sess.QueryRowContext(ctx, q).Scan(&table, &createSQL); err != nil {
+		return fmt.Errorf("show create %s: %w", table, err)
+	}
+	fmt.Fprintf(w, "DROP TABLE IF EXISTS %s;\n", quoteMySQLIdent(table))
+	fmt.Fprintf(w, "%s;\n\n", createSQL)
+
+	schemaOnly := d.SchemaOnly
+	if d.Tables != nil {
+		_, so := d.Tables.Apply(table)
+		schemaOnly = schemaOnly || so
+	}
+	if schemaOnly {
+		return nil
+	}
+
+	insertCols, err := d.insertableColumns(conn, tx, dbName, table)
+	if err != nil {
+		return err
+	}
+	if len(insertCols) == 0 {
+		fmt.Fprintf(w, "-- No insertable columns for %s (all generated); data skipped\n", quoteMySQLIdent(table))
+		return nil
+	}
+
+	var rowScanner func(io.Writer) error
+	batchBytes := insertBatchBytes(conn, tx, ctx, dbName, table)
+	if tx != nil {
+		rowScanner = func(w io.Writer) error {
+			return d.streamRows(w, tx, dbName, table, insertCols, batchBytes)
+		}
+	} else {
+		rowScanner = func(w io.Writer) error {
+			return d.streamRows(w, conn, dbName, table, insertCols, batchBytes)
+		}
+	}
+
+	if err := rowScanner(w); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (d *Dumper) dumpTriggersForTable(w io.Writer, conn *sql.DB, tx *sql.Tx, dbName, table string, names []string) error {
+	if len(names) == 0 {
+		return nil
+	}
+	for _, name := range names {
+		createSQL, err := d.showCreate(conn, tx,
+			"SHOW CREATE TRIGGER "+quoteMySQLIdent(dbName)+"."+quoteMySQLIdent(name))
+		if err != nil {
+			return fmt.Errorf("show create trigger %s: %w", name, err)
+		}
+		fmt.Fprintf(w, "\n-- Trigger: %s (on %s)\n", name, table)
+		fmt.Fprintf(w, "DROP TRIGGER IF EXISTS %s;\n", quoteMySQLIdent(name))
+		fmt.Fprintf(w, "DELIMITER ;;\n%s;;\nDELIMITER ;\n\n", strings.TrimSuffix(strings.TrimSpace(createSQL), ";"))
+	}
+	return nil
+}
+
+func (d *Dumper) dumpView(w io.Writer, conn *sql.DB, tx *sql.Tx, dbName, view string) error {
+	fmt.Fprintf(w, "\n-- View: %s\n", view)
+
+	ctx := d.ctxOrBg()
+	var name, createSQL, charset, collation string
+	q := "SHOW CREATE VIEW " + quoteMySQLIdent(dbName) + "." + quoteMySQLIdent(view)
+	sess, done, err := d.showSession(conn, tx)
+	if err != nil {
+		return fmt.Errorf("show create view %s: %w", view, err)
+	}
+	defer done()
+	if err := sess.QueryRowContext(ctx, q).Scan(&name, &createSQL, &charset, &collation); err != nil {
+		return fmt.Errorf("show create view %s: %w", view, err)
+	}
+	fmt.Fprintf(w, "DROP VIEW IF EXISTS %s;\n", quoteMySQLIdent(view))
+	fmt.Fprintf(w, "%s;\n\n", createSQL)
+	return nil
+}
+
+func escapeString(s string) string {
+	s = strings.ReplaceAll(s, "\\", "\\\\")
+	s = strings.ReplaceAll(s, "\x00", "\\0")
+	s = strings.ReplaceAll(s, "'", "\\'")
+	s = strings.ReplaceAll(s, "\"", "\\\"")
+	s = strings.ReplaceAll(s, "\n", "\\n")
+	s = strings.ReplaceAll(s, "\r", "\\r")
+	return s
+}
+
+func escapeBlob(b []byte) string {
+	s := escapeString(string(b))
+	return strings.ReplaceAll(s, "\x1a", "\\Z")
+}
+
+func filterInsertableColumns(cols []string, extras []string, generationExprs []string) []string {
+	out := make([]string, 0, len(cols))
+	for i, c := range cols {
+		var extra, genExpr string
+		if i < len(extras) {
+			extra = extras[i]
+		}
+		if i < len(generationExprs) {
+			genExpr = generationExprs[i]
+		}
+		if IsGeneratedColumn(extra, genExpr) {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+func (d *Dumper) insertableColumns(conn *sql.DB, tx *sql.Tx, dbName, table string) ([]string, error) {
+	ctx := d.ctxOrBg()
+	const q = `SELECT COLUMN_NAME, EXTRA, GENERATION_EXPRESSION FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION`
+	var rows *sql.Rows
+	var err error
+	if tx != nil {
+		rows, err = tx.QueryContext(ctx, q, dbName, table)
+	} else {
+		rows, err = conn.QueryContext(ctx, q, dbName, table)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("list columns %s.%s: %w", dbName, table, err)
+	}
+	defer rows.Close()
+	var cols, extras, genExprs []string
+	for rows.Next() {
+		var name, extra string
+		var genExpr sql.NullString
+		if err := rows.Scan(&name, &extra, &genExpr); err != nil {
+			return nil, fmt.Errorf("scan column %s.%s: %w", dbName, table, err)
+		}
+		cols = append(cols, name)
+		extras = append(extras, extra)
+		if genExpr.Valid {
+			genExprs = append(genExprs, genExpr.String)
+		} else {
+			genExprs = append(genExprs, "")
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list columns %s.%s: %w", dbName, table, err)
+	}
+	return filterInsertableColumns(cols, extras, genExprs), nil
+}
+
+func insertBatchBytes(conn *sql.DB, tx *sql.Tx, ctx context.Context, dbName, table string) int {
+	var maxPacket uint64
+	if tx != nil {
+		_ = tx.QueryRowContext(ctx, "SELECT @@SESSION.max_allowed_packet").Scan(&maxPacket)
+	} else {
+		_ = conn.QueryRowContext(ctx, "SELECT @@SESSION.max_allowed_packet").Scan(&maxPacket)
+	}
+	if maxPacket > 0 && maxPacket < mysqlInsertBatchBytes {
+		log.Debug("mysql", "small max_allowed_packet, shrinking insert batches",
+			"database", dbName, "table", table, "max_allowed_packet", maxPacket)
+		return int(maxPacket / 4)
+	}
+	log.Trace("mysql", "probed max_allowed_packet",
+		"database", dbName, "table", table, "max_allowed_packet", maxPacket,
+		"batch_bytes", mysqlInsertBatchBytes)
+	return mysqlInsertBatchBytes
+}
+
+func isBlobType(t string) bool {
+	switch strings.ToLower(t) {
+	case "blob", "tinyblob", "mediumblob", "longblob", "binary", "varbinary", "geometry":
+		return true
+	}
+	return false
+}
+
+func IsGeneratedColumn(extra, generationExpr string) bool {
+	if strings.TrimSpace(generationExpr) != "" {
+		return true
+	}
+	lower := strings.ToLower(strings.TrimSpace(extra))
+	if lower == "default_generated" || strings.Contains(lower, "default_generated") {
+		return false
+	}
+	switch lower {
+	case "virtual generated", "stored generated", "virtual", "persistent", "stored":
+		return true
+	}
+	if strings.Contains(lower, "generated") {
+		return true
+	}
+	return false
+}
+
+func (d *Dumper) IsMariaDB() bool {
+	return d.isMariaDB
+}
+
+func isSystemDB(name string) bool {
+	switch name {
+	case "information_schema", "performance_schema", "mysql", "sys":
+		return true
+	}
+	return false
+}
+
+func (d *Dumper) listDatabases() ([]string, error) {
+	var dbs []string
+	rows, err := d.db.QueryContext(d.ctxOrBg(), "SHOW DATABASES")
+	if err != nil {
+		return nil, fmt.Errorf("list databases: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var db string
+		if err := rows.Scan(&db); err != nil {
+			return nil, fmt.Errorf("scan database row: %w", err)
+		}
+		if !isSystemDB(db) {
+			dbs = append(dbs, db)
+		}
+	}
+	return dbs, rows.Err()
+}
+
+func (d *Dumper) listTables(conn *sql.DB, tx *sql.Tx, dbName string) (tables, views []string, err error) {
+	ctx := d.ctxOrBg()
+	var rows *sql.Rows
+	q := "SHOW FULL TABLES FROM " + quoteMySQLIdent(dbName)
+	if tx != nil {
+		rows, err = tx.QueryContext(ctx, q)
+	} else {
+		rows, err = conn.QueryContext(ctx, q)
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("list tables: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var name, tableType string
+		if err := rows.Scan(&name, &tableType); err != nil {
+			return nil, nil, fmt.Errorf("scan table row: %w", err)
+		}
+		if strings.EqualFold(tableType, "VIEW") {
+			views = append(views, name)
+		} else {
+			tables = append(tables, name)
+		}
+	}
+	return tables, views, rows.Err()
+}
+
+func (d *Dumper) listTriggersByTable(conn *sql.DB, tx *sql.Tx, dbName string) (map[string][]string, error) {
+	ctx := d.ctxOrBg()
+	var rows *sql.Rows
+	var err error
+	q := "SELECT TRIGGER_NAME, EVENT_OBJECT_TABLE FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = ? ORDER BY EVENT_OBJECT_TABLE, TRIGGER_NAME"
+	if tx != nil {
+		rows, err = tx.QueryContext(ctx, q, dbName)
+	} else {
+		rows, err = conn.QueryContext(ctx, q, dbName)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("list triggers: %w", err)
+	}
+	defer rows.Close()
+	out := map[string][]string{}
+	for rows.Next() {
+		var name, table string
+		if err := rows.Scan(&name, &table); err != nil {
+			return nil, err
+		}
+		out[table] = append(out[table], name)
+	}
+	return out, rows.Err()
+}
+
+func NewDumper(host string, port int, user, pass string, tlsCfg ...*config.TLSConfig) *Dumper {
+	if port == 0 {
+		port = 3306
+	}
+	d := &Dumper{
+		host:              host,
+		port:              port,
+		user:              user,
+		pass:              pass,
+		SingleTransaction: true,
+		Events:            true,
+		Routines:          true,
+		Triggers:          true,
+		Views:             true,
+		connCfg: &config.ConnectivityConfig{
+			Enabled:       config.BoolPtr(true),
+			Method:        config.MethodFull,
+			RetryInterval: 5,
+			Timeout:       300,
+		},
+	}
+	if len(tlsCfg) > 0 && tlsCfg[0] != nil {
+		d.tlsCfg = tlsCfg[0]
+	}
+	return d
+}
+
+func normalizeSessionSQLMode(ctx context.Context, q queryExecer) func() {
+	noop := func() {}
+	var orig string
+	if err := q.QueryRowContext(ctx, "SELECT @@SESSION.sql_mode").Scan(&orig); err != nil {
+		log.Debug("mysql", "sql_mode unreadable - SHOW CREATE output not normalized", "error", err.Error())
+		return noop
+	}
+	stripped := stripQuoteModes(orig)
+	if stripped == orig {
+		return noop
+	}
+	if _, err := q.ExecContext(ctx, "SET SESSION sql_mode='"+stripped+"'"); err != nil {
+		log.Debug("mysql", "sql_mode not normalized - SHOW CREATE may use double-quoted identifiers", "error", err.Error())
+		return noop
+	}
+	return func() {
+		if _, err := q.ExecContext(ctx, "SET SESSION sql_mode='"+orig+"'"); err != nil {
+			log.Debug("mysql", "sql_mode restore failed", "error", err.Error())
+		}
+	}
+}
+
+func (d *Dumper) Open() error {
+
+	return d.OpenContext(context.Background())
+}
+
+func (d *Dumper) OpenContext(ctx context.Context) error {
+	d.ctx = ctx
+	log.Debug("mysql", "connect start",
+		"host", d.host, "port", d.port, "user", d.user,
+		"tls", d.tlsCfg != nil)
+	probe := func() error { return common.TCPDial(d.host, d.port) }
+	connect := func() error {
+		if d.tlsName == "" && d.tlsCfg != nil {
+			tc, err := common.BuildTLSConfig(d.tlsCfg)
+			if err != nil {
+				return err
+			}
+			if tc != nil {
+				if name, err := RegisterTLS(tc); err == nil {
+					d.tlsName = name
+				}
+			}
+		}
+		dsn := ConnectDSN(d.user, d.pass, d.host, d.port,
+			"charset=utf8mb4&multiStatements=true&interpolateParams=true", d.tlsName)
+		var err error
+		d.db, err = sql.Open("mysql", dsn)
+		if err != nil {
+			return fmt.Errorf("connect: %w", err)
+		}
+		return nil
+	}
+	ping := func() error {
+		if err := d.db.PingContext(ctx); err != nil {
+			return fmt.Errorf("ping: %w", err)
+		}
+		var ver string
+		if err := d.db.QueryRowContext(ctx, "SELECT VERSION()").Scan(&ver); err != nil {
+			return fmt.Errorf("ping version: %w", err)
+		}
+		d.serverVer = ver
+		d.server = ParseServerVersion(ver)
+		d.isMariaDB = strings.Contains(strings.ToLower(ver), "mariadb")
+		d.detectedType = DetectType(ver)
+		log.Debug("mysql", "connected",
+			"host", d.host, "port", d.port,
+			"server", ver, "mariadb", d.isMariaDB,
+			"detected", d.detectedType, "configured", d.configuredType)
+		if typeMismatch(d.configuredType, d.detectedType) {
+			log.Warn("mysql", "type mismatch: configured TYPE disagrees with detected server type (behavior follows detection, filename keeps configured TYPE)",
+				"host", d.host, "port", d.port,
+				"configured", d.configuredType, "detected", d.detectedType,
+				"server", ver)
+		}
+		return nil
+	}
+	return common.WithConnectivity(ctx, "mysql", d.connCfg, probe, connect, ping)
+}
+
+func queryNames(conn *sql.DB, tx *sql.Tx, ctx context.Context, query, dbName string) ([]string, error) {
+	var rows *sql.Rows
+	var err error
+	if tx != nil {
+		rows, err = tx.QueryContext(ctx, query, dbName)
+	} else {
+		rows, err = conn.QueryContext(ctx, query, dbName)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		out = append(out, name)
+	}
+	return out, rows.Err()
+}
+
+func quoteMySQLIdent(s string) string {
+	return "`" + strings.ReplaceAll(s, "`", "``") + "`"
+}
+
+func (d *Dumper) SetConfiguredType(t string) {
+	d.configuredType = t
+}
+
+func (d *Dumper) SetConnectivity(cfg *config.ConnectivityConfig) {
+	if cfg != nil {
+		d.connCfg = cfg
+	}
+}
+
+func (d *Dumper) SetMysqlObjects(o config.MysqlObjects) {
+	d.Routines = o.Routines
+	d.Events = o.Events
+	d.Triggers = o.Triggers
+	d.Views = o.Views
+	d.RawBlobs = o.RawBlobs
+}
+
+func (d *Dumper) SetTableFilter(f *config.TableFilter, schemaOnly bool) {
+	d.Tables = f
+	d.SchemaOnly = schemaOnly
+}
+
+func (d *Dumper) showCreate(conn *sql.DB, tx *sql.Tx, query string) (string, error) {
+	ctx := d.ctxOrBg()
+	sess, done, err := d.showSession(conn, tx)
+	if err != nil {
+		return "", err
+	}
+	defer done()
+	rows, err := sess.QueryContext(ctx, query)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+
+	cols, err := rows.Columns()
+	if err != nil {
+		return "", err
+	}
+
+	createIdx := -1
+	for i, c := range cols {
+		if strings.Contains(strings.ToLower(c), "create ") {
+			createIdx = i
+			break
+		}
+	}
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return "", err
+		}
+		return "", fmt.Errorf("no rows for: %s", query)
+	}
+	vals := make([]any, len(cols))
+	ptrs := make([]any, len(cols))
+	for i := range vals {
+		ptrs[i] = &vals[i]
+	}
+	if err := rows.Scan(ptrs...); err != nil {
+		return "", err
+	}
+	toStr := func(v any) string {
+		switch t := v.(type) {
+		case nil:
+			return ""
+		case []byte:
+			return string(t)
+		case string:
+			return t
+		default:
+			return fmt.Sprintf("%v", t)
+		}
+	}
+	if createIdx >= 0 {
+		if s := toStr(vals[createIdx]); s != "" {
+			return s, rows.Err()
+		}
+	}
+
+	best := ""
+	for _, v := range vals {
+		if s := toStr(v); len(s) > len(best) {
+			best = s
+		}
+	}
+	if best == "" {
+		return "", fmt.Errorf("null create definition for: %s", query)
+	}
+	return best, rows.Err()
+}
+
+func (d *Dumper) showSession(conn *sql.DB, tx *sql.Tx) (queryExecer, func(), error) {
+	ctx := d.ctxOrBg()
+	if tx != nil {
+		return tx, normalizeSessionSQLMode(ctx, tx), nil
+	}
+	c, err := conn.Conn(ctx)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	restore := normalizeSessionSQLMode(ctx, c)
+	return c, func() { restore(); c.Close() }, nil
+}
+
+const mysqlInsertBatchBytes = 1000000
+
+func (d *Dumper) streamRows(w io.Writer, q querier, dbName, table string, insertCols []string, batchBytes int) error {
+	if len(insertCols) == 0 {
+		return nil
+	}
+	selectList := make([]string, len(insertCols))
+	for i, c := range insertCols {
+		selectList[i] = quoteMySQLIdent(c)
+	}
+	rows, err := q.QueryContext(d.ctxOrBg(), "SELECT "+strings.Join(selectList, ", ")+" FROM "+quoteMySQLIdent(dbName)+"."+quoteMySQLIdent(table))
+	if err != nil {
+		return fmt.Errorf("select %s.%s: %w", dbName, table, err)
+	}
+	defer rows.Close()
+
+	cols := insertCols
+
+	colTypes, err := rows.ColumnTypes()
+	if err != nil {
+		return err
+	}
+
+	qCols := make([]string, len(cols))
+	for i, c := range cols {
+		qCols[i] = quoteMySQLIdent(c)
+	}
+	header := fmt.Sprintf("INSERT INTO %s (%s) VALUES\n", quoteMySQLIdent(table), strings.Join(qCols, ", "))
+
+	var sb strings.Builder
+	rowsInBatch := 0
+	flush := func() {
+		sb.WriteString(";\n")
+		_, _ = io.WriteString(w, sb.String())
+		sb.Reset()
+		rowsInBatch = 0
+	}
+	for rows.Next() {
+		if rowsInBatch == 0 {
+			sb.WriteString(header)
+		} else {
+			sb.WriteString(",\n")
+		}
+
+		values := make([]any, len(cols))
+		valuePtrs := make([]any, len(cols))
+		for i := range values {
+			valuePtrs[i] = &values[i]
+		}
+
+		if err := rows.Scan(valuePtrs...); err != nil {
+			return fmt.Errorf("scan row: %w", err)
+		}
+
+		sb.WriteString("(")
+		for i, val := range values {
+			if i > 0 {
+				sb.WriteString(", ")
+			}
+			switch v := val.(type) {
+			case nil:
+				sb.WriteString("NULL")
+			case []byte:
+				scanType := colTypes[i].DatabaseTypeName()
+				if isBlobType(scanType) && !d.RawBlobs {
+					fmt.Fprintf(&sb, "0x%x", v)
+				} else if isBlobType(scanType) {
+					sb.WriteString("'" + escapeBlob(v) + "'")
+				} else {
+					sb.WriteString("'" + escapeString(string(v)) + "'")
+				}
+			case int64:
+				fmt.Fprintf(&sb, "%d", v)
+			case float64:
+				fmt.Fprintf(&sb, "%v", v)
+			case bool:
+				if v {
+					sb.WriteString("1")
+				} else {
+					sb.WriteString("0")
+				}
+			case string:
+				sb.WriteString("'" + escapeString(v) + "'")
+			case fmt.Stringer:
+				sb.WriteString("'" + escapeString(v.String()) + "'")
+			default:
+				sb.WriteString("'" + escapeString(fmt.Sprintf("%v", v)) + "'")
+			}
+		}
+		sb.WriteString(")")
+
+		rowsInBatch++
+		if batchBytes > 0 && sb.Len() >= batchBytes {
+			flush()
+		}
+	}
+
+	if rowsInBatch > 0 {
+		flush()
+	}
+
+	return rows.Err()
+}
+
+func stripQuoteModes(mode string) string {
+	if mode == "" {
+		return ""
+	}
+	parts := strings.Split(mode, ",")
+	kept := parts[:0]
+	for _, p := range parts {
+		t := strings.TrimSpace(p)
+		if u := strings.ToUpper(t); u == "ANSI" || u == "ANSI_QUOTES" {
+			continue
+		}
+		kept = append(kept, t)
+	}
+	return strings.Join(kept, ",")
+}
+
+func typeMismatch(configured, detected string) bool {
+
+	configured = strings.ToLower(strings.TrimSpace(configured))
+	detected = strings.ToLower(strings.TrimSpace(detected))
+	if detected == "" || configured == "" {
+		return false
+	}
+	normalize := func(s string) string {
+		switch s {
+		case "mariadb":
+			return "mariadb"
+		case "mysql":
+			return "mysql"
+		default:
+			return s
+		}
+	}
+	return normalize(configured) != normalize(detected)
+}
+
+func (d *Dumper) writeFooter(w io.Writer) {
+	fmt.Fprintf(w, "/*!40103 SET TIME_ZONE=@OLD_TIME_ZONE */;\n")
+	fmt.Fprintf(w, "/*!40101 SET SQL_MODE=@OLD_SQL_MODE */;\n")
+	fmt.Fprintf(w, "/*!40014 SET FOREIGN_KEY_CHECKS=@OLD_FOREIGN_KEY_CHECKS */;\n")
+	fmt.Fprintf(w, "/*!40014 SET UNIQUE_CHECKS=@OLD_UNIQUE_CHECKS */;\n")
+	fmt.Fprintf(w, "/*!40101 SET CHARACTER_SET_CLIENT=@OLD_CHARACTER_SET_CLIENT */;\n")
+	fmt.Fprintf(w, "/*!40101 SET CHARACTER_SET_RESULTS=@OLD_CHARACTER_SET_RESULTS */;\n")
+	fmt.Fprintf(w, "/*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;\n")
+	fmt.Fprintf(w, "/*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;\n")
+	fmt.Fprintf(w, "\n-- Dump completed\n")
+}
+
+func (d *Dumper) writeHeader(w io.Writer) {
+	detail := fmt.Sprintf("Host: %s  Server: %s  Detected: %s  Configured: %s",
+		d.host, d.server.Display(), d.DetectedType(), d.configuredType)
+	fmt.Fprint(w, common.DumpBanner("--", "MySQL/MariaDB", detail))
+	fmt.Fprintf(w, "/*!40101 SET @OLD_CHARACTER_SET_CLIENT=@@CHARACTER_SET_CLIENT */;\n")
+	fmt.Fprintf(w, "/*!40101 SET @OLD_CHARACTER_SET_RESULTS=@@CHARACTER_SET_RESULTS */;\n")
+	fmt.Fprintf(w, "/*!40101 SET @OLD_COLLATION_CONNECTION=@@COLLATION_CONNECTION */;\n")
+	fmt.Fprintf(w, " SET NAMES utf8mb4 ;\n")
+	fmt.Fprintf(w, "/*!40103 SET @OLD_TIME_ZONE=@@TIME_ZONE */;\n")
+	fmt.Fprintf(w, "/*!40103 SET TIME_ZONE='+00:00' */;\n")
+	fmt.Fprintf(w, "/*!40014 SET @OLD_UNIQUE_CHECKS=@@UNIQUE_CHECKS, UNIQUE_CHECKS=0 */;\n")
+	fmt.Fprintf(w, "/*!40014 SET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS=0 */;\n")
+	fmt.Fprintf(w, "/*!40101 SET @OLD_SQL_MODE=@@SQL_MODE, SQL_MODE='NO_AUTO_VALUE_ON_ZERO' */;\n")
+	fmt.Fprintf(w, "/*!40111 SET @OLD_SQL_NOTES=@@SQL_NOTES, SQL_NOTES=0 */;\n\n")
+}
+
+func (d *Dumper) writeVersion(w io.Writer) {
+	fmt.Fprintf(w, "-- Server version %s\n\n", d.server.Display())
+}

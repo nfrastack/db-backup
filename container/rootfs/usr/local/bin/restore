@@ -1,0 +1,18 @@
+#!/command/with-contenv bash
+# SPDX-FileCopyrightText: © 2026 Nfrastack <code@nfrastack.com>
+#
+# SPDX-License-Identifier: MIT
+
+source /container/base/functions/container/init
+SERVICE_NAME="db-backup"
+prepare_service defaults
+
+# legacy backwards compatible command
+
+CONFIG_FILE_PATH="${CONFIG_PATH%/}/${CONFIG_FILE}"
+
+if [ -f "${CONFIG_FILE_PATH}" ]; then
+    exec s6-setuidgid "${DBBACKUP_USER}" /app/dbb --config "${CONFIG_FILE_PATH}" restore "$@"
+fi
+
+exec s6-setuidgid "${DBBACKUP_USER}" /app/dbb restore "$@"
