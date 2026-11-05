@@ -27,9 +27,9 @@ ARG \
     DBBACKUP_VERSION \
     DBBACKUP_COMMIT \
     DBBACKUP_CHANNEL="auto" \
-    DOTNET_VERSION="8.0.413" \
+    DOTNET_VERSION="10.0.403" \
     GOLANG_VERSION="1.26.10" \
-    SQLPACKAGE_VERSION="170.1.61"
+    SQLPACKAGE_VERSION="170.5.96"
 
 HEALTHCHECK \
                 --interval=30s \
@@ -122,9 +122,11 @@ RUN echo "" && \
             /usr/share/dotnet/shared/Microsoft.NETCore.App/*/libmscordaccore.so \
             /usr/share/dotnet/shared/Microsoft.NETCore.App/*/libmscordbi.so \
             /usr/share/dotnet/templates \
-            /opt/sqlpackage/.store/microsoft.sqlpackage/*/microsoft.sqlpackage/*/tools/net8.0/any/runtimes/win* \
-            /opt/sqlpackage/.store/microsoft.sqlpackage/*/microsoft.sqlpackage/*/tools/net8.0/any/x64 \
-            /opt/sqlpackage/.store/microsoft.sqlpackage/*/microsoft.sqlpackage/*/tools/net8.0/any/x86 \
+            /opt/sqlpackage/.store/microsoft.sqlpackage/*/microsoft.sqlpackage/*/tools/net8.0 \
+            /opt/sqlpackage/.store/microsoft.sqlpackage/*/microsoft.sqlpackage/*/tools/net10.0/any/runtimes/win* \
+            /opt/sqlpackage/.store/microsoft.sqlpackage/*/microsoft.sqlpackage/*/tools/net10.0/any/arm64 \
+            /opt/sqlpackage/.store/microsoft.sqlpackage/*/microsoft.sqlpackage/*/tools/net10.0/any/x64 \
+            /opt/sqlpackage/.store/microsoft.sqlpackage/*/microsoft.sqlpackage/*/tools/net10.0/any/x86 \
             && \
     find /opt/sqlpackage/.store \( -name '*.resources.dll' -o -name '*.pdb' -o \( -name '*.xml' ! -name DotnetToolSettings.xml \) \) -delete && \
     find /opt/sqlpackage/.store -type d -empty -delete && \
