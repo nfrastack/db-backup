@@ -97,6 +97,7 @@ type JobConfig struct {
 	Encryption           string              `yaml:"encryption"`
 	Version              int                 `yaml:"version,omitempty"`
 	InfluxMode           string              `yaml:"influx_mode,omitempty"`
+	MssqlMode            string              `yaml:"mssql_mode,omitempty"`
 	Connectivity         *ConnectivityConfig `yaml:"connectivity"`
 	AuthSource           string              `yaml:"-"`
 	Retention            *RetentionConfig    `yaml:"retention"`

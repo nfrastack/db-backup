@@ -78,6 +78,11 @@ func (d *Dumper) Close() error {
 }
 
 func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
+	if mode := common.BackupModeFromContext(d.ctxOrBg()); mode == sqlpackageMode {
+		return d.dumpSqlpackage(w, dbNames)
+	} else if mode != "" {
+		return fmt.Errorf("unknown mssql_mode %q", mode)
+	}
 	start := time.Now()
 	log.Debug("mssql", "backup start",
 		"host", d.host, "port", d.port,

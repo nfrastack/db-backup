@@ -68,6 +68,10 @@ func Maintain(host string, port int, user, pass, dbName string, cfg *common.Main
 
 func Restore(r io.Reader, host string, port int, user, pass, dbName string, tlsCfg *config.TLSConfig) error {
 	firstDB := common.FirstDBName(dbName)
+	br := bufio.NewReader(r)
+	if magic, _ := br.Peek(len(dacpacMagic)); string(magic) == dacpacMagic {
+		return restoreDacpac(br, host, port, user, pass, firstDB, tlsCfg)
+	}
 	if firstDB == "" {
 		firstDB = "master"
 	}
@@ -85,7 +89,7 @@ func Restore(r io.Reader, host string, port int, user, pass, dbName string, tlsC
 		return fmt.Errorf("ping: %w", err)
 	}
 
-	return restoreStream(r, func(batch, sourceDB string) error {
+	return restoreStream(br, func(batch, sourceDB string) error {
 		stmt := rewriteBatch(batch, sourceDB, firstDB)
 		if strings.TrimSpace(stmt) == "" {
 			return nil
