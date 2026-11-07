@@ -9,7 +9,7 @@ require (
 	github.com/dsnet/compress v0.0.1
 	github.com/go-sql-driver/mysql v1.10.0
 	github.com/jackc/pgx/v5 v5.10.0
-	github.com/klauspost/compress v1.19.2
+	github.com/klauspost/compress v1.20.2
 	github.com/redis/go-redis/v9 v9.22.0
 	github.com/ulikunitz/xz v0.5.16
 	go.mongodb.org/mongo-driver v1.17.9
