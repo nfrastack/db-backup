@@ -168,7 +168,7 @@ func cmdPrune(args []string) int {
 		fmt.Fprintf(os.Stderr, "  %s\n", f)
 	}
 
-	if *dryRun {
+	if *dryRun || runner.DryRun() {
 		return 0
 	}
 

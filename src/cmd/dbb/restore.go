@@ -327,7 +327,7 @@ func cmdRestore(args []string) int {
 		*dbPort = runner.DefaultPort(*dbType)
 	}
 
-	if *dryRun {
+	if *dryRun || runner.DryRun() {
 		fmt.Fprintf(os.Stderr, "[DRY-RUN] Would restore %s to %s/%s:%d (db: %s)\n",
 			*filePath, *dbHost, *dbType, *dbPort, *dbName)
 		if *basePath != "" {

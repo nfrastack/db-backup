@@ -1,6 +1,7 @@
 ## dev
 
    ### Changed
+     - fix positional arguments not being parsed correctly
      - dump modifications
        - (sqlite) preserve auto increment for emptied tables
 
