@@ -327,7 +327,7 @@ func (d *Dumper) dumpACLs(w io.Writer, dbName string, tables []string) error {
 			"JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace "+
 			"WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') "+
 			"AND p.prokind IN ('f', 'p') "+
-			"AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = p.oid AND dd.deptype = 'e') "+
+			"AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = p.oid AND dd.classid = 'pg_proc'::regclass AND dd.deptype = 'e') "+
 			"ORDER BY n.nspname, p.proname")
 	if err != nil {
 		return nil
@@ -1246,7 +1246,7 @@ func (d *Dumper) dumpForeignServers(w io.Writer, _ string) error {
 			"JOIN pg_catalog.pg_foreign_data_wrapper w ON w.oid = s.srvfdw "+
 			"JOIN pg_catalog.pg_roles r ON r.oid = s.srvowner "+
 			"LEFT JOIN LATERAL pg_catalog.pg_options_to_table(s.srvoptions) o ON true "+
-			"WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = s.oid AND dd.deptype = 'e') "+
+			"WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = s.oid AND dd.classid = 'pg_foreign_server'::regclass AND dd.deptype = 'e') "+
 			"ORDER BY s.srvname, o.option_name")
 	if err != nil {
 		return fmt.Errorf("foreign servers: %w", err)
@@ -1292,7 +1292,7 @@ func (d *Dumper) dumpUserMappings(w io.Writer, _ string) error {
 	rows, err := d.conn.Query(d.ctxOrBg(),
 		"SELECT m.srvname, m.usename, o.option_name, o.option_value FROM pg_catalog.pg_user_mappings m "+
 			"LEFT JOIN LATERAL pg_catalog.pg_options_to_table(m.umoptions) o ON true "+
-			"WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = m.umid AND dd.deptype = 'e') "+
+			"WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = m.umid AND dd.classid = 'pg_user_mapping'::regclass AND dd.deptype = 'e') "+
 			"ORDER BY m.srvname, m.usename")
 	if err != nil {
 		return fmt.Errorf("user mappings: %w", err)
@@ -1349,7 +1349,7 @@ func (d *Dumper) dumpForeignTables(w io.Writer, dbName string) error {
 			"JOIN pg_catalog.pg_foreign_table ft ON ft.ftrelid = c.oid "+
 			"JOIN pg_catalog.pg_foreign_server s ON s.oid = ft.ftserver "+
 			"WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') "+
-			"AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = c.oid AND dd.deptype = 'e') "+
+			"AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = c.oid AND dd.classid = 'pg_class'::regclass AND dd.deptype = 'e') "+
 			"ORDER BY n.nspname, c.relname")
 	if err != nil {
 		return fmt.Errorf("foreign tables: %w", err)
@@ -1452,11 +1452,12 @@ func (d *Dumper) dumpFunctions(w io.Writer, dbName string, tableDependent bool) 
 		"SELECT proname, pg_get_functiondef(oid) FROM pg_proc "+
 			"WHERE pronamespace NOT IN ('pg_catalog'::regnamespace, 'information_schema'::regnamespace) "+
 			"AND prokind IN ('f', 'p', 'w') "+
-			"AND NOT EXISTS (SELECT 1 FROM pg_depend dd WHERE dd.objid = pg_proc.oid AND dd.deptype = 'e') "+
+			"AND NOT EXISTS (SELECT 1 FROM pg_depend dd WHERE dd.objid = pg_proc.oid AND dd.classid = 'pg_proc'::regclass AND dd.deptype = 'e') "+
 			"AND (EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd "+
 			"JOIN pg_catalog.pg_class c ON c.oid = dd.refobjid "+
 			"JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "+
 			"WHERE dd.objid = pg_proc.oid "+
+			"AND dd.classid = 'pg_proc'::regclass "+
 			"AND dd.refclassid = 'pg_class'::regclass "+
 			"AND c.relkind IN ('r', 'p', 'v', 'm', 'f') "+
 			"AND n.nspname NOT IN ('pg_catalog', 'information_schema')) "+
@@ -1464,6 +1465,7 @@ func (d *Dumper) dumpFunctions(w io.Writer, dbName string, tableDependent bool) 
 			"JOIN pg_catalog.pg_type t ON t.oid = dd.refobjid "+
 			"JOIN pg_catalog.pg_class c ON c.oid = t.typrelid "+
 			"WHERE dd.objid = pg_proc.oid "+
+			"AND dd.classid = 'pg_proc'::regclass "+
 			"AND dd.refclassid = 'pg_type'::regclass "+
 			"AND t.typtype = 'c' "+
 			"AND c.relkind IN ('r', 'p', 'v', 'm', 'f') "+
@@ -1518,7 +1520,7 @@ func (d *Dumper) dumpLanguages(w io.Writer, _ string) error {
 			"LEFT JOIN pg_catalog.pg_proc ip ON ip.oid = l.laninline LEFT JOIN pg_catalog.pg_namespace insp ON insp.oid = ip.pronamespace "+
 			"LEFT JOIN pg_catalog.pg_proc vp ON vp.oid = l.lanvalidator LEFT JOIN pg_catalog.pg_namespace vn ON vn.oid = vp.pronamespace "+
 			"WHERE l.lanispl AND l.lanname NOT IN ('internal', 'c', 'sql') "+
-			"AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = l.oid AND dd.deptype = 'e') "+
+			"AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = l.oid AND dd.classid = 'pg_language'::regclass AND dd.deptype = 'e') "+
 			"ORDER BY l.lanname")
 	if err != nil {
 		return fmt.Errorf("languages: %w", err)
@@ -1591,7 +1593,7 @@ func (d *Dumper) dumpTextSearch(w io.Writer, _ string) error {
 			"JOIN pg_catalog.pg_proc ep ON ep.oid = p.prsend JOIN pg_catalog.pg_namespace es ON es.oid = ep.pronamespace "+
 			"JOIN pg_catalog.pg_proc dp ON dp.oid = p.prsheadline JOIN pg_catalog.pg_namespace ds ON ds.oid = dp.pronamespace "+
 			"JOIN pg_catalog.pg_proc lp ON lp.oid = p.prslextype JOIN pg_catalog.pg_namespace ls ON ls.oid = lp.pronamespace "+
-			"WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = p.oid AND dd.deptype = 'e') AND n.nspname NOT IN ('pg_catalog', 'information_schema') "+
+			"WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = p.oid AND dd.classid = 'pg_ts_parser'::regclass AND dd.deptype = 'e') AND n.nspname NOT IN ('pg_catalog', 'information_schema') "+
 			"ORDER BY n.nspname, p.prsname")
 	if err != nil {
 		return fmt.Errorf("text search parsers: %w", err)
@@ -1621,7 +1623,7 @@ func (d *Dumper) dumpTextSearch(w io.Writer, _ string) error {
 		"SELECT n.nspname, t.tmplname, ln.nspname, p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid) "+
 			"FROM pg_catalog.pg_ts_template t JOIN pg_catalog.pg_namespace n ON n.oid = t.tmplnamespace "+
 			"JOIN pg_catalog.pg_proc p ON p.oid = t.tmpllexize JOIN pg_catalog.pg_namespace ln ON ln.oid = p.pronamespace "+
-			"WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = t.oid AND dd.deptype = 'e') AND n.nspname NOT IN ('pg_catalog', 'information_schema') "+
+			"WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = t.oid AND dd.classid = 'pg_ts_template'::regclass AND dd.deptype = 'e') AND n.nspname NOT IN ('pg_catalog', 'information_schema') "+
 			"ORDER BY n.nspname, t.tmplname")
 	if err != nil {
 		return fmt.Errorf("text search templates: %w", err)
@@ -1643,7 +1645,7 @@ func (d *Dumper) dumpTextSearch(w io.Writer, _ string) error {
 			"JOIN pg_catalog.pg_namespace n ON n.oid = dd.dictnamespace "+
 			"JOIN pg_catalog.pg_ts_template t ON t.oid = dd.dicttemplate "+
 			"JOIN pg_catalog.pg_namespace tn ON tn.oid = t.tmplnamespace "+
-			"WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dx WHERE dx.objid = dd.oid AND dx.deptype = 'e') AND n.nspname NOT IN ('pg_catalog', 'information_schema') "+
+			"WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dx WHERE dx.objid = dd.oid AND dx.classid = 'pg_ts_dict'::regclass AND dx.deptype = 'e') AND n.nspname NOT IN ('pg_catalog', 'information_schema') "+
 			"ORDER BY n.nspname, dd.dictname")
 	if err != nil {
 		return fmt.Errorf("text search dictionaries: %w", err)
@@ -1670,7 +1672,7 @@ func (d *Dumper) dumpTextSearch(w io.Writer, _ string) error {
 			"JOIN pg_catalog.pg_namespace n ON n.oid = c.cfgnamespace "+
 			"JOIN pg_catalog.pg_ts_parser p ON p.oid = c.cfgparser "+
 			"JOIN pg_catalog.pg_namespace pn ON pn.oid = p.prsnamespace "+
-			"WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = c.oid AND dd.deptype = 'e') AND n.nspname NOT IN ('pg_catalog', 'information_schema') "+
+			"WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = c.oid AND dd.classid = 'pg_ts_config'::regclass AND dd.deptype = 'e') AND n.nspname NOT IN ('pg_catalog', 'information_schema') "+
 			"ORDER BY n.nspname, c.cfgname")
 	if err != nil {
 		return fmt.Errorf("text search configurations: %w", err)
@@ -1749,7 +1751,7 @@ func (d *Dumper) dumpCasts(w io.Writer, _ string) error {
 			"LEFT JOIN pg_catalog.pg_namespace fn ON fn.oid = p.pronamespace "+
 			"WHERE ((c.castfunc <> 0 AND fn.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')) "+
 			"OR (c.castfunc = 0 AND EXISTS (SELECT 1 FROM pg_catalog.pg_type t JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace WHERE t.oid IN (c.castsource, c.casttarget) AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')))) "+
-			"AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = c.oid AND dd.deptype IN ('e', 'i')) "+
+			"AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = c.oid AND dd.classid = 'pg_cast'::regclass AND dd.deptype IN ('e', 'i')) "+
 			"ORDER BY 1, 2")
 	if err != nil {
 		return fmt.Errorf("casts: %w", err)
@@ -1781,7 +1783,7 @@ func (d *Dumper) dumpConversions(w io.Writer, _ string) error {
 	rows, err := d.conn.Query(d.ctxOrBg(),
 		"SELECT c.conname, pg_catalog.pg_encoding_to_char(c.conforencoding), pg_catalog.pg_encoding_to_char(c.contoencoding), fn.nspname, p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid), c.condefault::text "+
 			"FROM pg_catalog.pg_conversion c JOIN pg_catalog.pg_proc p ON p.oid = c.conproc JOIN pg_catalog.pg_namespace fn ON fn.oid = p.pronamespace "+
-			"WHERE c.connamespace <> 'pg_catalog'::regnamespace AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = c.oid AND dd.deptype = 'e') "+
+			"WHERE c.connamespace <> 'pg_catalog'::regnamespace AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = c.oid AND dd.classid = 'pg_conversion'::regclass AND dd.deptype = 'e') "+
 			"ORDER BY c.conname")
 	if err != nil {
 		return fmt.Errorf("conversions: %w", err)
@@ -1815,7 +1817,7 @@ func buildOpClassDef(name, family, method, datatype, isDefault, members string) 
 func (d *Dumper) dumpOpClasses(w io.Writer, _ string) error {
 	fams, err := d.conn.Query(d.ctxOrBg(),
 		"SELECT o.opfname, a.amname FROM pg_catalog.pg_opfamily o JOIN pg_catalog.pg_am a ON a.oid = o.opfmethod "+
-			"WHERE o.opfnamespace <> 'pg_catalog'::regnamespace AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = o.oid AND dd.deptype = 'e') "+
+			"WHERE o.opfnamespace <> 'pg_catalog'::regnamespace AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = o.oid AND dd.classid = 'pg_opfamily'::regclass AND dd.deptype = 'e') "+
 			"ORDER BY o.opfname")
 	if err != nil {
 		return fmt.Errorf("operator families: %w", err)
@@ -1834,7 +1836,7 @@ func (d *Dumper) dumpOpClasses(w io.Writer, _ string) error {
 	classes, err := d.conn.Query(d.ctxOrBg(),
 		"SELECT c.opcname, f.opfname, a.amname, pg_catalog.format_type(c.opcintype, NULL), c.opcdefault::text, c.oid FROM pg_catalog.pg_opclass c "+
 			"JOIN pg_catalog.pg_opfamily f ON f.oid = c.opcfamily JOIN pg_catalog.pg_am a ON a.oid = f.opfmethod "+
-			"WHERE c.opcnamespace <> 'pg_catalog'::regnamespace AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = c.oid AND dd.deptype = 'e') "+
+			"WHERE c.opcnamespace <> 'pg_catalog'::regnamespace AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = c.oid AND dd.classid = 'pg_opclass'::regclass AND dd.deptype = 'e') "+
 			"ORDER BY c.opcname")
 	if err != nil {
 		return fmt.Errorf("operator classes: %w", err)
@@ -1929,7 +1931,7 @@ func (d *Dumper) dumpAggregates(w io.Writer, dbName string) error {
 			"JOIN pg_catalog.pg_aggregate a ON a.aggfnoid = p.oid "+
 			"WHERE p.prokind = 'a' "+
 			"AND n.nspname NOT IN ('pg_catalog', 'information_schema') "+
-			"AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = p.oid AND dd.deptype = 'e') "+
+			"AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = p.oid AND dd.classid = 'pg_proc'::regclass AND dd.deptype = 'e') "+
 			"ORDER BY n.nspname, p.proname")
 	if err != nil {
 		return fmt.Errorf("query aggregates: %w", err)
@@ -2421,6 +2423,7 @@ func (d *Dumper) dumpSequenceValues(w io.Writer, dbName string) error {
 				"JOIN pg_catalog.pg_namespace ns ON ns.oid = c.relnamespace "+
 				"JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid AND a.attnum = dd.refobjsubid "+
 				"WHERE sn.nspname = $1 AND s.relname = $2 AND dd.deptype = 'a' AND dd.refobjsubid > 0 "+
+				"AND dd.classid = 'pg_class'::regclass AND dd.refclassid = 'pg_class'::regclass AND dd.objsubid = 0 "+
 				"LIMIT 1", schema, name).Scan(&ownTable, &ownCol); err == nil && ownTable != "" {
 			oparts := strings.SplitN(ownTable, ".", 2)
 			link()
@@ -2691,7 +2694,7 @@ func (d *Dumper) dumpStatistics(w io.Writer, dbName string, tables []string) err
 			"JOIN pg_catalog.pg_class tc ON tc.oid = dd.refobjid "+
 			"JOIN pg_catalog.pg_namespace tn ON tn.oid = tc.relnamespace "+
 			"WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') "+
-			"AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend e WHERE e.objid = s.oid AND e.deptype = 'e') "+
+			"AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend e WHERE e.objid = s.oid AND e.classid = 'pg_class'::regclass AND e.deptype = 'e') "+
 			"ORDER BY n.nspname, s.stxname")
 	if err != nil {
 		log.Trace("postgres", "statistics unavailable", "database", dbName,
@@ -2783,7 +2786,7 @@ func (d *Dumper) dumpCollations(w io.Writer, dbName string) error {
 			"FROM pg_catalog.pg_collation c "+
 			"JOIN pg_catalog.pg_namespace n ON n.oid = c.collnamespace "+
 			"WHERE n.nspname NOT IN ('pg_catalog', 'information_schema') "+
-			"AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = c.oid AND dd.deptype = 'e') "+
+			"AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = c.oid AND dd.classid = 'pg_class'::regclass AND dd.deptype = 'e') "+
 			"ORDER BY n.nspname, c.collname")
 	if err != nil {
 		return fmt.Errorf("query collations: %w", err)
@@ -3422,7 +3425,7 @@ func (d *Dumper) extensionMembers() (map[string]bool, error) {
 	rows, err := d.conn.Query(d.ctxOrBg(),
 		"SELECT n.nspname, c.relname FROM pg_catalog.pg_class c "+
 			"JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "+
-			"JOIN pg_catalog.pg_depend dd ON dd.objid = c.oid AND dd.deptype = 'e'")
+			"JOIN pg_catalog.pg_depend dd ON dd.objid = c.oid AND dd.classid = 'pg_class'::regclass AND dd.refclassid = 'pg_extension'::regclass AND dd.deptype = 'e'")
 	if err != nil {
 		return out, err
 	}
@@ -3709,7 +3712,7 @@ func (d *Dumper) identitySequenceDef(schema, table, column string) (string, erro
 			"JOIN pg_catalog.pg_namespace tn ON tn.oid = t.relnamespace "+
 			"JOIN pg_catalog.pg_attribute a ON a.attrelid = t.oid AND a.attnum = dd.refobjsubid "+
 			"WHERE tn.nspname = $1 AND t.relname = $2 AND a.attname = $3 "+
-			"AND dd.deptype = 'i' LIMIT 1", schema, table, column).Scan(
+			"AND dd.deptype = 'i' AND dd.classid = 'pg_class'::regclass AND dd.refclassid = 'pg_class'::regclass AND dd.objsubid = 0 LIMIT 1", schema, table, column).Scan(
 		&seqSchema, &seqName, &seqStart, &seqIncrement, &seqMin, &seqMax, &seqCache, &seqCycle)
 	if err != nil {
 		return "", err
@@ -4039,7 +4042,7 @@ func (d *Dumper) listUserSequences() ([][3]string, error) {
 			"WHERE c.relkind = 'S' "+
 			"AND n.nspname NOT IN ('pg_catalog', 'information_schema') "+
 			"AND n.nspname NOT LIKE 'pg\\_%' "+
-			"AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = c.oid AND dd.deptype = 'e') "+
+			"AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = c.oid AND dd.classid = 'pg_class'::regclass AND dd.deptype = 'e') "+
 			"ORDER BY n.nspname, c.relname")
 	if err != nil {
 		return nil, fmt.Errorf("list sequences: %w", err)
@@ -4064,8 +4067,8 @@ func (d *Dumper) listStandaloneSequences() ([][3]string, error) {
 			"WHERE c.relkind = 'S' "+
 			"AND n.nspname NOT IN ('pg_catalog', 'information_schema') "+
 			"AND n.nspname NOT LIKE 'pg\\_%' "+
-			"AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = c.oid AND dd.deptype = 'e') "+
-			"AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = c.oid AND dd.deptype = 'i') "+
+			"AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = c.oid AND dd.classid = 'pg_class'::regclass AND dd.deptype = 'e') "+
+			"AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = c.oid AND dd.classid = 'pg_class'::regclass AND dd.deptype = 'i') "+
 			"ORDER BY n.nspname, c.relname")
 	if err != nil {
 		return nil, fmt.Errorf("list sequences: %w", err)
@@ -4091,7 +4094,7 @@ func (d *Dumper) listUserTypes() ([]userTypeRef, error) {
 			"AND n.nspname NOT LIKE 'pg\\_%' "+
 			"AND t.typtype IN ('e', 'c', 'd', 'r') "+
 			"AND (t.typrelid = 0 OR (SELECT c.relkind FROM pg_catalog.pg_class c WHERE c.oid = t.typrelid) = 'c') "+
-			"AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = t.oid AND dd.deptype = 'e') "+
+			"AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = t.oid AND dd.classid = 'pg_type'::regclass AND dd.deptype = 'e') "+
 			"ORDER BY t.oid")
 	if err != nil {
 		return nil, fmt.Errorf("list types: %w", err)
