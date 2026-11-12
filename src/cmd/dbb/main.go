@@ -50,6 +50,7 @@ var (
 	globalLogLevelStyle string
 	globalLogTimeQuoted *bool
 	globalProgress      *bool
+	globalDryRun        *bool
 )
 
 type manualDetail struct {
@@ -359,6 +360,23 @@ Commands:
 			}
 			globalLogTimeQuoted = &b
 			scanSkip = hasInline == false
+		case name == "-dry-run" || name == "--dry-run":
+			b := true
+			if val == "false" || val == "0" {
+				b = false
+			}
+			globalDryRun = &b
+			scanSkip = hasInline == false
+		case name == "-log-file-permission" || name == "--log-file-permission":
+			if val != "" {
+				globalLogFileMode = val
+				scanSkip = hasInline == false
+			}
+		case name == "-log-path-permission" || name == "--log-path-permission":
+			if val != "" {
+				globalLogDirMode = val
+				scanSkip = hasInline == false
+			}
 		}
 		if scanSkip {
 			i++
@@ -689,7 +707,8 @@ Commands:
 			"--log-session-id", "-log-session-id",
 			"--log-run-id", "-log-run-id",
 			"--log-timings", "-log-timings",
-			"--progress", "-progress", "--no-progress", "-no-progress":
+			"--progress", "-progress", "--no-progress", "-no-progress",
+			"--dry-run", "-dry-run":
 			continue
 		case "--log-level", "-log-level", "--log-format", "-log-format",
 			"--log-type", "-log-type", "--log-prefix-format", "-log-prefix-format",
@@ -710,7 +729,7 @@ Commands:
 
 	_ = logLevel
 	_ = logFormat
-	runner.SetDryRun(*dryRun)
+	runner.SetDryRun(*dryRun || (globalDryRun != nil && *globalDryRun))
 
 	if c, ok := commands[cmd]; ok {
 		start := time.Now()

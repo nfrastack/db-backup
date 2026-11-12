@@ -5,14 +5,14 @@
 
   outputs = { self, nixpkgs }:
     let
-      version = "5.0.9";
+      version = "5.0.11";
 
-      goVersion = "1.26.10";
+      goVersion = "1.26.11";
       goMajorMinor = nixpkgs.lib.versions.majorMinor goVersion;
       goAttr = "go_${nixpkgs.lib.replaceStrings ["."] ["_"] goMajorMinor}";
       goBuilder = "buildGo${nixpkgs.lib.replaceStrings ["."] [""] goMajorMinor}Module";
 
-      goOverrideHash = "sha256-/WPog7ovK/ypPBZGsx6+9j4rHk0rMXyXidl2po2B828=";
+      goOverrideHash = "sha256-1EEBsP8n7SpMda1GwXucdDWSCeLrLKfJ32y0/baOGWk=";
 
       buildDate =
         let
@@ -100,7 +100,7 @@
               "-X main.buildCommit=${buildCommit}"
             ];
 
-            vendorHash = "sha256-p4x8WPjRS7Q/46HR1Xj83Zk+DE46UIVOLsUIUeVBvcM=";
+            vendorHash = "sha256-nNrbPOUm07ylTyK0sQF0IjUS1xHQoheci003WRjbVQw=";
           };
         });
 

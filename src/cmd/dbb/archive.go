@@ -15,6 +15,7 @@ import (
 	"github.com/nfrastack/db-backup/internal/config"
 	"github.com/nfrastack/db-backup/internal/database"
 	"github.com/nfrastack/db-backup/internal/retention"
+	"github.com/nfrastack/db-backup/internal/scheduler/runner"
 	"github.com/nfrastack/db-backup/internal/storage"
 )
 
@@ -88,7 +89,7 @@ func cmdArchive(args []string) int {
 		Dst:    dstSt,
 	}
 
-	if *dryRun {
+	if *dryRun || runner.DryRun() {
 		entries, _ := srcSt.List(context.Background(), "")
 		type backupEntry struct {
 			path    string

@@ -1,3 +1,12 @@
+## 5.0.11 2026-11-12 <code at nfrastack dot com>
+
+   ### Changed
+     - bump minimum go version to 1.26.11
+     - fix positional arguments not being parsed correctly
+     - dump modifications
+       - (postgres) avoid oid collision when writing sequences
+       - (sqlite) preserve auto increment for emptied tables
+
 ## 5.0.10 2026-11-04 <code at nfrastack dot com>
 
    ### Changed

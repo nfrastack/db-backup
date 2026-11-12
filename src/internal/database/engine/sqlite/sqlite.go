@@ -369,10 +369,13 @@ func (d *Dumper) dumpSequences(w io.Writer, rowsByTable map[string]int) error {
 		if err := rows.Scan(&name, &seq); err != nil {
 			return fmt.Errorf("scan sequence row: %w", err)
 		}
-		if rowsByTable[name] == 0 {
+		if _, ok := rowsByTable[name]; !ok {
 			continue
 		}
-		lines = append(lines, fmt.Sprintf("UPDATE sqlite_sequence SET seq=%d WHERE name='%s';", seq, strings.ReplaceAll(name, "'", "''")))
+		q := strings.ReplaceAll(name, "'", "''")
+		lines = append(lines,
+			fmt.Sprintf("DELETE FROM sqlite_sequence WHERE name='%s';", q),
+			fmt.Sprintf("INSERT INTO sqlite_sequence (name, seq) VALUES ('%s', %d);", q, seq))
 	}
 	if err := rows.Err(); err != nil {
 		return err

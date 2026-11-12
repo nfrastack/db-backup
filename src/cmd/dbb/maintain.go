@@ -32,6 +32,7 @@ func cmdMaintain(args []string) int {
 	checkTables := fs.Bool("check-tables", false, "Enable CHECK TABLE (MySQL) / DBCC (MSSQL)")
 	compact := fs.Bool("compact", false, "Enable compact (MongoDB)")
 	memPurge := fs.Bool("memory-purge", false, "Enable MEMORY PURGE (Redis)")
+	dryRun := fs.Bool("dry-run", false, "Print what would be maintained without doing it")
 	fs.Parse(args)
 
 	if *listOps {
@@ -107,6 +108,12 @@ func cmdMaintain(args []string) int {
 		CheckTables: optBool(checkTables),
 		Compact:     optBool(compact),
 		MemoryPurge: optBool(memPurge),
+	}
+
+	if *dryRun || runner.DryRun() {
+		fmt.Fprintf(os.Stderr, "[DRY-RUN] Would run maintenance on %s/%s:%d (db: %s)\n", *dbHost, *dbType, *dbPort, *dbName)
+		manualOpDetail = manualDetail{engine: *dbType}
+		return 0
 	}
 
 	results, err := database.Maintain(*dbType, *dbHost, *dbPort, *dbUser, pass, *dbName, *authSource, mcfg, maintainTLS)
