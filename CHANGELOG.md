@@ -1,4 +1,4 @@
-## dev
+## 5.0.11 2026-11-12 <code at nfrastack dot com>
 
    ### Changed
      - bump minimum go version to 1.26.11
