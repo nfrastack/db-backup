@@ -1,6 +1,7 @@
 ## dev
 
    ### Changed
+     - bump minimum go version to 1.26.11
      - fix positional arguments not being parsed correctly
      - dump modifications
        - (postgres) avoid oid collision when writing sequences

@@ -7,12 +7,12 @@
     let
       version = "5.0.11b";
 
-      goVersion = "1.26.10";
+      goVersion = "1.26.11";
       goMajorMinor = nixpkgs.lib.versions.majorMinor goVersion;
       goAttr = "go_${nixpkgs.lib.replaceStrings ["."] ["_"] goMajorMinor}";
       goBuilder = "buildGo${nixpkgs.lib.replaceStrings ["."] [""] goMajorMinor}Module";
 
-      goOverrideHash = "sha256-/WPog7ovK/ypPBZGsx6+9j4rHk0rMXyXidl2po2B828=";
+      goOverrideHash = "sha256-1EEBsP8n7SpMda1GwXucdDWSCeLrLKfJ32y0/baOGWk=";
 
       buildDate =
         let
