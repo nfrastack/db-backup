@@ -12,7 +12,7 @@ require (
 	github.com/klauspost/compress v1.20.2
 	github.com/redis/go-redis/v9 v9.23.0
 	github.com/ulikunitz/xz v0.5.16
-	go.mongodb.org/mongo-driver v1.17.9
+	go.mongodb.org/mongo-driver v1.17.10
 	golang.org/x/crypto v0.59.0
 	golang.org/x/sys v0.50.0
 	golang.org/x/term v0.48.0
