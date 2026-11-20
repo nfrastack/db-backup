@@ -100,7 +100,7 @@
               "-X main.buildCommit=${buildCommit}"
             ];
 
-            vendorHash = "sha256-oW1q02ksrJ2wRqGtHvFjiNHFC83Egij+UhF4GNpEVHY=";
+            vendorHash = "sha256-FDCgECuUlblwswnrvmZnVnbQmMjZRnUms9FlbOEml+4=";
           };
         });
 

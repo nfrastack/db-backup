@@ -11,7 +11,7 @@ require (
 	github.com/jackc/pgx/v5 v5.13.0
 	github.com/klauspost/compress v1.20.5
 	github.com/redis/go-redis/v9 v9.23.0
-	github.com/ulikunitz/xz v0.5.16
+	github.com/ulikunitz/xz v0.5.17
 	go.mongodb.org/mongo-driver v1.17.10
 	golang.org/x/crypto v0.59.0
 	golang.org/x/sys v0.50.0
