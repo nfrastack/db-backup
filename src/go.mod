@@ -4,7 +4,7 @@ go 1.26.11
 
 require (
 	filippo.io/age v1.3.2
-	github.com/ProtonMail/go-crypto v1.4.1
+	github.com/ProtonMail/go-crypto v1.5.2
 	github.com/denisenkom/go-mssqldb v0.12.3
 	github.com/dsnet/compress v0.0.1
 	github.com/go-sql-driver/mysql v1.10.0
