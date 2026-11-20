@@ -7,7 +7,7 @@ require (
 	github.com/ProtonMail/go-crypto v1.5.2
 	github.com/denisenkom/go-mssqldb v0.12.3
 	github.com/dsnet/compress v0.0.1
-	github.com/go-sql-driver/mysql v1.10.0
+	github.com/go-sql-driver/mysql v1.10.2
 	github.com/jackc/pgx/v5 v5.13.0
 	github.com/klauspost/compress v1.20.2
 	github.com/redis/go-redis/v9 v9.22.0
