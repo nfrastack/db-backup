@@ -1,3 +1,9 @@
+## 5.0.12 2026-11-23 <code at nfrastack dot com>
+
+   ### Changed
+     - Update dependencies
+     - Add Postgresql 19.0 dump and restore wire support
+
 ## 5.0.11 2026-11-12 <code at nfrastack dot com>
 
    ### Changed

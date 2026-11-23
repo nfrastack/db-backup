@@ -5,7 +5,7 @@
 
   outputs = { self, nixpkgs }:
     let
-      version = "5.0.11";
+      version = "5.0.12";
 
       goVersion = "1.26.11";
       goMajorMinor = nixpkgs.lib.versions.majorMinor goVersion;
@@ -100,7 +100,7 @@
               "-X main.buildCommit=${buildCommit}"
             ];
 
-            vendorHash = "sha256-nNrbPOUm07ylTyK0sQF0IjUS1xHQoheci003WRjbVQw=";
+            vendorHash = "sha256-FDCgECuUlblwswnrvmZnVnbQmMjZRnUms9FlbOEml+4=";
           };
         });
 
