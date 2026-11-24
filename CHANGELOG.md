@@ -11,7 +11,7 @@
          rules, policies, extensions, types, sequences, indexes, constraints, comments, blobs,
          publications, drops, data, owner, acl, collations
        - (redis) support for skipping expires, streams, data
-
+       - (sqlite) support for skipping views, triggers, indexes, sequences, data, drops
 
    ### Changed
      - replace flat `routines/events/triggers/views/raw_blobs` mysql keys with

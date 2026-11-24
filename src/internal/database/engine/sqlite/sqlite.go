@@ -59,6 +59,13 @@ type Dumper struct {
 	ctx        context.Context
 	Tables     *config.TableFilter
 	SchemaOnly bool
+	Views      bool
+	Triggers   bool
+	Indexes    bool
+	Sequences  bool
+	Stats      bool
+	Data       bool
+	Drops      bool
 	server     common.ServerVersion
 }
 
@@ -119,7 +126,7 @@ func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
 }
 
 func NewDumper(path string) *Dumper {
-	return &Dumper{path: path}
+	return &Dumper{path: path, Views: true, Triggers: true, Indexes: true, Sequences: true, Stats: true, Data: true, Drops: true}
 }
 
 func (d *Dumper) Open() error {
@@ -171,6 +178,16 @@ func (d *Dumper) SetConnectivity(cfg *config.ConnectivityConfig) {
 	}
 }
 
+func (d *Dumper) SetSqliteObjects(o SqliteObjects) {
+	d.Views = o.Views
+	d.Triggers = o.Triggers
+	d.Indexes = o.Indexes
+	d.Sequences = o.Sequences
+	d.Stats = o.Stats
+	d.Data = o.Data
+	d.Drops = o.Drops
+}
+
 func (d *Dumper) SetTableFilter(f *config.TableFilter, schemaOnly bool) {
 	d.Tables = f
 	d.SchemaOnly = schemaOnly
@@ -190,7 +207,9 @@ func (d *Dumper) dumpTable(w io.Writer, table string) (int, error) {
 	if err := d.db.QueryRowContext(ctx, "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", table).Scan(&createSQL); err != nil && err != sql.ErrNoRows {
 		return 0, fmt.Errorf("read create %s: %w", table, err)
 	}
-	fmt.Fprintf(w, "DROP TABLE IF EXISTS %s;\n", quoteSQLiteIdent(table))
+	if d.Drops {
+		fmt.Fprintf(w, "DROP TABLE IF EXISTS %s;\n", quoteSQLiteIdent(table))
+	}
 	fmt.Fprintf(w, "-- Table: %s\n%s;\n\n", table, createSQL)
 
 	schemaOnly := d.SchemaOnly
@@ -198,7 +217,7 @@ func (d *Dumper) dumpTable(w io.Writer, table string) (int, error) {
 		_, so := d.Tables.Apply(table)
 		schemaOnly = schemaOnly || so
 	}
-	if schemaOnly {
+	if schemaOnly || !d.Data {
 		log.Trace("sqlite", "table done", "table", table, "rows", 0, "schema_only", true)
 		return 0, nil
 	}
@@ -315,6 +334,9 @@ func (d *Dumper) dumpDefaultRows(w io.Writer, table string) (int, error) {
 }
 
 func (d *Dumper) dumpQueryStats(w io.Writer, rowsByTable map[string]int) error {
+	if !d.Stats {
+		return nil
+	}
 	var one int
 	if err := d.db.QueryRowContext(d.ctxOrBg(), "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sqlite_stat1'").Scan(&one); err != nil {
 		return nil
@@ -353,6 +375,9 @@ func (d *Dumper) dumpQueryStats(w io.Writer, rowsByTable map[string]int) error {
 }
 
 func (d *Dumper) dumpSequences(w io.Writer, rowsByTable map[string]int) error {
+	if !d.Sequences {
+		return nil
+	}
 	var one int
 	if err := d.db.QueryRowContext(d.ctxOrBg(), "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sqlite_sequence'").Scan(&one); err != nil {
 		return nil
@@ -409,13 +434,23 @@ func (d *Dumper) dumpSchemaObjects(w io.Writer) (int, error) {
 			}
 		}
 		common.TraceTable(d.ctxOrBg(), "", name)
+		if (typ == "index" && !d.Indexes) || (typ == "view" && !d.Views) || (typ == "trigger" && !d.Triggers) {
+			log.Trace("sqlite", "schema object skipped by objects", "type", typ, "name", name)
+			continue
+		}
 		switch typ {
 		case "index":
-			fmt.Fprintf(w, "DROP INDEX IF EXISTS %s;\n", quoteSQLiteIdent(name))
+			if d.Drops {
+				fmt.Fprintf(w, "DROP INDEX IF EXISTS %s;\n", quoteSQLiteIdent(name))
+			}
 		case "view":
-			fmt.Fprintf(w, "DROP VIEW IF EXISTS %s;\n", quoteSQLiteIdent(name))
+			if d.Drops {
+				fmt.Fprintf(w, "DROP VIEW IF EXISTS %s;\n", quoteSQLiteIdent(name))
+			}
 		case "trigger":
-			fmt.Fprintf(w, "DROP TRIGGER IF EXISTS %s;\n", quoteSQLiteIdent(name))
+			if d.Drops {
+				fmt.Fprintf(w, "DROP TRIGGER IF EXISTS %s;\n", quoteSQLiteIdent(name))
+			}
 		default:
 			continue
 		}

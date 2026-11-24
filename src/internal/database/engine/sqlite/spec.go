@@ -31,7 +31,11 @@ func Spec() registry.EngineSpec {
 			if p == "" {
 				return nil, fmt.Errorf("sqlite requires the database file path (set --name <file> or --host <file>)")
 			}
-			return NewDumper(p), nil
+			d := NewDumper(p)
+			if o.HasObjects {
+				d.SetSqliteObjects(ResolveObjects(o.Objects))
+			}
+			return d, nil
 		},
 		Maintain: func(host string, port int, user, pass, dbName, authSource string, cfg *common.MaintenanceCfg, tlsCfg *config.TLSConfig) ([]common.OpResult, error) {
 			return Maintain(dbName, cfg)
