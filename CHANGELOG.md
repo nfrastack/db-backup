@@ -5,6 +5,7 @@
      - Old mysql Keys have been removed and migrated
 
    ### Added
+     - add --object and --option cli overrides
      - dump additions
        - (couch) support for skipping attachments, designDocs, data
        - (influx) support for skipping data
