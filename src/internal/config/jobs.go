@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/nfrastack/db-backup/internal/database/objects"
+	"github.com/nfrastack/db-backup/internal/license"
 	"gopkg.in/yaml.v3"
 )
 
@@ -108,6 +109,9 @@ type JobConfig struct {
 	DatabaseRef          string              `yaml:"database,omitempty"`
 	StorageRef           string              `yaml:"storage_profile,omitempty"`
 	BackupRef            string              `yaml:"backup_profile,omitempty"`
+	StorageProfiles      []StorageEntry      `yaml:"-"`
+	UploadMode           string              `yaml:"upload_mode,omitempty"`
+	OnStorageFailure     string              `yaml:"on_storage_failure,omitempty"`
 	ArchiveRef           string              `yaml:"-"`
 	EncryptionType       string              `yaml:"-"`
 	EncryptionIdentity   string              `yaml:"-"`
@@ -135,6 +139,54 @@ func ValidateJobObjects(engine string, d *DatabaseList, jobName string) error {
 	}
 	if err := objects.Validate(engine, d.Objects, d.Options); err != nil {
 		return fmt.Errorf("job %q %s", jobName, err.Error())
+	}
+	return nil
+}
+
+type StorageEntry struct {
+	StorageProfile string
+	Storage        *StorageConfig `yaml:"-"`
+}
+
+var storageBackendFields = map[string]bool{
+	"backend": true, "bucket": true, "path": true, "endpoint": true,
+	"region": true, "key_id": true, "key_secret": true, "account": true,
+	"key": true, "url": true, "pass": true, "file_mode": true,
+	"dir_mode": true, "user": true, "group": true, "tls": true,
+}
+
+func storageBackendField(key string) bool {
+	return storageBackendFields[strings.ToLower(strings.TrimSpace(key))]
+}
+
+func ValidateStorageProfiles(j *JobConfig, profiles map[string]StorageConfig) error {
+	if j == nil || len(j.StorageProfiles) == 0 {
+		return nil
+	}
+	for i := range j.StorageProfiles {
+		if j.StorageProfiles[i].StorageProfile == "" {
+			return fmt.Errorf("job %q storage.profiles[%d]: missing storage_profile", j.Name, i)
+		}
+		if j.StorageProfiles[i].Storage == nil {
+			if _, ok := profiles[j.StorageProfiles[i].StorageProfile]; !ok {
+				return fmt.Errorf("job %q storage.profiles[%d]: storage profile %q not found", j.Name, i, j.StorageProfiles[i].StorageProfile)
+			}
+		}
+	}
+	switch j.UploadMode {
+	case "", "sequential":
+	case "parallel":
+		return fmt.Errorf("job %q upload_mode %q is not supported yet (want sequential)", j.Name, j.UploadMode)
+	default:
+		return fmt.Errorf("job %q has unknown upload_mode %q (want sequential)", j.Name, j.UploadMode)
+	}
+	switch j.OnStorageFailure {
+	case "", "continue", "abort":
+	default:
+		return fmt.Errorf("job %q has unknown on_storage_failure %q (want continue|abort)", j.Name, j.OnStorageFailure)
+	}
+	if _, err := license.RequireValidLicense(); err != nil {
+		return fmt.Errorf("job %q multi-storage requires a Supporter license (not available in the Community edition): %s", j.Name, err)
 	}
 	return nil
 }
@@ -354,9 +406,62 @@ func (j *JobConfig) UnmarshalYAML(value *yaml.Node) error {
 	}
 	var unsets map[string]bool
 	var backupRef, storageRef, archiveRef string
+	var profileEntries []StorageEntry
+	var hasStorageProfiles, hasStorageProfile bool
 	for i := 0; i+1 < len(clone.Content); i += 2 {
 		key := clone.Content[i].Value
 		val := clone.Content[i+1]
+		if key == "storages" {
+			return fmt.Errorf("storages was renamed to storage: {profiles: [...]}")
+		}
+		if key == "storage" && val.Kind == yaml.MappingNode {
+			var keys []string
+			for j := 0; j+1 < len(val.Content); j += 2 {
+				keys = append(keys, val.Content[j].Value)
+			}
+			hasProfiles := false
+			for _, k := range keys {
+				if k == "profiles" {
+					hasProfiles = true
+				}
+			}
+			if hasProfiles {
+				if len(keys) > 1 {
+					return fmt.Errorf("storage profiles list cannot be combined with other storage settings (use one)")
+				}
+				hasStorageProfiles = true
+				if len(val.Content) != 2 || val.Content[1].Kind != yaml.SequenceNode {
+					return fmt.Errorf("storage profiles must be a list of profile names")
+				}
+				for _, item := range val.Content[1].Content {
+					switch item.Kind {
+					case yaml.ScalarNode:
+						if item.Tag != "!!str" {
+							return fmt.Errorf("storage profiles list must contain profile names")
+						}
+						n := strings.TrimSpace(item.Value)
+						if n == "" {
+							return fmt.Errorf("storage profiles list must not contain empty names")
+						}
+						profileEntries = append(profileEntries, StorageEntry{StorageProfile: n})
+					case yaml.MappingNode:
+						for j := 0; j+1 < len(item.Content); j += 2 {
+							if storageBackendField(item.Content[j].Value) {
+								return fmt.Errorf("inline storage backends are not allowed in a storage profiles list (define a profiles.storage entry and reference it by name)")
+							}
+						}
+						return fmt.Errorf("storage profiles list must contain profile names (e.g. - local-ssd)")
+					default:
+						return fmt.Errorf("storage profiles list must contain profile names")
+					}
+				}
+				clone.Content[i+1] = &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!null", Value: "null"}
+				continue
+			}
+		}
+		if key == "storage_profile" {
+			hasStorageProfile = true
+		}
 		if val.Kind != yaml.ScalarNode {
 			continue
 		}
@@ -383,10 +488,16 @@ func (j *JobConfig) UnmarshalYAML(value *yaml.Node) error {
 			}
 		}
 	}
+	if hasStorageProfiles && hasStorageProfile {
+		return fmt.Errorf("storage profiles list cannot be combined with storage_profile (use one)")
+	}
 	if err := clone.Decode(&r); err != nil {
 		return err
 	}
 	*j = JobConfig(r)
+	if profileEntries != nil {
+		j.StorageProfiles = profileEntries
+	}
 	if backupRef != "" {
 		j.BackupRef = backupRef
 	}
@@ -492,6 +603,11 @@ func resolveSecrets(job *JobConfig) {
 	job.Pass = ResolveSecret(job.Pass)
 	if job.Storage != nil {
 		job.Storage.resolveSecrets()
+	}
+	for i := range job.StorageProfiles {
+		if job.StorageProfiles[i].Storage != nil {
+			job.StorageProfiles[i].Storage.resolveSecrets()
+		}
 	}
 	if job.Archive != nil && job.Archive.Storage != nil {
 		job.Archive.Storage.resolveSecrets()

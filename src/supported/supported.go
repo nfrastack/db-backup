@@ -15,5 +15,6 @@ import (
 	_ "github.com/nfrastack/db-backup/supported/database"
 	_ "github.com/nfrastack/db-backup/supported/encrypt/backend"
 	_ "github.com/nfrastack/db-backup/supported/retention/backend"
+	_ "github.com/nfrastack/db-backup/supported/scheduler"
 	_ "github.com/nfrastack/db-backup/supported/storage/backend"
 )

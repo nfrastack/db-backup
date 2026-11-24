@@ -288,6 +288,18 @@ func LoadConfig(paths ...string) (*Config, error) {
 		if err := cfg.Jobs[i].ValidateWithEncryptionProfiles(cfg.EncryptionProfiles); err != nil {
 			return nil, err
 		}
+		if len(cfg.Jobs[i].StorageProfiles) == 0 {
+			if cfg.Jobs[i].UploadMode != "" {
+				fmt.Fprintf(os.Stderr, "WARN: job %q upload_mode is set without a storage profiles list - ignored\n", cfg.Jobs[i].Name)
+			}
+			if cfg.Jobs[i].OnStorageFailure != "" {
+				fmt.Fprintf(os.Stderr, "WARN: job %q on_storage_failure is set without a storage profiles list - ignored\n", cfg.Jobs[i].Name)
+			}
+		} else {
+			if err := ValidateStorageProfiles(&cfg.Jobs[i], cfg.StorageProfiles); err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	for i := range cfg.Jobs {
@@ -805,6 +817,23 @@ func (c *Config) resolveJob(job *JobConfig) {
 			}
 		} else {
 			fmt.Fprintf(os.Stderr, "WARN: storage profile %q not found\n", job.StorageRef)
+		}
+	}
+
+	if len(job.StorageProfiles) > 0 && c != nil && c.StorageProfiles != nil {
+		for i := range job.StorageProfiles {
+			if prof, ok := c.StorageProfiles[job.StorageProfiles[i].StorageProfile]; ok {
+				sp := prof
+				job.StorageProfiles[i].Storage = &sp
+			}
+		}
+		if job.Storage == nil {
+			if job.StorageProfiles[0].Storage != nil {
+				primary := *job.StorageProfiles[0].Storage
+				job.Storage = &primary
+			}
+		} else if job.StorageProfiles[0].Storage != nil {
+			mergeStorage(job.Storage, job.StorageProfiles[0].Storage)
 		}
 	}
 

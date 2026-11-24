@@ -290,15 +290,41 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 		}
 	}
 
+	multi := len(job.StorageProfiles) > 0
+	abortOnFailure := strings.EqualFold(strings.TrimSpace(job.OnStorageFailure), "abort")
+	firstProfile := ""
+	if multi {
+		firstProfile = job.StorageProfiles[0].StorageProfile
+	}
 	var st storage.Storage
 	if dryRun.Load() {
 		JLog(log.LevelInfo, job, "dry-run: skipping storage backend initialisation",
 			"status", "starting", "step", "storage", "backend", storageBackend)
+	} else if multi {
+		if job.Storage == nil {
+			JLog(log.LevelWarn, job, "no primary storage configured - chain reads skipped",
+				"status", "warn", "step", "storage")
+		} else if primary, err := storage.New(storage.Backend(job.Storage.Backend), StorageOpts(job.Storage)); err != nil {
+			JLog(log.LevelWarn, job, "primary storage unavailable - chain reads skipped, secondaries still attempted",
+				"status", "warn", "step", "storage", "storage_profile", firstProfile, "error", err.Error())
+		} else {
+			st = primary
+		}
 	} else {
 		var err error
 		st, err = storage.New(storage.Backend(storageBackend), StorageOpts(job.Storage))
 		if err != nil {
 			return LogFail(job, "backup failed", "storage", err)
+		}
+	}
+
+	if multi {
+		if err := config.ValidateStorageProfiles(&job, nil); err != nil {
+			return LogFail(job, "backup failed", "storage", err)
+		}
+		if dryRun.Load() {
+			JLog(log.LevelInfo, job, "dry-run: skipping storage backend initialisation",
+				"status", "starting", "step", "storage", "profiles", len(job.StorageProfiles))
 		}
 	}
 
@@ -323,6 +349,11 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 	}
 
 	chainDepth := 0
+	if strat != "full" && st == nil {
+		JLog(log.LevelWarn, job, "primary storage unreachable at chain-check time - resetting incremental to full",
+			"status", "warn", "strategy", strat)
+		strat = "full"
+	}
 	if strat != "full" {
 		chain := chainInfo(st, job.Type, dbName, job.Host)
 		chainDepth = chain.Depth
@@ -334,7 +365,7 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 	}
 
 	since := ""
-	if strat != "full" && positionAnchored(job.Type) {
+	if strat != "full" && positionAnchored(job.Type) && st != nil {
 		since = findLastPosition(st, job.Type, dbName, job.Host, strat)
 		if since == "" {
 			JLog(log.LevelWarn, job, "no incremental anchor found, falling back to full backup",
@@ -350,7 +381,7 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 	if encType != encrypt.None {
 		filename += encrypt.Extension(encType)
 	}
-	if !dryRun.Load() {
+	if !dryRun.Load() && st != nil {
 		if entries, err := st.List(ctx, ""); err == nil {
 			taken := make(map[string]bool, len(entries))
 			for _, e := range entries {
@@ -366,7 +397,7 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 	}
 
 	baseFile := ""
-	if !dryRun.Load() && strat != "full" {
+	if !dryRun.Load() && strat != "full" && st != nil {
 		if strat == "differential" {
 			baseFile = findLastFullBackup(st, job.Type, dbName, job.Host)
 		} else {
@@ -379,11 +410,17 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 	}
 
 	hookStatus := "failed"
+	var storageResults string
+	var multiSucceeded []bool
 	defer func() {
-		RunHooks(job, "post", "backup", dbName, map[string]string{
+		extra := map[string]string{
 			"DBB_STATUS":   hookStatus,
 			"DBB_FILENAME": filename,
-		})
+		}
+		if storageResults != "" {
+			extra["DBB_STORAGE_RESULTS"] = storageResults
+		}
+		RunHooks(job, "post", "backup", dbName, extra)
 	}()
 
 	encHasher, err := checksum.New(csType, io.Discard)
@@ -566,7 +603,7 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 		}
 		JLog(log.LevelInfo, job, "dry-run: skipped upload",
 			"status", "complete", "step", "upload", "target", storagePath+"/"+filename, "bytes", n)
-	} else {
+	} else if !multi {
 		JLog(log.LevelDebug, job, "writing backup to storage",
 			"status", "debug", "step", "upload", "target", storagePath+"/"+filename,
 			"backend", storageBackend, "bucket", job.Storage.Bucket, "endpoint", storageEndpointHost(job.Storage))
@@ -586,6 +623,25 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 			}
 			return LogFail(job, "backup failed", errorStage(err), err)
 		}
+	} else {
+		var succeeded []bool
+		var msummary string
+		var merr error
+		n, succeeded, msummary, merr = UploadToProfiles(ctx, job, filename, prog.reader(pr), abortOnFailure)
+		if msummary != "" {
+			storageResults = msummary
+		}
+		if merr != nil {
+			pr.Close()
+			prog.finish()
+			select {
+			case <-timingCh:
+			case <-ctx.Done():
+			default:
+			}
+			return merr
+		}
+		multiSucceeded = succeeded
 	}
 	uploadTime := time.Since(uploadStart)
 	if timingsEnabled(job) {
@@ -631,7 +687,11 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 	JLog(log.LevelInfo, job, "backup complete", fields...)
 
 	if !dryRun.Load() {
-		createLatestSymlink(job, dbName, storagePath, filename)
+		if multi {
+			LinkLatestProfiles(job, dbName, filename, multiSucceeded)
+		} else {
+			createLatestSymlink(job, dbName, storagePath, filename)
+		}
 	}
 
 	if csType != checksum.None {
@@ -796,14 +856,27 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 			}
 		}
 		if !dryRun.Load() {
-			tSidecar := time.Now()
-			if err := retention.WriteSidecar(st, filename, sc); err != nil {
-				JLog(log.LevelWarn, job, "sidecar write failed", "status", "warn", "error", err.Error())
-			}
-			if timingsEnabled(job) {
-				JLog(log.LevelDebug, job, "sidecar written",
-					"status", "debug", "step", "sidecar",
-					"file", filename+".json", "timing", timingField("duration", time.Since(tSidecar)))
+			if multi {
+				ssummary, serr := WriteProfileSidecars(job, filename, sc, multiSucceeded, abortOnFailure)
+				if ssummary != "" {
+					if storageResults != "" {
+						storageResults += "; "
+					}
+					storageResults += ssummary
+				}
+				if serr != nil {
+					return LogFail(job, "backup failed", "upload", serr)
+				}
+			} else {
+				tSidecar := time.Now()
+				if err := retention.WriteSidecar(st, filename, sc); err != nil {
+					JLog(log.LevelWarn, job, "sidecar write failed", "status", "warn", "error", err.Error())
+				}
+				if timingsEnabled(job) {
+					JLog(log.LevelDebug, job, "sidecar written",
+						"status", "debug", "step", "sidecar",
+						"file", filename+".json", "timing", timingField("duration", time.Since(tSidecar)))
+				}
 			}
 		}
 	}

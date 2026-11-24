@@ -977,7 +977,32 @@ dbbackup_generate_configuration() {
         if [ -n "${explicit_fs}" ] || [ -n "${explicit_fsf}" ] || [ -n "${explicit_fsd}" ]; then
             backup_location="filesystem"
         fi
-        if [ -n "${explicit_loc}" ] || [ -n "${explicit_fs}" ] || [ -n "${explicit_fsf}" ] || [ -n "${explicit_fsd}" ] || [ -n "${explicit_backend}" ]; then
+        local storage_list="$(_dbbackup_getv "${inst}" STORAGE "")"
+        local use_storage=""
+        if [ -n "${storage_list//[ ,]/}" ]; then
+            use_storage=1
+            if [ -n "${explicit_loc}" ] || [ -n "${explicit_fs}" ] || [ -n "${explicit_fsf}" ] || [ -n "${explicit_fsd}" ] || [ -n "${explicit_backend}" ]; then
+                print_error "DB${inst}_STORAGE cannot be combined with per-instance storage settings (BACKUP_LOCATION, FILESYSTEM_*, *_BUCKET/*_PATH, etc.)"
+                print_error "  Define each landing as a profiles.storage entry (via CONFIG_INCLUDE) and list them in DB${inst}_STORAGE=\"prof1,prof2\""
+                exit 1
+            fi
+            local sprof
+            local _dbb_slist=()
+            IFS=',' read -r -a _dbb_slist <<< "${storage_list}"
+            yq -i '.jobs[strenv(DBB_JNUM) | tonumber].storage = {"profiles": []}' "${CONFIG_FILE_PATH}"
+            for sprof in "${_dbb_slist[@]}"; do
+                sprof="${sprof// /}"
+                [ -z "${sprof}" ] && continue
+                DBB_PROF="${sprof}"
+                if [ "$(yq '.profiles.storage | has(strenv(DBB_PROF))' "${CONFIG_FILE_PATH}")" != "true" ]; then
+                    print_error "DB${inst}_STORAGE entry ${sprof@Q} does not match any profiles.storage entry"
+                    print_error "  Define it via CONFIG_INCLUDE (YAML snippet with profiles: {storage: {NAME: ...}})"
+                    exit 1
+                fi
+                yq -i '.jobs[strenv(DBB_JNUM) | tonumber].storage.profiles += [strenv(DBB_PROF)]' "${CONFIG_FILE_PATH}"
+            done
+        fi
+        if [ -z "${use_storage}" ] && { [ -n "${explicit_loc}" ] || [ -n "${explicit_fs}" ] || [ -n "${explicit_fsf}" ] || [ -n "${explicit_fsd}" ] || [ -n "${explicit_backend}" ]; }; then
             case "${backup_location,,}" in
                 azure )
                     DBB_B="azure"

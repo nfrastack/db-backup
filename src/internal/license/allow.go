@@ -200,4 +200,11 @@ func Reload() {
 	loadMu.Unlock()
 }
 
+// RequireValidLicense reloads license discovery and returns the installed
+// license, or an error when none is installed or it does not verify.
+func RequireValidLicense() (*License, error) {
+	Reload()
+	return installedLicense()
+}
+
 func (c FeatureState) OK() bool { return c.Allowed }

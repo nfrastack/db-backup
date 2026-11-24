@@ -168,7 +168,20 @@ func (s *Scheduler) postBackup(job config.JobConfig) map[string]time.Duration {
 
 	if job.Retention != nil {
 		start := time.Now()
-		s.applyPrune(job, job.Storage, job.Retention)
+		if len(job.StorageProfiles) > 0 {
+			for i := range job.StorageProfiles {
+				if job.StorageProfiles[i].Storage == nil {
+					jlog(log.LevelWarn, "prune", job, "skipping storage without resolved profile",
+						"status", "skipped", "step", "prune", "storage_profile", job.StorageProfiles[i].StorageProfile)
+					continue
+				}
+				jlog(log.LevelDebug, "prune", job, "pruning backup storage",
+					"status", "debug", "step", "prune", "storage_profile", job.StorageProfiles[i].StorageProfile)
+				s.applyPrune(job, job.StorageProfiles[i].Storage, job.Retention)
+			}
+		} else {
+			s.applyPrune(job, job.Storage, job.Retention)
+		}
 		steps["prune"] = time.Since(start)
 	}
 	if job.Archive != nil && job.Archive.Retention != nil {
