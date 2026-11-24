@@ -17,6 +17,82 @@ dbbackup_bootstrap_filesystem() {
     fi
 }
 
+_dbbackup_apply_config_includes() {
+    local cfg="$1"
+    local include_list="${CONFIG_INCLUDE:-${DEFAULT_CONFIG_INCLUDE:-}}"
+    [ -n "${include_list//[ ,]/}" ] || return 0
+    local _dbb_inc _dbb_tmp _dbb_n=0 _dbb_pass
+    local -a _dbb_items
+    IFS=',' read -r -a _dbb_items <<< "${include_list}"
+    for _dbb_raw in "${_dbb_items[@]}"; do
+        _dbb_inc="${_dbb_raw// /}"
+        [ -z "${_dbb_inc}" ] && continue
+        _dbb_n=$((_dbb_n + 1))
+        case "${_dbb_inc}" in
+            file://*|base64:*|env://*) ;;
+            *)
+                print_error "CONFIG_INCLUDE item #${_dbb_n} needs a prefix - use file://PATH, base64:... or env://VAR (got: ${_dbb_inc:0:40})"
+                return 1
+                ;;
+        esac
+        _dbb_val="${_dbb_inc}"
+        _dbb_outer=""
+        _dbb_from_file=0
+        case "${_dbb_val}" in
+            base64:*) _dbb_outer="base64"; _dbb_val="${_dbb_val#base64:}" ;;
+            file://*) _dbb_val="${_dbb_val#file://}"; _dbb_from_file=1 ;;
+        esac
+        _dbb_pass=0
+        while [ "${_dbb_pass}" -lt 2 ]; do
+            case "${_dbb_val}" in
+                env://*)
+                    _dbb_val="$(printenv "${_dbb_val#env://}" || true)"
+                    if [ -z "${_dbb_val}" ]; then
+                        print_error "CONFIG_INCLUDE item #${_dbb_n}: env var is unset or empty"
+                        return 1
+                    fi
+                    ;;
+                *) break ;;
+            esac
+            _dbb_pass=$((_dbb_pass + 1))
+        done
+        _dbb_tmp=""
+        _dbb_is_tmp=0
+        if [ "${_dbb_outer}" = "base64" ]; then
+            _dbb_tmp="$(mktemp)" || return 1
+            _dbb_is_tmp=1
+            if ! printf '%s' "${_dbb_val}" | base64 -d > "${_dbb_tmp}" 2>/dev/null || ! yq '.' "${_dbb_tmp}" >/dev/null 2>&1; then
+                rm -f "${_dbb_tmp}"
+                print_error "CONFIG_INCLUDE item #${_dbb_n}: base64 content is not valid YAML"
+                return 1
+            fi
+        elif [ "${_dbb_from_file}" = "1" ]; then
+            if [ ! -f "${_dbb_val}" ]; then
+                print_error "CONFIG_INCLUDE item #${_dbb_n}: file not found: ${_dbb_val}"
+                return 1
+            fi
+            _dbb_tmp="${_dbb_val}"
+        else
+            _dbb_tmp="$(mktemp)" || return 1
+            _dbb_is_tmp=1
+            printf '%s' "${_dbb_val}" > "${_dbb_tmp}"
+            if ! yq '.' "${_dbb_tmp}" >/dev/null 2>&1; then
+                rm -f "${_dbb_tmp}"
+                print_error "CONFIG_INCLUDE item #${_dbb_n}: env content is not valid YAML"
+                return 1
+            fi
+        fi
+        export DBB_INC_SRC="${_dbb_tmp}"
+        if ! yq -i '. *+ load(strenv(DBB_INC_SRC))' "${cfg}"; then
+            [ "${_dbb_is_tmp}" = "1" ] && rm -f "${_dbb_tmp}"
+            print_error "CONFIG_INCLUDE item #${_dbb_n} failed to merge"
+            return 1
+        fi
+        [ "${_dbb_is_tmp}" = "1" ] && rm -f "${_dbb_tmp}"
+    done
+    print_info "CONFIG_INCLUDE layered ${_dbb_n} snippet(s) over ${cfg}"
+}
+
 dbbackup_generate_configuration() {
     if [ "${SETUP_TYPE,,}" = "manual" ]; then
         print_info "SETUP_TYPE=MANUAL - skipping automatic environment variable configuration"
@@ -25,6 +101,7 @@ dbbackup_generate_configuration() {
             print_error "Mount a db-backup.yml at ${CONFIG_PATH} or set SETUP_TYPE=AUTO"
             exit 1
         fi
+        _dbbackup_apply_config_includes "${CONFIG_PATH%/}/${CONFIG_FILE}"
         return 0
     fi
 
@@ -56,6 +133,7 @@ dbbackup_generate_configuration() {
         DEFAULT_AZURE_ACCOUNT DEFAULT_AZURE_KEY DEFAULT_AZURE_CONTAINER DEFAULT_AZURE_PATH \
         DEFAULT_BACKUP_BEGIN DEFAULT_BACKUP_FILENAME DEFAULT_BACKUP_INTERVAL DEFAULT_BACKUP_LOCATION DEFAULT_BLACKOUT_BEGIN DEFAULT_BLACKOUT_DAYS DEFAULT_BLACKOUT_END \
         DEFAULT_CHECKSUM DEFAULT_CLEANUP_TIME DEFAULT_COMPRESSION DEFAULT_COMPRESSION_LEVEL DEFAULT_COMPRESSION_RSYNCABLE DEFAULT_COMPRESSION_THREADS \
+        DEFAULT_CONFIG_INCLUDE \
         DEFAULT_CONNECTIVITY_METHOD DEFAULT_CONNECTIVITY_RETRY_INTERVAL DEFAULT_CONNECTIVITY_TIMEOUT \
         DEFAULT_CREATE_LATEST_SYMLINK \
         DEFAULT_ENCRYPT DEFAULT_ENCRYPT_PASSPHRASE DEFAULT_ENCRYPT_RECIPIENTS DEFAULT_ENCRYPT_TYPE \
@@ -1479,6 +1557,8 @@ dbbackup_generate_configuration() {
             yq -i '.restore.passphrase = "env://RESTORE_PASSPHRASE"' "${CONFIG_FILE_PATH}"
         fi
     fi
+
+    _dbbackup_apply_config_includes "${CONFIG_FILE_PATH}" || exit 1
 
     set +a
 
