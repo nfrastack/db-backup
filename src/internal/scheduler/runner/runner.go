@@ -19,6 +19,7 @@ import (
 	"github.com/nfrastack/db-backup/internal/config"
 	"github.com/nfrastack/db-backup/internal/database"
 	"github.com/nfrastack/db-backup/internal/database/common"
+	"github.com/nfrastack/db-backup/internal/database/objects"
 	"github.com/nfrastack/db-backup/internal/encrypt"
 	"github.com/nfrastack/db-backup/internal/license"
 	"github.com/nfrastack/db-backup/internal/log"
@@ -188,12 +189,9 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 		for _, name := range dbs {
 			sub := job
 			sub.Databases = &config.DatabaseList{
-				Include:  []string{name},
-				Routines: job.Databases.Routines,
-				Events:   job.Databases.Events,
-				Triggers: job.Databases.Triggers,
-				Views:    job.Databases.Views,
-				RawBlobs: job.Databases.RawBlobs,
+				Include: []string{name},
+				Objects: objects.MergeObjects(nil, job.Databases.Objects),
+				Options: objects.MergeOptions(nil, job.Databases.Options),
 			}
 			sub.SplitDB = false
 			if err := Run(ctx, sub, trigger); err != nil {
@@ -510,7 +508,8 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 				TLS:        job.TLS,
 				Strategy:   database.Strategy(strat),
 				Since:      since,
-				Objects:    job.Databases.ResolveMysqlObjects(),
+				Objects:    job.Databases.Objects,
+				Options:    job.Databases.Options,
 				HasObjects: job.Databases != nil,
 			}); err != nil {
 				pw.CloseWithError(withStage(fmt.Errorf("incremental %s: %w", strat, err), "dump"))
