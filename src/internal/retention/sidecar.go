@@ -19,7 +19,7 @@ import (
 
 const (
 	FormatName    = "dbbackup.sidecar"
-	SchemaVersion = 2
+	SchemaVersion = 3
 )
 
 type Sidecar struct {
@@ -37,6 +37,9 @@ type Sidecar struct {
 	Strategy        string            `json:"strategy"`
 	Protocol        string            `json:"protocol,omitempty"`
 	SchemaOnly      bool              `json:"schema_only,omitempty"`
+	Objects         map[string]bool   `json:"objects,omitempty"`
+	Options         map[string]string `json:"options,omitempty"`
+	ObjectsEngine   string            `json:"objects_engine,omitempty"`
 	Tables          *TableMeta        `json:"tables,omitempty"`
 	Notes           []string          `json:"notes,omitempty"`
 	Base            string            `json:"base,omitempty"`

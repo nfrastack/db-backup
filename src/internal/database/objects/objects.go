@@ -58,6 +58,20 @@ func (m Objects) Get(key string) bool {
 	return true
 }
 
+func (m Objects) Snapshot() map[string]bool {
+	var out map[string]bool
+	for k, v := range m {
+		if v == nil {
+			continue
+		}
+		if out == nil {
+			out = make(map[string]bool, len(m))
+		}
+		out[k] = *v
+	}
+	return out
+}
+
 func MergeObjects(profile, job Objects) Objects {
 	var out Objects
 	for k, v := range profile {

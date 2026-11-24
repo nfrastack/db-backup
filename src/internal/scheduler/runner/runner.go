@@ -729,6 +729,36 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 			}
 		}
 
+		if job.Databases != nil {
+			if snap := job.Databases.Objects.Snapshot(); len(snap) > 0 {
+				sc.Objects = snap
+				if spec, ok := objects.Lookup(job.Type); ok {
+					sc.ObjectsEngine = spec.Name
+				} else {
+					sc.ObjectsEngine = job.Type
+				}
+			}
+			if len(job.Databases.Options) > 0 {
+				opts := make(map[string]string, len(job.Databases.Options))
+				for k, v := range job.Databases.Options {
+					if strings.EqualFold(strings.TrimSpace(v), "unset") {
+						continue
+					}
+					opts[k] = v
+				}
+				if len(opts) > 0 {
+					sc.Options = opts
+					if sc.ObjectsEngine == "" {
+						if spec, ok := objects.Lookup(job.Type); ok {
+							sc.ObjectsEngine = spec.Name
+						} else {
+							sc.ObjectsEngine = job.Type
+						}
+					}
+				}
+			}
+		}
+
 		if sc.SchemaOnly && (strings.HasPrefix(strings.ToLower(job.Type), "mongo") || strings.HasPrefix(strings.ToLower(job.Type), "redis")) {
 			msg := "schema_only ignored for " + job.Type + " (no schema)"
 			JLog(log.LevelWarn, job, "schema_only ignored", "status", "warn", "detail", msg)

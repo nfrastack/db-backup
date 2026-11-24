@@ -1235,6 +1235,28 @@ func orDash(s string) string {
 	return s
 }
 
+func sortedKeys(m map[string]bool) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func sortedOptionPairs(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	pairs := make([]string, 0, len(m))
+	for _, k := range keys {
+		pairs = append(pairs, k+"="+m[k])
+	}
+	return pairs
+}
+
 func printSidecarPanel(sc *retention.Sidecar) {
 	fmt.Fprintf(os.Stderr, "\nBackup details (sidecar):\n")
 	if sc.Job != nil && sc.Job.Name != "" {
@@ -1275,6 +1297,29 @@ func printSidecarPanel(sc *retention.Sidecar) {
 		}
 		if len(t.SchemaOnly) > 0 {
 			fmt.Fprintf(os.Stderr, "  tables   : schema-only %s\n", strings.Join(t.SchemaOnly, ", "))
+		}
+	}
+	if len(sc.Objects) > 0 || len(sc.Options) > 0 {
+		engine := sc.ObjectsEngine
+		if engine == "" {
+			engine = sc.Type
+		}
+		var excluded, included []string
+		for _, k := range sortedKeys(sc.Objects) {
+			if sc.Objects[k] {
+				included = append(included, k)
+			} else {
+				excluded = append(excluded, k)
+			}
+		}
+		if len(excluded) > 0 {
+			fmt.Fprintf(os.Stderr, "  objects  : excluded %s (%s)\n", strings.Join(excluded, ", "), engine)
+		}
+		if len(included) > 0 {
+			fmt.Fprintf(os.Stderr, "  objects  : included %s (%s)\n", strings.Join(included, ", "), engine)
+		}
+		if len(sc.Options) > 0 {
+			fmt.Fprintf(os.Stderr, "  options  : %s\n", strings.Join(sortedOptionPairs(sc.Options), ", "))
 		}
 	}
 	if sc.Base != "" || sc.ChainDepth > 0 {

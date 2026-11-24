@@ -1,10 +1,11 @@
 ## dev
 
-   Breaking Change: Config structure has changed and some mysql options have been folded into
-   a new objects: and options: structure for databases and jobs.
+   Breaking Change:
+     - Config structure has objects: and options: structure has been introduced.
+     - Old mysql Keys have been removed and migrated
 
    ### Added
-     - dump modifications
+     - dump additions
        - (couch) support for skipping attachments, designDocs, data
        - (influx) support for skipping data
        - (mongo) support for skipping views, indexes, collection options, data
@@ -16,10 +17,11 @@
        - (sqlite) support for skipping views, triggers, indexes, sequences, data, drops
 
    ### Changed
-     - replace flat `routines/events/triggers/views/raw_blobs` mysql keys with
-       generic `objects:` / `options:` mappings.
-       - `raw_blobs` becomes `options: {blob_format: raw|hex}`
-       
+     - bump metadata sidecar version to 3
+     - dump modifications
+       - (mysql) remove flat `routines/events/triggers/views/raw_blobs` keys
+       - (mysql) change `raw_blobs` to options.blob_format
+
 ## 5.0.12 2026-11-23 <code at nfrastack dot com>
 
    ### Changed
