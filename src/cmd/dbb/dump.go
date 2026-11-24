@@ -15,6 +15,7 @@ import (
 
 	"github.com/nfrastack/db-backup/internal/config"
 	"github.com/nfrastack/db-backup/internal/database"
+	"github.com/nfrastack/db-backup/internal/database/objects"
 	"github.com/nfrastack/db-backup/internal/log"
 	"github.com/nfrastack/db-backup/internal/scheduler/runner"
 )
@@ -162,6 +163,23 @@ func cmdDump(args []string) int {
 	if *globalsOnly {
 		job.Databases = &config.DatabaseList{Include: []string{"__globals__"}}
 	}
+	flagObjects := objects.Objects{}
+	if !*withRoutines {
+		flagObjects["routines"] = config.BoolPtr(false)
+	}
+	if !*withEvents {
+		flagObjects["events"] = config.BoolPtr(false)
+	}
+	if !*withTriggers {
+		flagObjects["triggers"] = config.BoolPtr(false)
+	}
+	if !*withViews {
+		flagObjects["views"] = config.BoolPtr(false)
+	}
+	flagOptions := objects.Options{}
+	if *withRawBlobs {
+		flagOptions["blob_format"] = "raw"
+	}
 	if len(dbNames) > 0 && *dbName != "" {
 		include := dbNames
 		if *globalsOnly {
@@ -169,22 +187,16 @@ func cmdDump(args []string) int {
 			include = append(append([]string{}, dbNames...), "__globals__")
 		}
 		job.Databases = &config.DatabaseList{
-			Include:  include,
-			Routines: withRoutines,
-			Events:   withEvents,
-			Triggers: withTriggers,
-			Views:    withViews,
-			RawBlobs: withRawBlobs,
+			Include: include,
+			Objects: flagObjects,
+			Options: flagOptions,
 		}
 		if *dbExclude != "" {
 			job.Databases.Exclude = runner.SplitCsv(*dbExclude)
 		}
 	} else if job.Databases != nil {
-		job.Databases.Routines = withRoutines
-		job.Databases.Events = withEvents
-		job.Databases.Triggers = withTriggers
-		job.Databases.Views = withViews
-		job.Databases.RawBlobs = withRawBlobs
+		job.Databases.Objects = objects.MergeObjects(job.Databases.Objects, flagObjects)
+		job.Databases.Options = objects.MergeOptions(job.Databases.Options, flagOptions)
 	}
 	if *tablesInclude != "" || *tablesExclude != "" || *tablesSchemaOnly != "" {
 		if job.Databases == nil {
