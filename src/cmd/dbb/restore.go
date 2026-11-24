@@ -359,6 +359,7 @@ func cmdRestore(args []string) int {
 	}
 
 	warnRestoreServerCompat(st, order[len(order)-1], *dbType, *dbHost, *dbPort, *dbUser, pass, *dbName, restoreAuthSource, restoreTLS)
+	warnRestoreExcludedObjects(st, order[len(order)-1])
 
 	opts := retention.DecryptOpts{
 		EncryptionType: *encryptionType,
@@ -532,6 +533,36 @@ func cmdRestore(args []string) int {
 	manualOpDetail = manualDetail{engine: *dbType, bytes: restoredBytes, checksum: restoreChecksum}
 	fmt.Fprintf(os.Stderr, "Restore complete (%d backup(s))\n", len(order))
 	return 0
+}
+
+func warnRestoreExcludedObjects(st storage.Storage, file string) {
+	sc, err := retention.ReadSidecar(st, file)
+	if err != nil || sc == nil || len(sc.Objects) == 0 {
+		return
+	}
+	var excluded []string
+	for k, v := range sc.Objects {
+		if !v {
+			excluded = append(excluded, k)
+		}
+	}
+	if len(excluded) == 0 {
+		return
+	}
+	sort.Strings(excluded)
+	engine := sc.ObjectsEngine
+	if engine == "" {
+		engine = sc.Type
+	}
+	fmt.Fprintf(os.Stderr, "WARNING: backup excluded objects (%s): %s\n", engine, strings.Join(excluded, ", "))
+	log.Warn("restore", "backup excluded objects",
+		"status", "warn", "engine", engine, "excluded", strings.Join(excluded, ", "))
+	if v, ok := sc.Objects["drops"]; ok && !v {
+		fmt.Fprintf(os.Stderr, "WARNING: backup has no DROP preambles - restoring over an existing database may conflict\n")
+	}
+	if v, ok := sc.Objects["data"]; ok && !v {
+		fmt.Fprintf(os.Stderr, "WARNING: backup contains no data - restore will be structure-only\n")
+	}
 }
 
 func warnRestoreServerCompat(st storage.Storage, file, dbType, host string, port int, user, pass, dbName, authSource string, tlsCfg *config.TLSConfig) {
