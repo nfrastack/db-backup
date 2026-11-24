@@ -874,6 +874,16 @@ func (d *Dumper) dumpDatabase(w io.Writer, dbName string) error {
 	dbStart := time.Now()
 	fmt.Fprintf(w, "\n-- Database: %s\n", dbName)
 
+	if _, err := d.conn.Exec(d.ctxOrBg(), "START TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"); err != nil {
+		return fmt.Errorf("begin snapshot: %w", err)
+	}
+	snapshotCommitted := false
+	defer func() {
+		if !snapshotCommitted {
+			d.conn.Exec(context.Background(), "ROLLBACK")
+		}
+	}()
+
 	tables, err := d.listTables(dbName)
 	if err != nil {
 		return err
@@ -1036,6 +1046,10 @@ func (d *Dumper) dumpDatabase(w io.Writer, dbName string) error {
 			fmt.Fprint(w, r)
 		}
 	}
+	if _, err := d.conn.Exec(d.ctxOrBg(), "COMMIT"); err != nil {
+		return fmt.Errorf("commit snapshot: %w", err)
+	}
+	snapshotCommitted = true
 	log.Debug("postgres", "database done",
 		"database", dbName, "tables", len(tables),
 		"elapsed", time.Since(dbStart).Round(time.Millisecond).String())
