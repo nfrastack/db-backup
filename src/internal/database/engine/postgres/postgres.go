@@ -2635,8 +2635,10 @@ func (d *Dumper) dumpTriggers(w io.Writer, dbName string, tables []string) error
 			log.Trace("postgres", "trigger dumped", "database", dbName,
 				"table", t, "trigger", name)
 			fmt.Fprintf(w, "\n-- Trigger: %s (on %s.%s)\n", name, schema, table)
-			fmt.Fprintf(w, "DROP TRIGGER IF EXISTS %s ON %s.%s;\n",
-				quotePGIdent(name), quotePGIdent(schema), quotePGIdent(table))
+			if d.Drops {
+				fmt.Fprintf(w, "DROP TRIGGER IF EXISTS %s ON %s.%s;\n",
+					quotePGIdent(name), quotePGIdent(schema), quotePGIdent(table))
+			}
 			fmt.Fprintf(w, "%s;\n", strings.TrimSuffix(strings.TrimSpace(def), ";"))
 		}
 		rows.Close()
@@ -2721,7 +2723,9 @@ func (d *Dumper) dumpRowSecurity(w io.Writer, dbName string, tables []string) er
 			count++
 			log.Trace("postgres", "policy dumped", "database", dbName,
 				"table", t, "policy", name)
-			fmt.Fprintf(w, "DROP POLICY IF EXISTS %s ON %s;\n", quotePGIdent(name), qt)
+			if d.Drops {
+				fmt.Fprintf(w, "DROP POLICY IF EXISTS %s ON %s;\n", quotePGIdent(name), qt)
+			}
 			fmt.Fprint(w, sb.String())
 		}
 		rows.Close()
@@ -2767,8 +2771,10 @@ func (d *Dumper) dumpRules(w io.Writer, dbName string, tables []string) error {
 			log.Trace("postgres", "rule dumped", "database", dbName,
 				"table", t, "rule", name)
 			fmt.Fprintf(w, "\n-- Rule: %s (on %s.%s)\n", name, schema, table)
-			fmt.Fprintf(w, "DROP RULE IF EXISTS %s ON %s.%s;\n",
-				quotePGIdent(name), quotePGIdent(schema), quotePGIdent(table))
+			if d.Drops {
+				fmt.Fprintf(w, "DROP RULE IF EXISTS %s ON %s.%s;\n",
+					quotePGIdent(name), quotePGIdent(schema), quotePGIdent(table))
+			}
 			fmt.Fprintf(w, "%s;\n", strings.TrimSuffix(strings.TrimSpace(def), ";"))
 		}
 		rows.Close()
@@ -3164,7 +3170,9 @@ func (d *Dumper) dumpMatviews(w io.Writer, dbName string) ([]string, error) {
 		}
 		qt := quotePGIdent(m.schema) + "." + quotePGIdent(m.name)
 		fmt.Fprintf(w, "\n-- Materialized view: %s.%s\n", m.schema, m.name)
-		fmt.Fprintf(w, "DROP MATERIALIZED VIEW IF EXISTS %s CASCADE;\n", qt)
+		if d.Drops {
+			fmt.Fprintf(w, "DROP MATERIALIZED VIEW IF EXISTS %s CASCADE;\n", qt)
+		}
 		def := strings.TrimSuffix(strings.TrimSpace(m.def), ";")
 		fmt.Fprintf(w, "CREATE MATERIALIZED VIEW %s AS\n%s\nWITH NO DATA;\n", qt, def)
 		if m.owner != "" && d.Owner {
@@ -3737,7 +3745,9 @@ func (d *Dumper) getCreateTable(schema, table string) (string, error) {
 	}
 
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "DROP TABLE IF EXISTS %s.%s;\n", quotePGIdent(schema), quotePGIdent(table))
+	if d.Drops {
+		fmt.Fprintf(&sb, "DROP TABLE IF EXISTS %s.%s;\n", quotePGIdent(schema), quotePGIdent(table))
+	}
 	fmt.Fprintf(&sb, "CREATE TABLE %s.%s (", quotePGIdent(schema), quotePGIdent(table))
 	inhParents, _ := d.getInheritParents(schema, table)
 	var first = true
@@ -4467,6 +4477,10 @@ func (d *Dumper) typeDef(schema, name, kind string) (string, error) {
 		if err := rows.Err(); err != nil {
 			return "", err
 		}
+		if !d.Drops {
+			return fmt.Sprintf("CREATE TYPE %s AS ENUM (%s);",
+				qn, strings.Join(labels, ", ")), nil
+		}
 		return fmt.Sprintf("DROP TYPE IF EXISTS %s;\nCREATE TYPE %s AS ENUM (%s);",
 			qn, qn, strings.Join(labels, ", ")), nil
 	case "c":
@@ -4495,6 +4509,10 @@ func (d *Dumper) typeDef(schema, name, kind string) (string, error) {
 		if err := rows.Err(); err != nil {
 			return "", err
 		}
+		if !d.Drops {
+			return fmt.Sprintf("CREATE TYPE %s AS (%s);",
+				qn, strings.Join(attrs, ", ")), nil
+		}
 		return fmt.Sprintf("DROP TYPE IF EXISTS %s;\nCREATE TYPE %s AS (%s);",
 			qn, qn, strings.Join(attrs, ", ")), nil
 	case "d":
@@ -4511,7 +4529,10 @@ func (d *Dumper) typeDef(schema, name, kind string) (string, error) {
 			return "", err
 		}
 		var sb strings.Builder
-		fmt.Fprintf(&sb, "DROP DOMAIN IF EXISTS %s;\nCREATE DOMAIN %s AS %s", qn, qn, base)
+		if d.Drops {
+			fmt.Fprintf(&sb, "DROP DOMAIN IF EXISTS %s;\n", qn)
+		}
+		fmt.Fprintf(&sb, "CREATE DOMAIN %s AS %s", qn, base)
 		if defVal.Valid && defVal.String != "" {
 			sb.WriteString(" DEFAULT " + defVal.String)
 		}
@@ -4551,6 +4572,10 @@ func (d *Dumper) typeDef(schema, name, kind string) (string, error) {
 				"WHERE n.nspname = $1 AND rt.typname = $2", schema, name).
 			Scan(&mrSchema, &mrName); err == nil {
 			opts += ", multirange_type_name = " + quotePGIdent(mrSchema) + "." + quotePGIdent(mrName)
+		}
+		if !d.Drops {
+			return fmt.Sprintf("CREATE TYPE %s AS RANGE (%s);",
+				qn, opts), nil
 		}
 		return fmt.Sprintf("DROP TYPE IF EXISTS %s;\nCREATE TYPE %s AS RANGE (%s);",
 			qn, qn, opts), nil
