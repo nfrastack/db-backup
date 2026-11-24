@@ -23,7 +23,7 @@ var (
 	reOtherQual  = regexp.MustCompile("(?i)(FROM|UPDATE|DELETE\\s+FROM|TRUNCATE\\s+TABLE|RENAME\\s+TABLE|DROP\\s+TABLE|ALTER\\s+TABLE|CREATE\\s+TABLE)\\s+`[^`]+`\\.")
 	rePlainQual  = regexp.MustCompile("(?i)(INSERT\\s+INTO|UPDATE|DELETE\\s+FROM|TRUNCATE\\s+TABLE|RENAME\\s+TABLE|DROP\\s+TABLE|ALTER\\s+TABLE|CREATE\\s+TABLE)\\s+([A-Za-z0-9_]+)\\.")
 	reUseSrc     = regexp.MustCompile("(?i)USE\\s+`([^`]+)`")
-	reUseStmt    = regexp.MustCompile("(?i)USE\\s+`[^`]+`\\s*;")
+	reUseStmt    = regexp.MustCompile("(?i)USE\\s+`[^`]+`")
 )
 
 func ListDatabases(host string, port int, user, pass string, tlsCfg *config.TLSConfig) ([]string, error) {
@@ -112,7 +112,7 @@ func Restore(r io.Reader, host string, port int, user, pass, dbName string, tlsC
 
 	var reUseTarget *regexp.Regexp
 	if target != "" {
-		reUseTarget = regexp.MustCompile("(?i)USE\\s+`" + regexp.QuoteMeta(target) + "`\\s*;")
+		reUseTarget = regexp.MustCompile("(?i)USE\\s+`" + regexp.QuoteMeta(target) + "`")
 	}
 
 	sources := map[string]bool{}
@@ -263,7 +263,7 @@ func rewriteStatement(stmt, target string, sources map[string]bool) (string, int
 				sources[m[1]] = true
 			}
 		}
-		scope = reUseStmt.ReplaceAllString(scope, "USE `"+target+"`;")
+		scope = reUseStmt.ReplaceAllString(scope, "USE `"+target+"`")
 		scope = reInsertQual.ReplaceAllString(scope, "INSERT INTO `"+target+"`.")
 		scope = reOtherQual.ReplaceAllString(scope, "$1 `"+target+"`.")
 		scope = rePlainQual.ReplaceAllString(scope, "${1} "+target+".")
