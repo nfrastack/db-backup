@@ -22,21 +22,25 @@ import (
 )
 
 type Dumper struct {
-	host       string
-	port       int
-	user       string
-	pass       string
-	dbName     string
-	authSource string
-	uri        string
-	client     *mongo.Client
-	serverVer  string
-	server     common.ServerVersion
-	tlsCfg     *config.TLSConfig
-	connCfg    *config.ConnectivityConfig
-	ctx        context.Context
-	Tables     *config.TableFilter
-	SchemaOnly bool
+	host              string
+	port              int
+	user              string
+	pass              string
+	dbName            string
+	authSource        string
+	uri               string
+	client            *mongo.Client
+	serverVer         string
+	server            common.ServerVersion
+	tlsCfg            *config.TLSConfig
+	connCfg           *config.ConnectivityConfig
+	ctx               context.Context
+	Tables            *config.TableFilter
+	SchemaOnly        bool
+	Views             bool
+	Indexes           bool
+	CollectionOptions bool
+	Data              bool
 }
 
 func (d *Dumper) Close() error {
@@ -93,6 +97,7 @@ func NewDumper(host string, port int, user, pass, dbName, authSource string, tls
 		pass:       pass,
 		dbName:     dbName,
 		authSource: authSource,
+		Views:      true, Indexes: true, CollectionOptions: true, Data: true,
 	}
 	if len(tlsCfg) > 0 && tlsCfg[0] != nil {
 		d.tlsCfg = tlsCfg[0]
@@ -148,6 +153,13 @@ func (d *Dumper) SetConnectivity(cfg *config.ConnectivityConfig) {
 	}
 }
 
+func (d *Dumper) SetMongoObjects(o MongoObjects) {
+	d.Views = o.Views
+	d.Indexes = o.Indexes
+	d.CollectionOptions = o.CollectionOptions
+	d.Data = o.Data
+}
+
 func (d *Dumper) SetTableFilter(f *config.TableFilter, schemaOnly bool) {
 	d.Tables = f
 	d.SchemaOnly = schemaOnly
@@ -161,6 +173,9 @@ func (d *Dumper) ctxOrBg() context.Context {
 }
 
 func (d *Dumper) dumpCollectionOptions(w io.Writer, dbName string, col collectionInfo) error {
+	if !d.CollectionOptions {
+		return nil
+	}
 	if len(col.options) == 0 {
 		return nil
 	}
@@ -183,26 +198,44 @@ func (d *Dumper) dumpCollectionOptions(w io.Writer, dbName string, col collectio
 
 func (d *Dumper) dumpCollection(ctx context.Context, w io.Writer, dbName, col string) error {
 	coll := d.client.Database(dbName).Collection(col)
+	colStart := time.Now()
 
+	var docCount int
+	if d.Data {
+		var err error
+		docCount, err = d.dumpDocuments(ctx, w, coll, col)
+		if err != nil {
+			return err
+		}
+	}
+	if err := d.dumpIndexes(ctx, w, dbName, col); err != nil {
+		return err
+	}
+	log.Trace("mongo", "collection done",
+		"database", dbName, "collection", col, "docs", docCount,
+		"elapsed", time.Since(colStart).Round(time.Millisecond).String())
+	return nil
+}
+
+func (d *Dumper) dumpDocuments(ctx context.Context, w io.Writer, coll *mongo.Collection, col string) (int, error) {
 	cursor, err := coll.Find(ctx, bson.D{}, options.Find().SetSort(bson.D{{Key: "$natural", Value: 1}}))
 	if err != nil {
-		return fmt.Errorf("find %s: %w", col, err)
+		return 0, fmt.Errorf("find %s: %w", col, err)
 	}
 	defer cursor.Close(ctx)
 
 	fmt.Fprintf(w, "// Collection: %s\n", col)
-	colStart := time.Now()
 
 	var docCount int
 	for cursor.Next(ctx) {
 		var doc bson.M
 		if err := cursor.Decode(&doc); err != nil {
-			return fmt.Errorf("decode: %w", err)
+			return 0, fmt.Errorf("decode: %w", err)
 		}
 
 		raw, err := bson.MarshalExtJSON(doc, true, false)
 		if err != nil {
-			return fmt.Errorf("encode: %w", err)
+			return 0, fmt.Errorf("encode: %w", err)
 		}
 		json := string(raw)
 		if docCount == 0 {
@@ -218,18 +251,15 @@ func (d *Dumper) dumpCollection(ctx context.Context, w io.Writer, dbName, col st
 		fmt.Fprintf(w, "\n]);\n\n")
 	}
 	if err := cursor.Err(); err != nil {
-		return err
+		return 0, err
 	}
-	if err := d.dumpIndexes(ctx, w, dbName, col); err != nil {
-		return err
-	}
-	log.Trace("mongo", "collection done",
-		"database", dbName, "collection", col, "docs", docCount,
-		"elapsed", time.Since(colStart).Round(time.Millisecond).String())
-	return nil
+	return docCount, nil
 }
 
 func (d *Dumper) dumpIndexes(ctx context.Context, w io.Writer, dbName, col string) error {
+	if !d.Indexes {
+		return nil
+	}
 	cursor, err := d.client.Database(dbName).Collection(col).Indexes().List(ctx)
 	if err != nil {
 		log.Warn("mongo", "skipping indexes - list failed", "database", dbName, "collection", col, "error", err.Error())
@@ -297,6 +327,9 @@ func (d *Dumper) listCollections(ctx context.Context, dbName string) ([]collecti
 }
 
 func (d *Dumper) dumpView(w io.Writer, dbName string, col collectionInfo) error {
+	if !d.Views {
+		return nil
+	}
 	viewOn, _ := col.options["viewOn"].(string)
 	if viewOn == "" {
 		log.Warn("mongo", "skipping view - no viewOn", "database", dbName, "view", col.name)

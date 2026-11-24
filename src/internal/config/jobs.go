@@ -129,25 +129,6 @@ type MaintenanceConfig struct {
 	MemoryPurge *bool  `yaml:"memory_purge,omitempty"`
 }
 
-var legacyObjectKeys = map[string]string{
-	"routines":  "objects: {routines: false}",
-	"events":    "objects: {events: false}",
-	"triggers":  "objects: {triggers: false}",
-	"views":     "objects: {views: false}",
-	"raw_blobs": "options: {blob_format: raw}",
-}
-
-func rejectLegacyObjectKey(place, key string) error {
-	if hint, ok := legacyObjectKeys[key]; ok {
-		extra := ""
-		if key == "raw_blobs" {
-			extra = " (--raw-blobs becomes --option blob_format=raw)"
-		}
-		return fmt.Errorf("%s.%s: removed in 5.1.0, use %s%s", place, key, hint, extra)
-	}
-	return nil
-}
-
 func ValidateJobObjects(engine string, d *DatabaseList, jobName string) error {
 	if d == nil {
 		return nil
@@ -248,9 +229,6 @@ func (d *DatabaseList) UnmarshalYAML(value *yaml.Node) error {
 		switch k {
 		case "include", "exclude", "tables", "objects", "options":
 		default:
-			if err := rejectLegacyObjectKey("databases", k); err != nil {
-				return err
-			}
 			return fmt.Errorf("databases: unknown field %q (want include|exclude|tables|objects|options)", k)
 		}
 	}
@@ -278,9 +256,6 @@ func (p *DbProfile) UnmarshalYAML(value *yaml.Node) error {
 		switch k {
 		case "connection", "name", "include", "exclude", "tables", "objects", "options":
 		default:
-			if err := rejectLegacyObjectKey("profiles.databases", k); err != nil {
-				return err
-			}
 			return fmt.Errorf("profiles.databases: unknown field %q (want connection|name|include|exclude|tables|objects|options)", k)
 		}
 	}

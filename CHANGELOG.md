@@ -3,6 +3,13 @@
    Breaking Change: Config structure has changed and some mysql options have been folded into
    a new objects: and options: structure for databases and jobs.
 
+   ### Added
+     - dump modifications
+       - (mongo) support for skipping views, indexes, collection options, data
+       - (mysql) support for skipping routines, events, triggers, views
+       - (postgres) support for skipping functions, aggregates, triggers, views, materialized views
+         rules, policies, extensions, types, sequences, indexes, constraints, comments, blobs,
+         publications, drops, data, owner, acl, collations
    ### Changed
      - replace flat `routines/events/triggers/views/raw_blobs` mysql keys with
        generic `objects:` / `options:` mappings.
