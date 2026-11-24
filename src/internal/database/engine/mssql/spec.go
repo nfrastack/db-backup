@@ -19,7 +19,11 @@ func Spec() registry.EngineSpec {
 		Label:       "Microsoft SQL Server",
 		DefaultPort: 1433,
 		New: func(o registry.Options) (registry.Engine, error) {
-			return NewDumper(o.Host, o.Port, o.User, o.Pass, common.ConnDB(o.DB, "master"), o.TLS), nil
+			d := NewDumper(o.Host, o.Port, o.User, o.Pass, common.ConnDB(o.DB, "master"), o.TLS)
+			if o.HasObjects {
+				d.SetMssqlObjects(ResolveObjects(o.Objects))
+			}
+			return d, nil
 		},
 		ListDatabases: func(host string, port int, user, pass, authSource string, tlsCfg *config.TLSConfig) ([]string, error) {
 			return ListDatabases(host, port, user, pass, tlsCfg)

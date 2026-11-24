@@ -21,19 +21,26 @@ import (
 )
 
 type Dumper struct {
-	host       string
-	port       int
-	user       string
-	pass       string
-	dbName     string
-	db         *sql.DB
-	mode       string
-	tlsCfg     *config.TLSConfig
-	connCfg    *config.ConnectivityConfig
-	ctx        context.Context
-	Tables     *config.TableFilter
-	SchemaOnly bool
-	server     common.ServerVersion
+	host        string
+	port        int
+	user        string
+	pass        string
+	dbName      string
+	db          *sql.DB
+	mode        string
+	tlsCfg      *config.TLSConfig
+	connCfg     *config.ConnectivityConfig
+	ctx         context.Context
+	Tables      *config.TableFilter
+	SchemaOnly  bool
+	Routines    bool
+	Triggers    bool
+	Views       bool
+	Indexes     bool
+	Constraints bool
+	Data        bool
+	Drops       bool
+	server      common.ServerVersion
 }
 
 var mssqlStringLikeTypes = map[string]bool{
@@ -112,12 +119,14 @@ func NewDumper(host string, port int, user, pass, dbName string, tlsCfg ...*conf
 		port = 1433
 	}
 	d := &Dumper{
-		host:   host,
-		port:   port,
-		user:   user,
-		pass:   pass,
-		dbName: dbName,
-		mode:   "database",
+		host:     host,
+		port:     port,
+		user:     user,
+		pass:     pass,
+		dbName:   dbName,
+		mode:     "database",
+		Routines: true, Triggers: true, Views: true, Indexes: true,
+		Constraints: true, Data: true, Drops: true,
 	}
 	if len(tlsCfg) > 0 && tlsCfg[0] != nil {
 		d.tlsCfg = tlsCfg[0]
@@ -165,6 +174,16 @@ func (d *Dumper) SetConnectivity(cfg *config.ConnectivityConfig) {
 	if cfg != nil {
 		d.connCfg = cfg
 	}
+}
+
+func (d *Dumper) SetMssqlObjects(o MssqlObjects) {
+	d.Routines = o.Routines
+	d.Triggers = o.Triggers
+	d.Views = o.Views
+	d.Indexes = o.Indexes
+	d.Constraints = o.Constraints
+	d.Data = o.Data
+	d.Drops = o.Drops
 }
 
 func (d *Dumper) SetTableFilter(f *config.TableFilter, schemaOnly bool) {
@@ -388,6 +407,9 @@ func (d *Dumper) keyColumns(ctx context.Context, dbName string, objectID int64, 
 }
 
 func (d *Dumper) dumpConstraints(ctx context.Context, w io.Writer, dbName string, tables []string) error {
+	if !d.Constraints {
+		return nil
+	}
 	for _, table := range tables {
 		id, err := d.tableObjectID(ctx, dbName, table)
 		if err != nil {
@@ -524,6 +546,9 @@ func referentialAction(desc string) string {
 }
 
 func (d *Dumper) dumpIndexes(ctx context.Context, w io.Writer, dbName string, tables []string) error {
+	if !d.Indexes {
+		return nil
+	}
 	for _, table := range tables {
 		id, err := d.tableObjectID(ctx, dbName, table)
 		if err != nil {
@@ -614,6 +639,9 @@ func (d *Dumper) dumpIndexes(ctx context.Context, w io.Writer, dbName string, ta
 }
 
 func (d *Dumper) dumpViews(ctx context.Context, w io.Writer, dbName string) error {
+	if !d.Views {
+		return nil
+	}
 	rows, err := d.db.QueryContext(ctx,
 		"SELECT v.name, m.definition FROM "+quoteMSSQLIdent(dbName)+".sys.views v JOIN "+quoteMSSQLIdent(dbName)+".sys.sql_modules m ON m.object_id = v.object_id WHERE v.is_ms_shipped = 0 ORDER BY v.name")
 	if err != nil {
@@ -661,12 +689,19 @@ func (d *Dumper) dumpViews(ctx context.Context, w io.Writer, dbName string) erro
 		return err
 	}
 	for _, name := range orderViewsByDependency(names, deps) {
-		fmt.Fprintf(w, "\n-- View: %s\nDROP VIEW IF EXISTS %s;\nGO\n%s;\nGO\n\n", name, quoteMSSQLIdent(name), strings.TrimSuffix(strings.TrimSpace(defs[name]), ";"))
+		fmt.Fprintf(w, "\n-- View: %s\n", name)
+		if d.Drops {
+			fmt.Fprintf(w, "DROP VIEW IF EXISTS %s;\nGO\n", quoteMSSQLIdent(name))
+		}
+		fmt.Fprintf(w, "%s;\nGO\n\n", strings.TrimSuffix(strings.TrimSpace(defs[name]), ";"))
 	}
 	return nil
 }
 
 func (d *Dumper) dumpTriggers(ctx context.Context, w io.Writer, dbName string, tables []string) error {
+	if !d.Triggers {
+		return nil
+	}
 	kept := map[string]bool{}
 	for _, t := range tables {
 		kept[t] = true
@@ -687,12 +722,19 @@ func (d *Dumper) dumpTriggers(ctx context.Context, w io.Writer, dbName string, t
 			continue
 		}
 		common.TraceTable(ctx, dbName, name)
-		fmt.Fprintf(w, "\n-- Trigger: %s (on %s)\nDROP TRIGGER IF EXISTS %s;\nGO\n%s;\nGO\n\n", name, parent, quoteMSSQLIdent(name), strings.TrimSuffix(strings.TrimSpace(definition), ";"))
+		fmt.Fprintf(w, "\n-- Trigger: %s (on %s)\n", name, parent)
+		if d.Drops {
+			fmt.Fprintf(w, "DROP TRIGGER IF EXISTS %s;\nGO\n", quoteMSSQLIdent(name))
+		}
+		fmt.Fprintf(w, "%s;\nGO\n\n", strings.TrimSuffix(strings.TrimSpace(definition), ";"))
 	}
 	return rows.Err()
 }
 
 func (d *Dumper) dumpRoutines(ctx context.Context, w io.Writer, dbName string) error {
+	if !d.Routines {
+		return nil
+	}
 	rows, err := d.db.QueryContext(ctx,
 		"SELECT o.name, o.type, m.definition FROM "+quoteMSSQLIdent(dbName)+".sys.objects o JOIN "+quoteMSSQLIdent(dbName)+".sys.sql_modules m ON m.object_id = o.object_id WHERE o.type IN ('P', 'FN', 'IF', 'TF') AND o.is_ms_shipped = 0 ORDER BY o.type, o.name")
 	if err != nil {
@@ -710,7 +752,11 @@ func (d *Dumper) dumpRoutines(ctx context.Context, w io.Writer, dbName string) e
 			kind = "PROCEDURE"
 		}
 		common.TraceTable(ctx, dbName, name)
-		fmt.Fprintf(w, "\n-- Routine: %s\nDROP %s IF EXISTS %s;\nGO\n%s;\nGO\n\n", name, kind, quoteMSSQLIdent(name), strings.TrimSuffix(strings.TrimSpace(definition), ";"))
+		fmt.Fprintf(w, "\n-- Routine: %s\n", name)
+		if d.Drops {
+			fmt.Fprintf(w, "DROP %s IF EXISTS %s;\nGO\n", kind, quoteMSSQLIdent(name))
+		}
+		fmt.Fprintf(w, "%s;\nGO\n\n", strings.TrimSuffix(strings.TrimSpace(definition), ";"))
 		count++
 	}
 	return rows.Err()
@@ -780,7 +826,9 @@ func (d *Dumper) dumpTable(ctx context.Context, w io.Writer, dbName, table strin
 	sb.WriteString("\n);\n\n")
 	sb.WriteString("GO\n\n")
 
-	fmt.Fprintf(w, "DROP TABLE IF EXISTS %s.[dbo].%s;\nGO\n", quoteMSSQLIdent(dbName), quoteMSSQLIdent(table))
+	if d.Drops {
+		fmt.Fprintf(w, "DROP TABLE IF EXISTS %s.[dbo].%s;\nGO\n", quoteMSSQLIdent(dbName), quoteMSSQLIdent(table))
+	}
 	fmt.Fprintf(w, "-- Table: %s\n%s", table, sb.String())
 
 	schemaOnly := d.SchemaOnly
@@ -788,7 +836,7 @@ func (d *Dumper) dumpTable(ctx context.Context, w io.Writer, dbName, table strin
 		_, so := d.Tables.Apply(table)
 		schemaOnly = schemaOnly || so
 	}
-	if schemaOnly {
+	if schemaOnly || !d.Data {
 		return nil
 	}
 
