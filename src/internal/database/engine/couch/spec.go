@@ -19,7 +19,11 @@ func Spec() registry.EngineSpec {
 		Label:       "CouchDB",
 		DefaultPort: 5984,
 		New: func(o registry.Options) (registry.Engine, error) {
-			return NewDumper(o.Host, o.Port, o.User, o.Pass, o.TLS), nil
+			d := NewDumper(o.Host, o.Port, o.User, o.Pass, o.TLS)
+			if o.HasObjects {
+				d.SetCouchObjects(ResolveObjects(o.Objects))
+			}
+			return d, nil
 		},
 		ListDatabases: func(host string, port int, user, pass, authSource string, tlsCfg *config.TLSConfig) ([]string, error) {
 			return ListDatabases(host, port, user, pass, tlsCfg)

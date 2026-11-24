@@ -5,6 +5,7 @@
 
    ### Added
      - dump modifications
+       - (couch) support for skipping attachments, designDocs, data
        - (mongo) support for skipping views, indexes, collection options, data
        - (mysql) support for skipping routines, events, triggers, views
        - (postgres) support for skipping functions, aggregates, triggers, views, materialized views
