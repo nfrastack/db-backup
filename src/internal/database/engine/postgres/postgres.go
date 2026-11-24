@@ -26,20 +26,41 @@ import (
 )
 
 type Dumper struct {
-	host       string
-	port       int
-	user       string
-	pass       string
-	dbname     string
-	conn       *pgx.Conn
-	serverVer  string
-	server     common.ServerVersion
-	tlsCfg     *config.TLSConfig
-	connCfg    *config.ConnectivityConfig
-	ctx        context.Context
-	SplitDB    bool
-	Tables     *config.TableFilter
-	SchemaOnly bool
+	host              string
+	port              int
+	user              string
+	pass              string
+	dbname            string
+	conn              *pgx.Conn
+	serverVer         string
+	server            common.ServerVersion
+	tlsCfg            *config.TLSConfig
+	connCfg           *config.ConnectivityConfig
+	ctx               context.Context
+	SplitDB           bool
+	Tables            *config.TableFilter
+	SchemaOnly        bool
+	Functions         bool
+	Aggregates        bool
+	Triggers          bool
+	Views             bool
+	Matviews          bool
+	Rules             bool
+	Policies          bool
+	Extensions        bool
+	Types             bool
+	Sequences         bool
+	Indexes           bool
+	Constraints       bool
+	Comments          bool
+	Blobs             bool
+	Publications      bool
+	Drops             bool
+	Data              bool
+	Owner             bool
+	Acl               bool
+	Collations        bool
+	FailOnUnencodable bool
 }
 
 func (d *Dumper) aclGrants(query, schema string, args ...any) ([]pgGrant, error) {
@@ -61,17 +82,38 @@ func (d *Dumper) aclGrants(query, schema string, args ...any) ([]pgGrant, error)
 
 func (d *Dumper) cloneForDB(db string) *Dumper {
 	return &Dumper{
-		host:       d.host,
-		port:       d.port,
-		user:       d.user,
-		pass:       d.pass,
-		dbname:     db,
-		tlsCfg:     d.tlsCfg,
-		connCfg:    d.connCfg,
-		ctx:        d.ctxOrBg(),
-		Tables:     d.Tables,
-		SchemaOnly: d.SchemaOnly,
-		serverVer:  d.serverVer,
+		host:              d.host,
+		port:              d.port,
+		user:              d.user,
+		pass:              d.pass,
+		dbname:            db,
+		tlsCfg:            d.tlsCfg,
+		connCfg:           d.connCfg,
+		ctx:               d.ctxOrBg(),
+		Tables:            d.Tables,
+		SchemaOnly:        d.SchemaOnly,
+		serverVer:         d.serverVer,
+		Functions:         d.Functions,
+		Aggregates:        d.Aggregates,
+		Triggers:          d.Triggers,
+		Views:             d.Views,
+		Matviews:          d.Matviews,
+		Rules:             d.Rules,
+		Policies:          d.Policies,
+		Extensions:        d.Extensions,
+		Types:             d.Types,
+		Sequences:         d.Sequences,
+		Indexes:           d.Indexes,
+		Constraints:       d.Constraints,
+		Comments:          d.Comments,
+		Blobs:             d.Blobs,
+		Publications:      d.Publications,
+		Drops:             d.Drops,
+		Data:              d.Data,
+		Owner:             d.Owner,
+		Acl:               d.Acl,
+		Collations:        d.Collations,
+		FailOnUnencodable: d.FailOnUnencodable,
 	}
 }
 
@@ -203,6 +245,14 @@ func (d *Dumper) copyData(w io.Writer, dbName, schema, table string) error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
+	if len(fallbackCols) > 0 && d.FailOnUnencodable {
+		names := make([]string, 0, len(fallbackCols))
+		for n := range fallbackCols {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		return fmt.Errorf("unencodable columns with fail_on_unencodable=true: %s.%s (%s)", schema, table, strings.Join(names, ", "))
+	}
 
 	fmt.Fprintf(w, "\\.\n\n")
 	log.Debug("postgres", "table data done", "database", dbName,
@@ -256,6 +306,9 @@ func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
 }
 
 func (d *Dumper) dumpACLs(w io.Writer, dbName string, tables []string) error {
+	if !d.Owner && !d.Acl {
+		return nil
+	}
 	wroteHeader := false
 	grantCount := 0
 	header := func() {
@@ -266,6 +319,9 @@ func (d *Dumper) dumpACLs(w io.Writer, dbName string, tables []string) error {
 	}
 
 	grantRelation := func(kind, schema, name string) {
+		if !d.Acl {
+			return
+		}
 		grants, err := d.relationGrants(schema, name)
 		if err != nil {
 			log.Warn("postgres", "grants unavailable", "database", dbName,
@@ -357,7 +413,7 @@ func (d *Dumper) dumpACLs(w io.Writer, dbName string, tables []string) error {
 		}
 		ident := quotePGIdent(schema) + "." + quotePGIdent(name) + "(" + args + ")"
 		emitted := false
-		if owner != "" {
+		if owner != "" && d.Owner {
 			header()
 			if !emitted {
 				fmt.Fprintf(w, "\n-- ACL: %s %s.%s(%s)\n", objType, schema, name, args)
@@ -365,7 +421,7 @@ func (d *Dumper) dumpACLs(w io.Writer, dbName string, tables []string) error {
 			}
 			fmt.Fprintf(w, "ALTER %s %s OWNER TO %s;\n", objType, ident, quotePGRole(owner))
 		}
-		if f.acl != "" && f.acl != "{}" {
+		if f.acl != "" && f.acl != "{}" && d.Acl {
 			grants, err := d.funcGrants(schema, name, args)
 			if err != nil {
 				log.Warn("postgres", "grants unavailable", "database", dbName,
@@ -427,6 +483,9 @@ func (d *Dumper) listPublications() ([]string, error) {
 }
 
 func (d *Dumper) dumpPublications(w io.Writer, dbName string) error {
+	if !d.Publications {
+		return nil
+	}
 	hasCol := func(rel, col string) bool {
 		var has bool
 		if err := d.conn.QueryRow(d.ctxOrBg(),
@@ -552,7 +611,7 @@ func (d *Dumper) dumpPublications(w io.Writer, dbName string) error {
 		sb.WriteString(";")
 		log.Trace("postgres", "publication dumped", "database", dbName, "publication", p.name)
 		fmt.Fprintf(w, "\n-- Publication: %s\n%s\n", p.name, sb.String())
-		if p.owner != "" {
+		if p.owner != "" && d.Owner {
 			fmt.Fprintf(w, "ALTER PUBLICATION %s OWNER TO %s;\n", quotePGIdent(p.name), quotePGRole(p.owner))
 		}
 	}
@@ -582,6 +641,9 @@ func (d *Dumper) pubColumnNames(schema, table, attrs string) string {
 }
 
 func (d *Dumper) dumpDefaultPrivileges(w io.Writer, dbName string) error {
+	if !d.Acl {
+		return nil
+	}
 	rows, err := d.conn.Query(d.ctxOrBg(),
 		"SELECT CASE WHEN d.defaclrole = 0 THEN NULL ELSE pg_get_userbyid(d.defaclrole) END, "+
 			"n.nspname, d.defaclobjtype, "+
@@ -673,6 +735,9 @@ func (d *Dumper) dumpDefaultPrivileges(w io.Writer, dbName string) error {
 }
 
 func (d *Dumper) dumpBlobs(w io.Writer, dbName string, tables []string) error {
+	if !d.Blobs {
+		return nil
+	}
 	if d.SchemaOnly {
 		return nil
 	}
@@ -1031,6 +1096,9 @@ func (d *Dumper) orderTablesByInheritance(dbName string, tables []string) []stri
 }
 
 func (d *Dumper) dumpDrops(w io.Writer, dbName string, included []string) error {
+	if !d.Drops {
+		return nil
+	}
 	fmt.Fprintf(w, "\n-- Drops (re-restore safety)\n")
 	for _, t := range included {
 		parts := strings.SplitN(t, ".", 2)
@@ -1072,6 +1140,9 @@ func (d *Dumper) dumpDrops(w io.Writer, dbName string, included []string) error 
 }
 
 func (d *Dumper) dumpExtensions(w io.Writer, dbName string) error {
+	if !d.Extensions {
+		return nil
+	}
 	rows, err := d.conn.Query(d.ctxOrBg(),
 		"WITH RECURSIVE extdeps AS ("+
 			"SELECT d.objid AS ext, d.refobjid AS req "+
@@ -1448,6 +1519,9 @@ func (d *Dumper) tableOptions(query string, arg int64) ([]optionPair, error) {
 }
 
 func (d *Dumper) dumpFunctions(w io.Writer, dbName string, tableDependent bool) error {
+	if !d.Functions {
+		return nil
+	}
 	rows, err := d.conn.Query(d.ctxOrBg(),
 		"SELECT proname, pg_get_functiondef(oid) FROM pg_proc "+
 			"WHERE pronamespace NOT IN ('pg_catalog'::regnamespace, 'information_schema'::regnamespace) "+
@@ -1905,6 +1979,9 @@ func (d *Dumper) opClassMembers(oid uint32) (string, error) {
 }
 
 func (d *Dumper) dumpAggregates(w io.Writer, dbName string) error {
+	if !d.Aggregates {
+		return nil
+	}
 	rows, err := d.conn.Query(d.ctxOrBg(),
 		"SELECT n.nspname, p.proname, "+
 			"CASE WHEN a.aggnumdirectargs > 0 THEN "+
@@ -2283,14 +2360,14 @@ func (d *Dumper) dumpPartitions(w io.Writer, dbName, schema, table string, schem
 			return dumped, "", "", err
 		}
 		fmt.Fprintf(w, "\n-- Partition: %s (of %s.%s)\n%s\n\n", qualified, schema, table, createSQL)
-		if owner, err := d.ownerOf(pschema, pname); err == nil && owner != "" {
-			fmt.Fprintf(w, "ALTER TABLE %s.%s OWNER TO %s;\n\n",
-				quotePGIdent(pschema), quotePGIdent(pname), quotePGRole(owner))
-		} else if err != nil {
+		if owner, err := d.ownerOf(pschema, pname); err != nil {
 			log.Warn("postgres", "owner unavailable", "database", dbName,
 				"table", pschema+"."+pname, "error", err.Error())
+		} else if owner != "" && d.Owner {
+			fmt.Fprintf(w, "ALTER TABLE %s.%s OWNER TO %s;\n\n",
+				quotePGIdent(pschema), quotePGIdent(pname), quotePGRole(owner))
 		}
-		if !schemaOnly {
+		if !schemaOnly && d.Data {
 			if err := d.copyData(w, dbName, pschema, pname); err != nil {
 				return dumped, "", "", err
 			}
@@ -2304,11 +2381,13 @@ func (d *Dumper) dumpPartitions(w io.Writer, dbName, schema, table string, schem
 			attachSQL.WriteString(nestedAttach)
 			conSQL.WriteString(nestedCon)
 		}
-		if fk, err := d.getForeignKeys(pschema, pname); err == nil {
-			conSQL.WriteString(fk)
-		}
-		if excl, err := d.getExclusionConstraints(pschema, pname); err == nil {
-			conSQL.WriteString(excl)
+		if d.Constraints {
+			if fk, err := d.getForeignKeys(pschema, pname); err == nil {
+				conSQL.WriteString(fk)
+			}
+			if excl, err := d.getExclusionConstraints(pschema, pname); err == nil {
+				conSQL.WriteString(excl)
+			}
 		}
 		fmt.Fprintf(&attachSQL, "ALTER TABLE ONLY %s.%s ATTACH PARTITION %s.%s %s;\n",
 			quotePGIdent(schema), quotePGIdent(table),
@@ -2342,14 +2421,14 @@ func (d *Dumper) dumpSchemas(w io.Writer, dbName string, included []string) erro
 		log.Trace("postgres", "schema dumped", "database", dbName, "schema", s.name, "owner", s.owner)
 		fmt.Fprintf(w, "\n-- Schema: %s\n", s.name)
 		fmt.Fprintf(w, "CREATE SCHEMA IF NOT EXISTS %s;\n", quotePGIdent(s.name))
-		if s.owner != "" {
+		if s.owner != "" && d.Owner {
 			fmt.Fprintf(w, "ALTER SCHEMA %s OWNER TO %s;\n",
 				quotePGIdent(s.name), quotePGRole(s.owner))
 		}
 		if grants, err := d.schemaGrants(s.name); err != nil {
 			log.Warn("postgres", "schema grants unavailable", "database", dbName,
 				"schema", s.name, "error", err.Error())
-		} else if len(grants) > 0 {
+		} else if len(grants) > 0 && d.Acl {
 			fmt.Fprint(w, formatGrants("SCHEMA "+quotePGIdent(s.name), grants))
 		}
 	}
@@ -2359,6 +2438,9 @@ func (d *Dumper) dumpSchemas(w io.Writer, dbName string, included []string) erro
 type userTypeRef struct{ schema, name, kind string }
 
 func (d *Dumper) dumpSequences(w io.Writer, dbName string) error {
+	if !d.Sequences {
+		return nil
+	}
 	start := time.Now()
 	seqs, err := d.listStandaloneSequences()
 	if err != nil {
@@ -2386,7 +2468,7 @@ func (d *Dumper) dumpSequences(w io.Writer, dbName string) error {
 			"sequence", schema+"."+name)
 		fmt.Fprintf(w, "\n-- Sequence: %s.%s\n", schema, name)
 		fmt.Fprintf(w, "CREATE SEQUENCE IF NOT EXISTS %s AS %s %s;\n", qn, seqType, opts)
-		if owner != "" {
+		if owner != "" && d.Owner {
 			fmt.Fprintf(w, "ALTER SEQUENCE %s OWNER TO %s;\n", qn, quotePGRole(owner))
 		}
 	}
@@ -2396,6 +2478,9 @@ func (d *Dumper) dumpSequences(w io.Writer, dbName string) error {
 }
 
 func (d *Dumper) dumpSequenceValues(w io.Writer, dbName string) error {
+	if !d.Sequences {
+		return nil
+	}
 	if d.SchemaOnly {
 		return nil
 	}
@@ -2461,12 +2546,12 @@ func (d *Dumper) dumpTable(w io.Writer, dbName, table string) ([]string, string,
 		return nil, "", "", err
 	}
 	fmt.Fprintf(w, "\n-- Table: %s.%s\n%s\n\n", schema, tableName, createSQL)
-	if owner, err := d.ownerOf(schema, tableName); err == nil && owner != "" {
-		fmt.Fprintf(w, "ALTER TABLE %s.%s OWNER TO %s;\n\n",
-			quotePGIdent(schema), quotePGIdent(tableName), quotePGRole(owner))
-	} else if err != nil {
+	if owner, err := d.ownerOf(schema, tableName); err != nil {
 		log.Warn("postgres", "owner unavailable", "database", dbName,
 			"table", schema+"."+tableName, "error", err.Error())
+	} else if owner != "" && d.Owner {
+		fmt.Fprintf(w, "ALTER TABLE %s.%s OWNER TO %s;\n\n",
+			quotePGIdent(schema), quotePGIdent(tableName), quotePGRole(owner))
 	}
 
 	schemaOnly := d.SchemaOnly
@@ -2481,17 +2566,19 @@ func (d *Dumper) dumpTable(w io.Writer, dbName, table string) ([]string, string,
 	}
 
 	var fkSQL string
-	if fk, err := d.getForeignKeys(schema, tableName); err == nil {
-		fkSQL = fk
-	} else {
-		log.Warn("postgres", "foreign keys unavailable", "database", dbName,
-			"table", schema+"."+tableName, "error", err.Error())
-	}
-	if excl, err := d.getExclusionConstraints(schema, tableName); err == nil {
-		fkSQL += excl
-	} else {
-		log.Warn("postgres", "exclusion constraints unavailable", "database", dbName,
-			"table", schema+"."+tableName, "error", err.Error())
+	if d.Constraints {
+		if fk, err := d.getForeignKeys(schema, tableName); err == nil {
+			fkSQL = fk
+		} else {
+			log.Warn("postgres", "foreign keys unavailable", "database", dbName,
+				"table", schema+"."+tableName, "error", err.Error())
+		}
+		if excl, err := d.getExclusionConstraints(schema, tableName); err == nil {
+			fkSQL += excl
+		} else {
+			log.Warn("postgres", "exclusion constraints unavailable", "database", dbName,
+				"table", schema+"."+tableName, "error", err.Error())
+		}
 	}
 	if d.isPartitioned(schema, tableName) {
 		log.Trace("postgres", "partitioned parent, DDL only", "database", dbName, "table", table)
@@ -2499,6 +2586,9 @@ func (d *Dumper) dumpTable(w io.Writer, dbName, table string) ([]string, string,
 		return partitionNames, partAttach, fkSQL + partCon, err
 	}
 	if schemaOnly {
+		return nil, "", fkSQL, nil
+	}
+	if !d.Data {
 		return nil, "", fkSQL, nil
 	}
 
@@ -2510,6 +2600,9 @@ func (d *Dumper) dumpTable(w io.Writer, dbName, table string) ([]string, string,
 }
 
 func (d *Dumper) dumpTriggers(w io.Writer, dbName string, tables []string) error {
+	if !d.Triggers {
+		return nil
+	}
 	start := time.Now()
 	count := 0
 	for _, t := range tables {
@@ -2554,6 +2647,9 @@ func (d *Dumper) dumpTriggers(w io.Writer, dbName string, tables []string) error
 }
 
 func (d *Dumper) dumpRowSecurity(w io.Writer, dbName string, tables []string) error {
+	if !d.Policies {
+		return nil
+	}
 	start := time.Now()
 	count := 0
 	for _, t := range tables {
@@ -2636,6 +2732,9 @@ func (d *Dumper) dumpRowSecurity(w io.Writer, dbName string, tables []string) er
 }
 
 func (d *Dumper) dumpRules(w io.Writer, dbName string, tables []string) error {
+	if !d.Rules {
+		return nil
+	}
 	start := time.Now()
 	count := 0
 	for _, t := range tables {
@@ -2741,8 +2840,10 @@ func (d *Dumper) dumpStatistics(w io.Writer, dbName string, tables []string) err
 		fmt.Fprintf(w, "DROP STATISTICS IF EXISTS %s.%s;\n",
 			quotePGIdent(s.schema), quotePGIdent(s.name))
 		fmt.Fprintf(w, "%s;\n", def)
-		fmt.Fprintf(w, "ALTER STATISTICS %s.%s OWNER TO %s;\n",
-			quotePGIdent(s.schema), quotePGIdent(s.name), quotePGRole(s.owner))
+		if d.Owner {
+			fmt.Fprintf(w, "ALTER STATISTICS %s.%s OWNER TO %s;\n",
+				quotePGIdent(s.schema), quotePGIdent(s.name), quotePGRole(s.owner))
+		}
 	}
 	log.Debug("postgres", "statistics done", "database", dbName,
 		"count", count, "elapsed", time.Since(start).Round(time.Millisecond).String())
@@ -2762,6 +2863,9 @@ func (d *Dumper) dbDefaultCollationOID() uint32 {
 }
 
 func (d *Dumper) dumpCollations(w io.Writer, dbName string) error {
+	if !d.Collations {
+		return nil
+	}
 	hasCol := func(col string) bool {
 		var has bool
 		if err := d.conn.QueryRow(d.ctxOrBg(),
@@ -2837,6 +2941,9 @@ func (d *Dumper) dumpCollations(w io.Writer, dbName string) error {
 }
 
 func (d *Dumper) dumpComments(w io.Writer, dbName string) error {
+	if !d.Comments {
+		return nil
+	}
 	start := time.Now()
 	rows, err := d.conn.Query(d.ctxOrBg(),
 		"SELECT n.nspname, c.relname, c.relkind, d.objsubid, a.attname, d.description "+
@@ -2907,6 +3014,9 @@ func (d *Dumper) dumpComments(w io.Writer, dbName string) error {
 }
 
 func (d *Dumper) dumpTypes(w io.Writer, dbName string) ([]string, error) {
+	if !d.Types {
+		return nil, nil
+	}
 	start := time.Now()
 	refs, err := d.listUserTypes()
 	if err != nil {
@@ -2939,7 +3049,7 @@ func (d *Dumper) dumpTypes(w io.Writer, dbName string) ([]string, error) {
 		log.Trace("postgres", "type dumped", "database", dbName,
 			"type", schema+"."+name, "kind", kind)
 		fmt.Fprintf(w, "\n-- Type: %s.%s\n%s\n", schema, name, def)
-		if owner != "" {
+		if owner != "" && d.Owner {
 			kw := "TYPE"
 			if kind == "d" {
 				kw = "DOMAIN"
@@ -2950,7 +3060,7 @@ func (d *Dumper) dumpTypes(w io.Writer, dbName string) ([]string, error) {
 		if grants, err := d.typeGrants(schema, name); err != nil {
 			log.Warn("postgres", "grants unavailable", "database", dbName,
 				"object", "TYPE "+schema+"."+name, "error", err.Error())
-		} else if len(grants) > 0 {
+		} else if len(grants) > 0 && d.Acl {
 			fmt.Fprint(w, formatGrants(
 				"TYPE "+quotePGIdent(schema)+"."+quotePGIdent(name), grants))
 		}
@@ -2961,6 +3071,9 @@ func (d *Dumper) dumpTypes(w io.Writer, dbName string) ([]string, error) {
 }
 
 func (d *Dumper) dumpViews(w io.Writer, dbName string) error {
+	if !d.Views {
+		return nil
+	}
 	rows, err := d.conn.Query(d.ctxOrBg(),
 		"SELECT table_schema, table_name, COALESCE(view_definition, '') FROM information_schema.views "+
 			"WHERE table_schema NOT IN ('pg_catalog', 'information_schema')")
@@ -3002,12 +3115,12 @@ func (d *Dumper) dumpViews(w io.Writer, dbName string) error {
 		def = strings.TrimSuffix(strings.TrimSpace(def), ";")
 		fmt.Fprintf(w, "CREATE OR REPLACE VIEW %s.%s AS\n%s;\n",
 			quotePGIdent(schema), quotePGIdent(name), def)
-		if owner, err := d.ownerOf(schema, name); err == nil && owner != "" {
-			fmt.Fprintf(w, "ALTER VIEW %s.%s OWNER TO %s;\n",
-				quotePGIdent(schema), quotePGIdent(name), quotePGRole(owner))
-		} else if err != nil {
+		if owner, err := d.ownerOf(schema, name); err != nil {
 			log.Warn("postgres", "owner unavailable", "database", dbName,
 				"view", schema+"."+name, "error", err.Error())
+		} else if owner != "" && d.Owner {
+			fmt.Fprintf(w, "ALTER VIEW %s.%s OWNER TO %s;\n",
+				quotePGIdent(schema), quotePGIdent(name), quotePGRole(owner))
 		}
 		fmt.Fprintf(w, "\n")
 	}
@@ -3015,6 +3128,9 @@ func (d *Dumper) dumpViews(w io.Writer, dbName string) error {
 }
 
 func (d *Dumper) dumpMatviews(w io.Writer, dbName string) ([]string, error) {
+	if !d.Matviews {
+		return nil, nil
+	}
 	rows, err := d.conn.Query(d.ctxOrBg(),
 		"SELECT schemaname, matviewname, matviewowner, definition, ispopulated "+
 			"FROM pg_catalog.pg_matviews "+
@@ -3051,11 +3167,13 @@ func (d *Dumper) dumpMatviews(w io.Writer, dbName string) ([]string, error) {
 		fmt.Fprintf(w, "DROP MATERIALIZED VIEW IF EXISTS %s CASCADE;\n", qt)
 		def := strings.TrimSuffix(strings.TrimSpace(m.def), ";")
 		fmt.Fprintf(w, "CREATE MATERIALIZED VIEW %s AS\n%s\nWITH NO DATA;\n", qt, def)
-		if m.owner != "" {
+		if m.owner != "" && d.Owner {
 			fmt.Fprintf(w, "ALTER MATERIALIZED VIEW %s OWNER TO %s;\n", qt, quotePGRole(m.owner))
 		}
-		if idxSQL, err := d.getIndexes(m.schema, m.name); err == nil && idxSQL != "" {
-			fmt.Fprint(w, idxSQL)
+		if d.Indexes {
+			if idxSQL, err := d.getIndexes(m.schema, m.name); err == nil && idxSQL != "" {
+				fmt.Fprint(w, idxSQL)
+			}
 		}
 		log.Trace("postgres", "matview dumped", "database", dbName,
 			"matview", m.schema+"."+m.name)
@@ -3678,17 +3796,23 @@ func (d *Dumper) getCreateTable(schema, table string) (string, error) {
 	}
 	sb.WriteString(";")
 
-	if pk, err := d.getPrimaryKey(schema, table); err == nil && pk != "" {
-		sb.WriteString("\n" + pk)
+	if d.Constraints {
+		if pk, err := d.getPrimaryKey(schema, table); err == nil && pk != "" {
+			sb.WriteString("\n" + pk)
+		}
+		if uqSQL, err := d.getUniqueConstraints(schema, table); err == nil && uqSQL != "" {
+			sb.WriteString("\n" + uqSQL)
+		}
 	}
-	if uqSQL, err := d.getUniqueConstraints(schema, table); err == nil && uqSQL != "" {
-		sb.WriteString("\n" + uqSQL)
+	if d.Indexes {
+		if idxSQL, err := d.getIndexes(schema, table); err == nil {
+			sb.WriteString("\n" + idxSQL)
+		}
 	}
-	if idxSQL, err := d.getIndexes(schema, table); err == nil {
-		sb.WriteString("\n" + idxSQL)
-	}
-	if checkSQL, err := d.getCheckConstraints(schema, table); err == nil {
-		sb.WriteString("\n" + checkSQL)
+	if d.Constraints {
+		if checkSQL, err := d.getCheckConstraints(schema, table); err == nil {
+			sb.WriteString("\n" + checkSQL)
+		}
 	}
 	if partSQL, err := d.getPartitions(schema, table); err == nil && partSQL != "" {
 		sb.WriteString("\n" + partSQL)
@@ -4148,11 +4272,16 @@ func NewDumper(host string, port int, user, pass, dbname string, tlsCfg ...*conf
 		port = 5432
 	}
 	d := &Dumper{
-		host:   host,
-		port:   port,
-		user:   user,
-		pass:   pass,
-		dbname: dbname,
+		host:      host,
+		port:      port,
+		user:      user,
+		pass:      pass,
+		dbname:    dbname,
+		Functions: true, Aggregates: true, Triggers: true, Views: true,
+		Matviews: true, Rules: true, Policies: true, Extensions: true,
+		Types: true, Sequences: true, Indexes: true, Constraints: true,
+		Comments: true, Blobs: true, Publications: true, Drops: true,
+		Data: true, Owner: true, Acl: true, Collations: true,
 	}
 	if len(tlsCfg) > 0 && tlsCfg[0] != nil {
 		d.tlsCfg = tlsCfg[0]
@@ -4280,6 +4409,30 @@ func (d *Dumper) SetConnectivity(cfg *config.ConnectivityConfig) {
 	if cfg != nil {
 		d.connCfg = cfg
 	}
+}
+
+func (d *Dumper) SetPostgresObjects(o PostgresObjects) {
+	d.Functions = o.Functions
+	d.Aggregates = o.Aggregates
+	d.Triggers = o.Triggers
+	d.Views = o.Views
+	d.Matviews = o.Matviews
+	d.Rules = o.Rules
+	d.Policies = o.Policies
+	d.Extensions = o.Extensions
+	d.Types = o.Types
+	d.Sequences = o.Sequences
+	d.Indexes = o.Indexes
+	d.Constraints = o.Constraints
+	d.Comments = o.Comments
+	d.Blobs = o.Blobs
+	d.Publications = o.Publications
+	d.Drops = o.Drops
+	d.Data = o.Data
+	d.Owner = o.Owner
+	d.Acl = o.Acl
+	d.Collations = o.Collations
+	d.FailOnUnencodable = o.FailOnUnencodable
 }
 
 func (d *Dumper) SetTableFilter(f *config.TableFilter, schemaOnly bool) {
