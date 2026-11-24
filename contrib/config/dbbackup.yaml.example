@@ -92,7 +92,7 @@ profiles:
       user: admin
       pass: "env://COUCH_PASS"
 
-  ## Databases - connection + include/exclude/table filters
+  ## Databases - connection + include/exclude/table filters + objects/options
   databases:
     production-apps:
       connection: production-mysql
@@ -101,6 +101,17 @@ profiles:
         - app2
       exclude:
         - temp
+      objects:
+        events: false
+      options:
+        blob_format: raw
+    lean-postgres:
+      connection: analytics-postgres
+      include:
+        - analytics
+      objects:
+        owner: false
+        acl: false
     analytics-all:
       connection: analytics-postgres
       include:
