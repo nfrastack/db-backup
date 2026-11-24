@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nfrastack/db-backup/internal/database/objects"
 	"gopkg.in/yaml.v3"
 )
 
@@ -49,27 +50,21 @@ type CompressionConfig struct {
 }
 
 type DatabaseList struct {
-	Include  []string     `yaml:"include"`
-	Exclude  []string     `yaml:"exclude"`
-	Tables   *TableFilter `yaml:"tables,omitempty"`
-	Routines *bool        `yaml:"routines,omitempty"`
-	Events   *bool        `yaml:"events,omitempty"`
-	Triggers *bool        `yaml:"triggers,omitempty"`
-	Views    *bool        `yaml:"views,omitempty"`
-	RawBlobs *bool        `yaml:"raw_blobs,omitempty"`
+	Include []string        `yaml:"include"`
+	Exclude []string        `yaml:"exclude"`
+	Tables  *TableFilter    `yaml:"tables,omitempty"`
+	Objects objects.Objects `yaml:"objects,omitempty"`
+	Options objects.Options `yaml:"options,omitempty"`
 }
 
 type DbProfile struct {
-	Connection string       `yaml:"connection"`
-	Name       string       `yaml:"name,omitempty"`
-	Include    []string     `yaml:"include"`
-	Exclude    []string     `yaml:"exclude"`
-	Tables     *TableFilter `yaml:"tables,omitempty"`
-	Routines   *bool        `yaml:"routines,omitempty"`
-	Events     *bool        `yaml:"events,omitempty"`
-	Triggers   *bool        `yaml:"triggers,omitempty"`
-	Views      *bool        `yaml:"views,omitempty"`
-	RawBlobs   *bool        `yaml:"raw_blobs,omitempty"`
+	Connection string          `yaml:"connection"`
+	Name       string          `yaml:"name,omitempty"`
+	Include    []string        `yaml:"include"`
+	Exclude    []string        `yaml:"exclude"`
+	Tables     *TableFilter    `yaml:"tables,omitempty"`
+	Objects    objects.Objects `yaml:"objects,omitempty"`
+	Options    objects.Options `yaml:"options,omitempty"`
 }
 
 type EncryptionConfig struct {
@@ -134,12 +129,33 @@ type MaintenanceConfig struct {
 	MemoryPurge *bool  `yaml:"memory_purge,omitempty"`
 }
 
-type MysqlObjects struct {
-	Routines bool
-	Events   bool
-	Triggers bool
-	Views    bool
-	RawBlobs bool
+var legacyObjectKeys = map[string]string{
+	"routines":  "objects: {routines: false}",
+	"events":    "objects: {events: false}",
+	"triggers":  "objects: {triggers: false}",
+	"views":     "objects: {views: false}",
+	"raw_blobs": "options: {blob_format: raw}",
+}
+
+func rejectLegacyObjectKey(place, key string) error {
+	if hint, ok := legacyObjectKeys[key]; ok {
+		extra := ""
+		if key == "raw_blobs" {
+			extra = " (--raw-blobs becomes --option blob_format=raw)"
+		}
+		return fmt.Errorf("%s.%s: removed in 5.1.0, use %s%s", place, key, hint, extra)
+	}
+	return nil
+}
+
+func ValidateJobObjects(engine string, d *DatabaseList, jobName string) error {
+	if d == nil {
+		return nil
+	}
+	if err := objects.Validate(engine, d.Objects, d.Options); err != nil {
+		return fmt.Errorf("job %q %s", jobName, err.Error())
+	}
+	return nil
 }
 
 type RetentionConfig struct {
@@ -217,27 +233,64 @@ func (d *DatabaseList) Excluded(name string) bool {
 	return globMatchAny(d.Exclude, name)
 }
 
-func (d *DatabaseList) ResolveMysqlObjects() MysqlObjects {
-	o := MysqlObjects{Routines: true, Events: true, Triggers: true, Views: true}
-	if d == nil {
-		return o
+func (d *DatabaseList) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind != yaml.MappingNode {
+		type raw DatabaseList
+		var r raw
+		if err := value.Decode(&r); err != nil {
+			return err
+		}
+		*d = DatabaseList(r)
+		return nil
 	}
-	if d.Routines != nil {
-		o.Routines = *d.Routines
+	for i := 0; i+1 < len(value.Content); i += 2 {
+		k := value.Content[i].Value
+		switch k {
+		case "include", "exclude", "tables", "objects", "options":
+		default:
+			if err := rejectLegacyObjectKey("databases", k); err != nil {
+				return err
+			}
+			return fmt.Errorf("databases: unknown field %q (want include|exclude|tables|objects|options)", k)
+		}
 	}
-	if d.Events != nil {
-		o.Events = *d.Events
+	type raw DatabaseList
+	var r raw
+	if err := value.Decode(&r); err != nil {
+		return err
 	}
-	if d.Triggers != nil {
-		o.Triggers = *d.Triggers
+	*d = DatabaseList(r)
+	return nil
+}
+
+func (p *DbProfile) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind != yaml.MappingNode {
+		type raw DbProfile
+		var r raw
+		if err := value.Decode(&r); err != nil {
+			return err
+		}
+		*p = DbProfile(r)
+		return nil
 	}
-	if d.Views != nil {
-		o.Views = *d.Views
+	for i := 0; i+1 < len(value.Content); i += 2 {
+		k := value.Content[i].Value
+		switch k {
+		case "connection", "name", "include", "exclude", "tables", "objects", "options":
+		default:
+			if err := rejectLegacyObjectKey("profiles.databases", k); err != nil {
+				return err
+			}
+			return fmt.Errorf("profiles.databases: unknown field %q (want connection|name|include|exclude|tables|objects|options)", k)
+		}
 	}
-	if d.RawBlobs != nil {
-		o.RawBlobs = *d.RawBlobs
+	type raw DbProfile
+	var r raw
+	if err := value.Decode(&r); err != nil {
+		return err
 	}
-	return o
+	*p = DbProfile(r)
+	return nil
 }
 
 func (s *SchemaOnly) Matches(table string) bool {
@@ -451,6 +504,9 @@ func (j *JobConfig) ValidateWithEncryptionProfiles(profiles map[string]Encryptio
 		if err := validateRetentionWithin(j.Retention.Within); err != nil {
 			return fmt.Errorf("job %q retention.within: %w", j.Name, err)
 		}
+	}
+	if err := ValidateJobObjects(j.Type, j.Databases, j.Name); err != nil {
+		return err
 	}
 	return nil
 }
