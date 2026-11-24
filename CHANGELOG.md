@@ -8,6 +8,7 @@
    ### Added
      - add --object and --option cli overrides
      - allow dumping to multiple storage backends per job (supporter)
+     - add more container environment variables to match config file
      - dump additions
        - (couch) support for skipping attachments, designDocs, data
        - (influx) support for skipping data
