@@ -22,7 +22,7 @@ func Spec() registry.EngineSpec {
 			d := NewDumper(o.Host, o.Port, o.User, o.Pass, o.TLS)
 			d.SetConfiguredType(o.Type)
 			if o.HasObjects {
-				d.SetMysqlObjects(o.Objects)
+				d.SetMysqlObjects(ResolveObjects(o.Objects, o.Options))
 			}
 			return d, nil
 		},

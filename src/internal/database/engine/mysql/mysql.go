@@ -711,7 +711,7 @@ func (d *Dumper) SetConnectivity(cfg *config.ConnectivityConfig) {
 	}
 }
 
-func (d *Dumper) SetMysqlObjects(o config.MysqlObjects) {
+func (d *Dumper) SetMysqlObjects(o MysqlObjects) {
 	d.Routines = o.Routines
 	d.Events = o.Events
 	d.Triggers = o.Triggers
