@@ -193,11 +193,11 @@ func isInsertStmt(stmt string) bool {
 	for {
 		t := strings.TrimLeft(s, " \t\r\n")
 		if strings.HasPrefix(t, "--") || strings.HasPrefix(t, "#") {
-			i := strings.IndexByte(t, '\n')
-			if i < 0 {
+			_, after, ok := strings.Cut(t, "\n")
+			if !ok {
 				return false
 			}
-			s = t[i+1:]
+			s = after
 			continue
 		}
 		if strings.HasPrefix(t, "/*") {
@@ -312,7 +312,7 @@ func runMySQLOp(db *sql.DB, op, dbName string) *common.OpResult {
 func splitSQLStatements(data string) []string {
 	var out []string
 	sp := newStmtSplitter()
-	for _, line := range strings.Split(data, "\n") {
+	for line := range strings.SplitSeq(data, "\n") {
 		out = append(out, sp.pushLine(line)...)
 	}
 	if s := sp.flush(); s != "" {

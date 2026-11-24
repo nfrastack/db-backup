@@ -187,12 +187,12 @@ func (b *docBatcher) take() []bson.M {
 
 func parseCreateCollectionLine(line string) (string, bson.M, error) {
 	rest := strings.TrimPrefix(line, "db.")
-	idx := strings.Index(rest, ".createCollection(")
-	if idx < 0 {
+	before, after, ok := strings.Cut(rest, ".createCollection(")
+	if !ok {
 		return "", nil, fmt.Errorf("bad createCollection line")
 	}
-	collection := rest[:idx]
-	payload := rest[idx+len(".createCollection("):]
+	collection := before
+	payload := after
 	if !strings.HasSuffix(payload, ")") {
 		return "", nil, fmt.Errorf("bad createCollection line")
 	}
@@ -225,12 +225,12 @@ func createCollectionLine(ctx context.Context, client *mongo.Client, db, line st
 
 func parseCreateViewLine(line string) (string, string, any, error) {
 	rest := strings.TrimPrefix(line, "db.")
-	idx := strings.Index(rest, ".createView(")
-	if idx < 0 {
+	before, after, ok := strings.Cut(rest, ".createView(")
+	if !ok {
 		return "", "", nil, fmt.Errorf("bad createView line")
 	}
-	view := rest[:idx]
-	payload := rest[idx+len(".createView("):]
+	view := before
+	payload := after
 	if !strings.HasSuffix(payload, ")") {
 		return "", "", nil, fmt.Errorf("bad createView line")
 	}
@@ -255,12 +255,12 @@ func createViewLine(ctx context.Context, client *mongo.Client, db, line string) 
 
 func parseCreateIndexesLine(line string) (string, []bson.M, error) {
 	rest := strings.TrimPrefix(line, "db.")
-	idx := strings.Index(rest, ".createIndexes([")
-	if idx < 0 {
+	before, after, ok := strings.Cut(rest, ".createIndexes([")
+	if !ok {
 		return "", nil, fmt.Errorf("bad createIndexes line")
 	}
-	collection := rest[:idx]
-	payload := rest[idx+len(".createIndexes(["):]
+	collection := before
+	payload := after
 	if !strings.HasSuffix(payload, ")") {
 		return "", nil, fmt.Errorf("bad createIndexes line")
 	}
@@ -284,11 +284,11 @@ func createIndexesLine(ctx context.Context, client *mongo.Client, db, line strin
 
 func extractCollection(line string) string {
 	rest := strings.TrimPrefix(line, "db.")
-	idx := strings.Index(rest, ".insertMany")
-	if idx < 0 {
+	before, _, ok := strings.Cut(rest, ".insertMany")
+	if !ok {
 		return "unknown"
 	}
-	return rest[:idx]
+	return before
 }
 
 func parseDocLine(line string) (doc bson.M, ok bool, err error) {
@@ -304,8 +304,8 @@ func parseDocLine(line string) (doc bson.M, ok bool, err error) {
 	return d, true, nil
 }
 
-func toInsertEntries(docs []bson.M) []interface{} {
-	entries := make([]interface{}, len(docs))
+func toInsertEntries(docs []bson.M) []any {
+	entries := make([]any, len(docs))
 	for i := range docs {
 		entries[i] = docs[i]
 	}

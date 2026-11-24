@@ -36,8 +36,8 @@ func ArchFromRaw(raw string) string {
 
 func Major(version string) string {
 	num := NumericPrefix(version)
-	if i := strings.Index(num, "."); i >= 0 {
-		return num[:i]
+	if before, _, ok := strings.Cut(num, "."); ok {
+		return before
 	}
 	return num
 }

@@ -218,8 +218,9 @@ func (c *ConnectivityConfig) UnmarshalYAML(value *yaml.Node) error {
 	return nil
 }
 
+//go:fix inline
 func BoolPtr(b bool) *bool {
-	return &b
+	return new(b)
 }
 
 const (
@@ -881,7 +882,7 @@ func (c *Config) resolveJob(job *JobConfig) {
 			job.Connectivity = &cp
 		default:
 			job.Connectivity = &ConnectivityConfig{
-				Enabled:       BoolPtr(true),
+				Enabled:       new(true),
 				Method:        MethodFull,
 				RetryInterval: 5,
 				Timeout:       30,
@@ -939,8 +940,8 @@ func validateRetentionWithin(s string) error {
 	if trimmed == "" {
 		return nil
 	}
-	if strings.HasSuffix(trimmed, "m") {
-		num := strings.TrimSuffix(trimmed, "m")
+	if before, ok := strings.CutSuffix(trimmed, "m"); ok {
+		num := before
 		if _, err := strconv.Atoi(strings.TrimSpace(num)); err != nil || strings.TrimSpace(num) == "" {
 			return fmt.Errorf("invalid keep_within %q", s)
 		}

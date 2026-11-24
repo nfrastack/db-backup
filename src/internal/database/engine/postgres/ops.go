@@ -43,7 +43,7 @@ func execStmtGroup(ctx context.Context, conn *pgx.Conn, stmt *strings.Builder) e
 	}
 	for _, s := range splitStatements(stmt.String()) {
 		var clean strings.Builder
-		for _, l := range strings.Split(s, "\n") {
+		for l := range strings.SplitSeq(s, "\n") {
 			if strings.HasPrefix(strings.TrimSpace(l), "--") {
 				continue
 			}
@@ -241,7 +241,7 @@ func splitStatements(src string) []string {
 		}
 		cur.Reset()
 	}
-	for _, line := range strings.Split(src, "\n") {
+	for line := range strings.SplitSeq(src, "\n") {
 		cur.WriteString(line)
 		cur.WriteByte('\n')
 		tag = updateDollarTag(line, tag)
@@ -262,8 +262,8 @@ func updateDollarTag(line, tag string) string {
 				return ""
 			}
 			after := rest[strings.Index(rest, open)+len(open):]
-			if idx := strings.Index(after, open); idx >= 0 {
-				rest = after[idx+len(open):]
+			if _, after0, ok := strings.Cut(after, open); ok {
+				rest = after0
 				continue
 			}
 			return open

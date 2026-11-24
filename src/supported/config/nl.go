@@ -47,8 +47,8 @@ func ParseNL(phrase string) (*config.Schedule, bool) {
 		r.beginMin = n * 60
 		haveFact = true
 	}
-	if strings.HasPrefix(phrase, "+") {
-		if n, err := strconv.Atoi(strings.TrimPrefix(phrase, "+")); err == nil && n > 0 {
+	if after, ok := strings.CutPrefix(phrase, "+"); ok {
+		if n, err := strconv.Atoi(after); err == nil && n > 0 {
 			r.beginMin = n
 			haveFact = true
 		}
@@ -147,7 +147,7 @@ func ParseNL(phrase string) (*config.Schedule, bool) {
 		}
 	}
 
-	for _, part := range strings.Split(phrase, ",") {
+	for part := range strings.SplitSeq(phrase, ",") {
 		part = strings.TrimSpace(part)
 		for i, name := range dayNames {
 			if part == name[:3] || part == name || part == strings.TrimSuffix(name, "day") {
@@ -251,12 +251,12 @@ func ParseNL(phrase string) (*config.Schedule, bool) {
 	return nil, false
 }
 func buildCron(hh, mm int, days []int) string {
-	dayStr := ""
+	var dayStr strings.Builder
 	for i, d := range days {
 		if i > 0 {
-			dayStr += ","
+			dayStr.WriteString(",")
 		}
-		dayStr += strconv.Itoa(d)
+		dayStr.WriteString(strconv.Itoa(d))
 	}
-	return fmt.Sprintf("%d %d * * %s", mm, hh, dayStr)
+	return fmt.Sprintf("%d %d * * %s", mm, hh, dayStr.String())
 }

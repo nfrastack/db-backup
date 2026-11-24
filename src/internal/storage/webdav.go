@@ -48,7 +48,7 @@ type propfindProp struct {
 func (s *webdavStorage) Delete(ctx context.Context, filePath string) error {
 	url := s.davPath(filePath)
 	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := range 3 {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
@@ -95,7 +95,7 @@ func (s *webdavStorage) Delete(ctx context.Context, filePath string) error {
 func (s *webdavStorage) Download(ctx context.Context, filePath string) (io.ReadCloser, int64, error) {
 	url := s.davPath(filePath)
 	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := range 3 {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
@@ -144,7 +144,7 @@ func (s *webdavStorage) List(ctx context.Context, prefix string) ([]Entry, error
 	url := s.baseURL + "/" + path.Join(s.prefix, prefix) + "/"
 	var resp *http.Response
 	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := range 3 {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
@@ -255,7 +255,7 @@ func (s *webdavStorage) Upload(ctx context.Context, filePath string, r io.Reader
 	log.Debug("webdav", "uploading object",
 		"host", endpointHost(s.baseURL), "path", filePath, "bytes", n, "status", "debug")
 	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := range 3 {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():

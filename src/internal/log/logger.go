@@ -664,7 +664,7 @@ func parseModeString(modeStr string) (os.FileMode, error) {
 func parseSymbolicMode(s string) (os.FileMode, error) {
 	if len(s) == 9 {
 		var m os.FileMode
-		for i := 0; i < 3; i++ {
+		for i := range 3 {
 			shift := uint(6 - i*3)
 			if s[i*3] == 'r' {
 				m |= 4 << shift
@@ -686,7 +686,7 @@ func parseSymbolicMode(s string) (os.FileMode, error) {
 	}
 	var digits [3]uint
 	classes := map[byte]int{'u': 0, 'g': 1, 'o': 2}
-	for _, clause := range strings.Split(s, ",") {
+	for clause := range strings.SplitSeq(s, ",") {
 		clause = strings.TrimSpace(clause)
 		if clause == "" {
 			continue

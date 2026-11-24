@@ -597,14 +597,12 @@ func (d *Dumper) dumpMeasurementsParallel(w *bufio.Writer, db string, st *dumpSt
 
 	tasks := make(chan exportTask)
 	var wg sync.WaitGroup
-	for i := 0; i < workers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range workers {
+		wg.Go(func() {
 			for t := range tasks {
 				d.runTask(w, &wmu, db, states[t.m], t)
 			}
-		}()
+		})
 	}
 
 	for i, m := range measurements {
@@ -715,8 +713,7 @@ func (d *Dumper) runTask(w *bufio.Writer, wmu *sync.Mutex, db string, ms *measSt
 		return nil
 	}
 	err := d.queryChunked(db, q, true, t.tags, t.ftypes, emit)
-	var csvErr *csvParseError
-	if errors.As(err, &csvErr) {
+	if _, ok := errors.AsType[*csvParseError](err); ok {
 		log.Debug("influx", "csv decode failed - retrying window as json",
 			"database", db, "measurement", t.m,
 			"start", t.start, "end", t.end, "error", err.Error())
@@ -810,10 +807,7 @@ func appendLineProtocolValue(b *strings.Builder, v any) {
 
 func buildLineProtocolInto(b *strings.Builder, m string, cols []string, row []any, tags map[string]bool, ftypes map[string]string) bool {
 	b.WriteString(m)
-	n := len(cols)
-	if len(row) < n {
-		n = len(row)
-	}
+	n := min(len(row), len(cols))
 	ts := ""
 	for i := 0; i < n; i++ {
 		col := cols[i]

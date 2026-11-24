@@ -62,7 +62,7 @@ func IncrementalDump(ctx context.Context, w io.Writer, host string, port int, us
 	}
 	d := influx.NewDumper(host, port, user, pass, dbName, 0, tlsCfg)
 	d.SetConnectivity(&config.ConnectivityConfig{
-		Enabled:       config.BoolPtr(true),
+		Enabled:       new(true),
 		Method:        config.MethodFull,
 		RetryInterval: 2,
 		Timeout:       30,
@@ -101,7 +101,7 @@ func IncrementalDump(ctx context.Context, w io.Writer, host string, port int, us
 
 func splitNames(dbName string) []string {
 	var out []string
-	for _, n := range strings.Split(dbName, ",") {
+	for n := range strings.SplitSeq(dbName, ",") {
 		if n = strings.TrimSpace(n); n != "" {
 			out = append(out, n)
 		}

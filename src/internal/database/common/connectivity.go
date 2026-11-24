@@ -70,10 +70,7 @@ func retryLoop(ctx context.Context, name string, interval int, deadline time.Tim
 		}
 		remaining := ""
 		if !deadline.IsZero() {
-			rem := time.Until(deadline).Truncate(time.Second)
-			if rem < 0 {
-				rem = 0
-			}
+			rem := max(time.Until(deadline).Truncate(time.Second), 0)
 			remaining = rem.String()
 			if time.Now().After(deadline) {
 				log.Error("connectivity", "not reachable after timeout", append(append([]any{}, extra...), "engine", name, "attempt", attempt, "error", err, "timeout", interval*attempt, "status", "error")...)

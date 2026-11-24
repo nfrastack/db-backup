@@ -221,8 +221,8 @@ func binlogEventsIn(db *sql.DB, file string, fromPos uint32) ([]binlogEvent, err
 	cols, _ := rows.Columns()
 	var events []binlogEvent
 	for rows.Next() {
-		vals := make([]interface{}, len(cols))
-		ptrs := make([]interface{}, len(cols))
+		vals := make([]any, len(cols))
+		ptrs := make([]any, len(cols))
 		for i := range vals {
 			ptrs[i] = &vals[i]
 		}
@@ -276,8 +276,8 @@ func listBinlogs(db *sql.DB) ([]string, error) {
 	var names []string
 	cols, _ := rows.Columns()
 	for rows.Next() {
-		vals := make([]interface{}, len(cols))
-		ptrs := make([]interface{}, len(cols))
+		vals := make([]any, len(cols))
+		ptrs := make([]any, len(cols))
 		for i := range vals {
 			ptrs[i] = &vals[i]
 		}

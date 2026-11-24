@@ -33,7 +33,7 @@ func fieldMatch(field string, val, min, max int) bool {
 		return false
 	}
 	if strings.Contains(field, ",") {
-		for _, p := range strings.Split(field, ",") {
+		for p := range strings.SplitSeq(field, ",") {
 			if fieldMatch(p, val, min, max) {
 				return true
 			}
@@ -76,7 +76,7 @@ func nextCron(expr string) time.Duration {
 
 func nextCronAt(expr string, now time.Time) time.Duration {
 	next := now.Add(time.Minute).Truncate(time.Minute)
-	for i := 0; i < 525600; i++ {
+	for range 525600 {
 		if cronMatch(expr, next) {
 			return next.Sub(now)
 		}

@@ -69,8 +69,8 @@ func cmdVerify(args []string) int {
 	var expected string
 	uncompressed := false
 	for ct, hash := range sc.Checksums {
-		if strings.HasPrefix(ct, "uncompressed_") {
-			csType = checksum.Parse(strings.TrimPrefix(ct, "uncompressed_"))
+		if after, ok := strings.CutPrefix(ct, "uncompressed_"); ok {
+			csType = checksum.Parse(after)
 			expected = hash
 			uncompressed = true
 			break

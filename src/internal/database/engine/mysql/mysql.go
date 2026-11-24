@@ -581,7 +581,7 @@ func NewDumper(host string, port int, user, pass string, tlsCfg ...*config.TLSCo
 		Triggers:          true,
 		Views:             true,
 		connCfg: &config.ConnectivityConfig{
-			Enabled:       config.BoolPtr(true),
+			Enabled:       new(true),
 			Method:        config.MethodFull,
 			RetryInterval: 5,
 			Timeout:       300,

@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"sort"
 	"strings"
 	"sync"
@@ -78,9 +79,7 @@ func Aliases() map[string]string {
 	registryMu.RLock()
 	defer registryMu.RUnlock()
 	out := make(map[string]string, len(aliases))
-	for a, c := range aliases {
-		out[a] = c
-	}
+	maps.Copy(out, aliases)
 	return out
 }
 func CanonicalName(name string) string {

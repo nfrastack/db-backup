@@ -339,7 +339,7 @@ func cmdRestore(args []string) int {
 	order := []string{*filePath}
 	{
 		cur := *filePath
-		for i := 0; i < 64; i++ {
+		for range 64 {
 			base := ""
 			if cur == *filePath && *basePath != "" {
 				base = *basePath
@@ -795,7 +795,7 @@ func interactiveRestore() {
 
 		order := []string{fileName}
 		cur := fileName
-		for i := 0; i < 64; i++ {
+		for range 64 {
 			base := ""
 			if sc, err := retention.ReadSidecar(pst, cur); err == nil {
 				base = strings.TrimSuffix(sc.Base, ".json")
@@ -1131,7 +1131,7 @@ func interactiveRestore() {
 	chain := []string{fileName}
 	{
 		cur := fileName
-		for i := 0; i < 64; i++ {
+		for range 64 {
 			s, err := retention.ReadSidecar(st2, cur)
 			if err != nil || s.Base == "" {
 				break

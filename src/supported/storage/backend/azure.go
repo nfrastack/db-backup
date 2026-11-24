@@ -73,7 +73,7 @@ func (s *azureStorage) Delete(ctx context.Context, filePath string) error {
 	blob := s.blobName(filePath)
 	dst := s.account + "/" + s.container + "/" + blob
 	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := range 3 {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
@@ -118,7 +118,7 @@ func (s *azureStorage) Download(ctx context.Context, filePath string) (io.ReadCl
 	blob := s.blobName(filePath)
 	dst := s.account + "/" + s.container + "/" + blob
 	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := range 3 {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
@@ -172,7 +172,7 @@ func (s *azureStorage) List(ctx context.Context, prefix string) ([]storage.Entry
 		}
 		var resp *http.Response
 		var lastErr error
-		for attempt := 0; attempt < 3; attempt++ {
+		for attempt := range 3 {
 			if attempt > 0 {
 				select {
 				case <-ctx.Done():
@@ -260,7 +260,7 @@ func (s *azureStorage) Upload(ctx context.Context, filePath string, r io.Reader)
 		log.Debug("azure", "uploading blob",
 			"account", s.account, "container", s.container, "blob", blob, "bytes", n, "status", "debug")
 		var lastErr error
-		for attempt := 0; attempt < 3; attempt++ {
+		for attempt := range 3 {
 			if attempt > 0 {
 				select {
 				case <-ctx.Done():
@@ -499,7 +499,7 @@ func (s *azureStorage) uploadBlockBlob(ctx context.Context, blob string, spool *
 
 		body := buf[:read]
 		var lastErr error
-		for attempt := 0; attempt < 3; attempt++ {
+		for attempt := range 3 {
 			if attempt > 0 {
 				select {
 				case <-ctx.Done():
@@ -552,7 +552,7 @@ func (s *azureStorage) uploadBlockBlob(ctx context.Context, blob string, spool *
 
 	var lastErr error
 	var resp *http.Response
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := range 3 {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():

@@ -673,13 +673,13 @@ func parseImageTag(path string) string {
 	}
 	ver := ""
 	seen := false
-	for _, line := range strings.Split(string(data), "\n") {
+	for line := range strings.SplitSeq(string(data), "\n") {
 		t := strings.TrimSpace(line)
-		idx := strings.Index(t, "IMAGE:")
-		if idx < 0 {
+		_, after, ok := strings.Cut(t, "IMAGE:")
+		if !ok {
 			continue
 		}
-		rest := strings.TrimSpace(t[idx+len("IMAGE:"):])
+		rest := strings.TrimSpace(after)
 		fields := strings.Fields(rest)
 		if len(fields) < 1 {
 			continue

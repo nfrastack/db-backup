@@ -100,7 +100,7 @@ func Ack(watermark time.Time) {
 			continue
 		}
 		var keep []string
-		for _, ln := range strings.Split(string(data), "\n") {
+		for ln := range strings.SplitSeq(string(data), "\n") {
 			ln = strings.TrimSpace(ln)
 			if ln == "" {
 				continue
@@ -241,7 +241,7 @@ func Window(since time.Time) []Event {
 		if err != nil {
 			continue
 		}
-		for _, ln := range strings.Split(string(data), "\n") {
+		for ln := range strings.SplitSeq(string(data), "\n") {
 			ln = strings.TrimSpace(ln)
 			if ln == "" {
 				continue

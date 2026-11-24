@@ -84,7 +84,7 @@ type gcsObjectItem struct {
 func (s *gcsStorage) Delete(ctx context.Context, filePath string) error {
 	u := s.storageURL(url.PathEscape(s.bucket)+"/o", url.PathEscape(s.objectName(filePath)))
 	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := range 3 {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
@@ -120,7 +120,7 @@ func (s *gcsStorage) Delete(ctx context.Context, filePath string) error {
 func (s *gcsStorage) Download(ctx context.Context, filePath string) (io.ReadCloser, int64, error) {
 	u := s.storageURL(url.PathEscape(s.bucket)+"/o", url.PathEscape(s.objectName(filePath))+"?alt=media")
 	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := range 3 {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
@@ -167,7 +167,7 @@ func (s *gcsStorage) List(ctx context.Context, prefix string) ([]storage.Entry, 
 		}
 		var resp *http.Response
 		var lastErr error
-		for attempt := 0; attempt < 3; attempt++ {
+		for attempt := range 3 {
 			if attempt > 0 {
 				select {
 				case <-ctx.Done():
@@ -255,7 +255,7 @@ func (s *gcsStorage) Upload(ctx context.Context, filePath string, r io.Reader) (
 	initURL := s.uploadURL(url.PathEscape(s.bucket)+"/o") + "?uploadType=resumable&name=" + url.QueryEscape(name)
 	var initResp *http.Response
 	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := range 3 {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
@@ -299,7 +299,7 @@ func (s *gcsStorage) Upload(ctx context.Context, filePath string, r io.Reader) (
 
 	var resp *http.Response
 	lastErr = nil
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := range 3 {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():

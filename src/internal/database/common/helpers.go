@@ -4,12 +4,14 @@
 
 package common
 
+import "slices"
+
 import "strings"
 
 var CreateDBOnRestore = true
 
 func ConnDB(dbName, fallback string) string {
-	first := strings.Split(dbName, ",")[0]
+	first, _, _ := strings.Cut(dbName, ",")
 	first = strings.TrimSpace(first)
 	if strings.EqualFold(first, "all") || strings.HasPrefix(first, "__globals__") || first == "" {
 		return fallback
@@ -17,12 +19,7 @@ func ConnDB(dbName, fallback string) string {
 	return first
 }
 func ContainsString(list []string, s string) bool {
-	for _, x := range list {
-		if x == s {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(list, s)
 }
 
 func DBNamesList(dbName string) []string {
@@ -41,7 +38,7 @@ func EscapePGLit(s string) string {
 }
 
 func FirstDBName(dbName string) string {
-	name := strings.Split(dbName, ",")[0]
+	name, _, _ := strings.Cut(dbName, ",")
 	name = strings.TrimSpace(name)
 	if strings.EqualFold(name, "all") || name == "" {
 		return ""
@@ -84,7 +81,7 @@ func SplitRedisArgs(s string) []string {
 func SplitSQL(data string) []string {
 	var stmts []string
 	var cur strings.Builder
-	for _, line := range strings.Split(data, "\n") {
+	for line := range strings.SplitSeq(data, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "--") {
 			continue

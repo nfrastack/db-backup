@@ -12,7 +12,7 @@ import (
 
 func ParseServerVersion(info string) common.ServerVersion {
 	sv := common.ServerVersion{Engine: "redis", Raw: info}
-	for _, line := range strings.Split(info, "\n") {
+	for line := range strings.SplitSeq(info, "\n") {
 		line = strings.TrimSpace(strings.TrimSuffix(line, "\r"))
 		if v, ok := strings.CutPrefix(line, "redis_version:"); ok {
 			sv.Version = common.NumericPrefix(v)

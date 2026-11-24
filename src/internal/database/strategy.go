@@ -110,7 +110,7 @@ func runFullBackup(ctx context.Context, w io.Writer, opts BackupOptions) error {
 
 func splitDBs(dbName string) []string {
 	var out []string
-	for _, n := range strings.Split(dbName, ",") {
+	for n := range strings.SplitSeq(dbName, ",") {
 		if n = strings.TrimSpace(n); n != "" {
 			out = append(out, n)
 		}

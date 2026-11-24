@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -624,7 +625,7 @@ func (d *Dumper) pubColumnNames(schema, table, attrs string) string {
 		return ""
 	}
 	var cols []string
-	for _, an := range strings.Fields(attrs) {
+	for an := range strings.FieldsSeq(attrs) {
 		var col string
 		err := d.conn.QueryRow(d.ctxOrBg(),
 			"SELECT a.attname FROM pg_catalog.pg_attribute a "+
@@ -792,7 +793,7 @@ func (d *Dumper) dumpBlobs(w io.Writer, dbName string, tables []string) error {
 		return nil
 	}
 
-	sort.Slice(ordered, func(i, j int) bool { return ordered[i] < ordered[j] })
+	slices.Sort(ordered)
 	return d.writeBlobs(w, dbName, ordered)
 }
 
@@ -1219,7 +1220,7 @@ func pgTagList(raw string) []string {
 	}
 	raw = strings.TrimPrefix(strings.TrimSuffix(raw, "}"), "{")
 	var out []string
-	for _, t := range strings.Split(raw, ",") {
+	for t := range strings.SplitSeq(raw, ",") {
 		t = strings.Trim(strings.TrimSpace(t), `"`)
 		if t != "" {
 			out = append(out, t)
@@ -3202,7 +3203,7 @@ func encodeCopyArrayRaw(rv reflect.Value, jsonCtx bool) string {
 			continue
 		}
 		er := reflect.ValueOf(ev)
-		if er.Kind() == reflect.Ptr {
+		if er.Kind() == reflect.Pointer {
 			if er.IsNil() {
 				elems[i] = "NULL"
 				continue
@@ -3269,7 +3270,7 @@ func encodeCopyHstoreRaw(rv reflect.Value) string {
 			continue
 		}
 		vr := reflect.ValueOf(vv)
-		if vr.Kind() == reflect.Ptr {
+		if vr.Kind() == reflect.Pointer {
 			if vr.IsNil() {
 				pairs = append(pairs, `"`+strings.ReplaceAll(k, `"`, `\"`)+`" => NULL`)
 				continue
@@ -3525,7 +3526,7 @@ func encodeCopyValue(val any, oid uint32) (string, bool) {
 		return encodeCopyArrayRaw(rv, false), false
 	case reflect.Map:
 		return encodeCopyHstoreRaw(rv), false
-	case reflect.Ptr:
+	case reflect.Pointer:
 		if rv.IsNil() {
 			return "\\N", false
 		}

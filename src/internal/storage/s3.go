@@ -85,7 +85,7 @@ func (s *s3Storage) Delete(ctx context.Context, filePath string) error {
 	u := s.requestURL(key)
 	dst := s.host("") + "/" + s.bucket
 	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := range 3 {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
@@ -131,7 +131,7 @@ func (s *s3Storage) Download(ctx context.Context, filePath string) (io.ReadClose
 	u := s.requestURL(key)
 	dst := s.host("") + "/" + s.bucket
 	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := range 3 {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
@@ -185,7 +185,7 @@ func (s *s3Storage) List(ctx context.Context, prefix string) ([]Entry, error) {
 		var resp *http.Response
 		var err error
 		var lastErr error
-		for attempt := 0; attempt < 3; attempt++ {
+		for attempt := range 3 {
 			if attempt > 0 {
 				select {
 				case <-ctx.Done():
@@ -362,7 +362,7 @@ func (s *s3Storage) completeMultipartUpload(ctx context.Context, key, uploadID s
 	sum := sha256.Sum256(full)
 	payloadHash := hex.EncodeToString(sum[:])
 	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := range 3 {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
@@ -404,7 +404,7 @@ func (s *s3Storage) createMultipartUpload(ctx context.Context, key string) (stri
 	u := base + "?uploads"
 	dst := s.host("") + "/" + s.bucket
 	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := range 3 {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
@@ -758,10 +758,7 @@ func (s *s3Storage) uploadMultipart(ctx context.Context, key, spoolPath string, 
 		partSize = minPart
 	}
 	numParts := int((size + partSize - 1) / partSize)
-	numWorkers := s3MultipartConcurrency
-	if numWorkers > numParts {
-		numWorkers = numParts
-	}
+	numWorkers := min(s3MultipartConcurrency, numParts)
 	log.Debug("s3", "uploading object via multipart",
 		"host", endpointHost(s.endpoint), "bucket", s.bucket, "key", key,
 		"bytes", size, "parts", numParts, "part_size", partSize, "workers", numWorkers, "status", "debug")
@@ -793,7 +790,7 @@ func (s *s3Storage) uploadMultipart(ctx context.Context, key, spoolPath string, 
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var firstErr error
-	var done int64
+	var done atomic.Int64
 	setErr := func(err error) {
 		mu.Lock()
 		defer mu.Unlock()
@@ -803,9 +800,7 @@ func (s *s3Storage) uploadMultipart(ctx context.Context, key, spoolPath string, 
 		}
 	}
 	for w := 0; w < numWorkers; w++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			buf := make([]byte, partSize)
 			for i := range jobs {
 				off := int64(i) * partSize
@@ -825,7 +820,7 @@ func (s *s3Storage) uploadMultipart(ctx context.Context, key, spoolPath string, 
 					return
 				}
 				etags[i] = etag
-				n := atomic.AddInt64(&done, 1)
+				n := done.Add(1)
 				rate := "-"
 				if elapsed > 0 {
 					rate = fmt.Sprintf("%.1f MiB/s", float64(curLen)/1048576/elapsed.Seconds())
@@ -840,10 +835,10 @@ func (s *s3Storage) uploadMultipart(ctx context.Context, key, spoolPath string, 
 						"upload_id", uploadID, "parts_done", n, "parts", numParts, "status", "debug")
 				}
 			}
-		}()
+		})
 	}
 feed:
-	for i := 0; i < numParts; i++ {
+	for i := range numParts {
 		select {
 		case <-ctx.Done():
 			break feed
@@ -876,7 +871,7 @@ func (s *s3Storage) uploadMultipartPart(ctx context.Context, key, uploadID strin
 	sum := sha256.Sum256(chunk)
 	payloadHash := hex.EncodeToString(sum[:])
 	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := range 3 {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
@@ -923,7 +918,7 @@ func (s *s3Storage) uploadSingle(ctx context.Context, key, spoolPath string, n i
 	log.Debug("s3", "uploading object",
 		"host", endpointHost(s.endpoint), "bucket", s.bucket, "key", key, "bytes", n, "status", "debug")
 	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := range 3 {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():

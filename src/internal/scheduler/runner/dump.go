@@ -98,8 +98,7 @@ func dumpTo(ctx context.Context, w io.Writer, job config.JobConfig, port int, pa
 }
 
 func errorStage(err error) string {
-	var se *stageError
-	if errors.As(err, &se) {
+	if se, ok := errors.AsType[*stageError](err); ok {
 		return se.stage
 	}
 	return "upload"
