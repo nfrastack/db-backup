@@ -27,6 +27,7 @@
      - dump modifications
        - (mysql) remove flat `routines/events/triggers/views/raw_blobs` keys
        - (mysql) change `raw_blobs` to options.blob_format
+     - refuse encryption profile mixing passphrase and recipients
 
 ## 5.0.12 2026-11-23 <code at nfrastack dot com>
 

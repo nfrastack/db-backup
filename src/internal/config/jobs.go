@@ -555,6 +555,16 @@ func (j *JobConfig) ValidateWithEncryptionProfiles(profiles map[string]Encryptio
 	}
 	if j.Encryption != "" {
 		if prof, ok := profiles[j.Encryption]; ok {
+			switch {
+			case strings.EqualFold(prof.Type, "age") && prof.Passphrase != "" && len(prof.Recipients) > 0:
+				return fmt.Errorf("job %q encryption profile %q sets both passphrase and recipients (use one)", j.Name, j.Encryption)
+			case (strings.EqualFold(prof.Type, "gpg") || strings.EqualFold(prof.Type, "openpgp") || strings.EqualFold(prof.Type, "pgp")) && prof.Passphrase != "" && len(prof.Recipients) > 0:
+				return fmt.Errorf("job %q encryption profile %q sets both passphrase and recipients (use one)", j.Name, j.Encryption)
+			case strings.EqualFold(prof.Type, "openssl") && len(prof.Recipients) > 0:
+				return fmt.Errorf("job %q encryption profile %q sets recipients, but openssl uses a passphrase only", j.Name, j.Encryption)
+			case strings.EqualFold(prof.Type, "openssl") && prof.Passphrase == "":
+				return fmt.Errorf("job %q encryption profile %q needs a passphrase for openssl", j.Name, j.Encryption)
+			}
 			switch prof.Type {
 			case "", "none", "age", "gpg", "openpgp", "pgp", "openssl":
 
