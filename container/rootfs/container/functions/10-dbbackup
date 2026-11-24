@@ -51,7 +51,7 @@ dbbackup_generate_configuration() {
     _dbbackup_warn_notifications
 
     for _dbb_d in \
-        DEFAULT_ARCHIVE_LAST DEFAULT_ARCHIVE_PATH DEFAULT_ARCHIVE_WITHIN \
+        DEFAULT_ARCHIVE_LAST DEFAULT_ARCHIVE_PATH DEFAULT_ARCHIVE_RETENTION_LAST DEFAULT_ARCHIVE_RETENTION_WITHIN DEFAULT_ARCHIVE_WITHIN \
         DEFAULT_AUTH_SOURCE \
         DEFAULT_AZURE_ACCOUNT DEFAULT_AZURE_KEY DEFAULT_AZURE_CONTAINER DEFAULT_AZURE_PATH \
         DEFAULT_BACKUP_BEGIN DEFAULT_BACKUP_FILENAME DEFAULT_BACKUP_INTERVAL DEFAULT_BACKUP_LOCATION DEFAULT_BLACKOUT_BEGIN DEFAULT_BLACKOUT_DAYS DEFAULT_BLACKOUT_END \
@@ -71,7 +71,7 @@ dbbackup_generate_configuration() {
         DEFAULT_RETENTION_DAILY DEFAULT_RETENTION_HOURLY DEFAULT_RETENTION_LAST DEFAULT_RETENTION_MONTHLY DEFAULT_RETENTION_WEEKLY DEFAULT_RETENTION_WITHIN DEFAULT_RETENTION_YEARLY \
         DEFAULT_S3_BUCKET DEFAULT_S3_CERT_CA_FILE DEFAULT_S3_CERT_SKIP_VERIFY DEFAULT_S3_HOST DEFAULT_S3_KEY_ID DEFAULT_S3_KEY_SECRET DEFAULT_S3_PATH DEFAULT_S3_PROTOCOL DEFAULT_S3_REGION \
         DEFAULT_SCHEMA_ONLY DEFAULT_SIZE_FORMAT DEFAULT_SPLIT_DB DEFAULT_STRATEGY \
-        DEFAULT_TABLES_EXCLUDE DEFAULT_TABLES_INCLUDE \
+        DEFAULT_COLOUR DEFAULT_TABLES_EXCLUDE DEFAULT_TABLES_INCLUDE DEFAULT_TIMINGS \
         DEFAULT_TLS_CA_FILE DEFAULT_TLS_CERT_FILE DEFAULT_TLS_ENABLE DEFAULT_TLS_KEY_FILE DEFAULT_TLS_VERIFY DEFAULT_TLS_VERSION DEFAULT_UPLOAD_MODE \
         DEFAULT_WEBDAV_PASS DEFAULT_WEBDAV_PATH DEFAULT_WEBDAV_URL DEFAULT_WEBDAV_USER; do
         _dbbackup_dnorm "${_dbb_d}"
@@ -815,6 +815,8 @@ dbbackup_generate_configuration() {
         local archive_last="$(_dbbackup_getv "${inst}" ARCHIVE_LAST "")"
         local archive_within="$(_dbbackup_getv "${inst}" ARCHIVE_WITHIN "")"
         local archive_path="$(_dbbackup_getv "${inst}" ARCHIVE_PATH "")"
+        local archive_retention_last="$(_dbbackup_getv "${inst}" ARCHIVE_RETENTION_LAST "")"
+        local archive_retention_within="$(_dbbackup_getv "${inst}" ARCHIVE_RETENTION_WITHIN "")"
         # legacy ARCHIVE_TIME (minutes) is a deprecated alias for ARCHIVE_WITHIN.
         local legacy_archive_time="$(_dbbackup_getv "${inst}" ARCHIVE_TIME "")"
         if [ -n "${legacy_archive_time}" ]; then
@@ -1067,6 +1069,8 @@ dbbackup_generate_configuration() {
         local upload_mode="$(_dbbackup_getv "${inst}" UPLOAD_MODE "")"
         local on_storage_failure="$(_dbbackup_getv "${inst}" ON_STORAGE_FAILURE "")"
         local progress="$(_dbbackup_getv "${inst}" PROGRESS "")"
+        local timings="$(_dbbackup_getv "${inst}" TIMINGS "")"
+        local colour="$(_dbbackup_getv "${inst}" COLOUR "")"
         local use_storage=""
         if [ -n "${storage_list//[ ,]/}" ]; then
             use_storage=1
@@ -1282,6 +1286,14 @@ dbbackup_generate_configuration() {
         fi
 
         ### archive
+        if [ -n "${archive_retention_last}" ]; then
+            DBB_V="${archive_retention_last}"
+            yq -i '.jobs[strenv(DBB_JNUM) | tonumber].archive.retention.last = (strenv(DBB_V) | tonumber)' "${CONFIG_FILE_PATH}"
+        fi
+        if [ -n "${archive_retention_within}" ]; then
+            DBB_V="${archive_retention_within}"
+            yq -i '.jobs[strenv(DBB_JNUM) | tonumber].archive.retention.within = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+        fi
         if [ -n "${archive_last}" ]; then
             DBB_V="${archive_last}"
             yq -i '.jobs[strenv(DBB_JNUM) | tonumber].archive.last = (strenv(DBB_V) | tonumber)' "${CONFIG_FILE_PATH}"
@@ -1364,6 +1376,20 @@ dbbackup_generate_configuration() {
                 yq -i '.jobs[strenv(DBB_JNUM) | tonumber].progress = true' "${CONFIG_FILE_PATH}"
             else
                 yq -i '.jobs[strenv(DBB_JNUM) | tonumber].progress = false' "${CONFIG_FILE_PATH}"
+            fi
+        fi
+        if printenv "DB${inst}_TIMINGS" >/dev/null 2>&1 || printenv "DB_TIMINGS" >/dev/null 2>&1; then
+            if [ "$(_dbbackup_tyone "${timings}")" = "true" ]; then
+                yq -i '.jobs[strenv(DBB_JNUM) | tonumber].timings = true' "${CONFIG_FILE_PATH}"
+            else
+                yq -i '.jobs[strenv(DBB_JNUM) | tonumber].timings = false' "${CONFIG_FILE_PATH}"
+            fi
+        fi
+        if printenv "DB${inst}_COLOUR" >/dev/null 2>&1 || printenv "DB_COLOUR" >/dev/null 2>&1; then
+            if [ "$(_dbbackup_tyone "${colour}")" = "true" ]; then
+                yq -i '.jobs[strenv(DBB_JNUM) | tonumber].colour = true' "${CONFIG_FILE_PATH}"
+            else
+                yq -i '.jobs[strenv(DBB_JNUM) | tonumber].colour = false' "${CONFIG_FILE_PATH}"
             fi
         fi
 
