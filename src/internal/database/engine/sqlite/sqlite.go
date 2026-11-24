@@ -83,6 +83,17 @@ func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
 		fmt.Sprintf("File: %s  Server: %s", d.path, d.server.Display())))
 	fmt.Fprintf(w, "--\n\n")
 
+	d.db.SetMaxOpenConns(1)
+	if _, err := d.db.ExecContext(d.ctxOrBg(), "BEGIN"); err != nil {
+		return fmt.Errorf("begin snapshot: %w", err)
+	}
+	snapshotCommitted := false
+	defer func() {
+		if !snapshotCommitted {
+			d.db.ExecContext(context.Background(), "ROLLBACK")
+		}
+	}()
+
 	tables, err := d.listTables()
 	if err != nil {
 		return err
@@ -118,6 +129,10 @@ func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
 	if err != nil {
 		return err
 	}
+	if _, err := d.db.ExecContext(d.ctxOrBg(), "COMMIT"); err != nil {
+		return fmt.Errorf("commit snapshot: %w", err)
+	}
+	snapshotCommitted = true
 	fmt.Fprintf(w, "COMMIT;\n")
 	log.Debug("sqlite", "backup done",
 		"path", d.path, "tables", len(tables), "rows", totalRows, "extras", extras,

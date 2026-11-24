@@ -22,6 +22,7 @@
        - (redis) support for skipping expires, streams, data
        - (sqlite) support for skipping views, triggers, indexes, sequences, data, drops
      - restore additions
+       - (sqlite) wrap operation in transaction
        - WARN when restoring dumps that have been made with skipped options
 
    ### Changed
