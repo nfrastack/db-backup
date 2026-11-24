@@ -14,6 +14,7 @@ import (
 
 	"github.com/nfrastack/db-backup/internal/config"
 	"github.com/nfrastack/db-backup/internal/database/common"
+	"github.com/nfrastack/db-backup/internal/database/objects"
 )
 
 type Engine interface {
@@ -33,7 +34,8 @@ type Options struct {
 	Version    int
 	TLS        *config.TLSConfig
 	AuthSource string
-	Objects    config.MysqlObjects
+	Objects    objects.Objects
+	Options    objects.Options
 	HasObjects bool
 }
 

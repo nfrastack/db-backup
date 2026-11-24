@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/nfrastack/db-backup/internal/config"
+	"github.com/nfrastack/db-backup/internal/database/objects"
 	"github.com/nfrastack/db-backup/internal/database/registry"
 )
 
@@ -34,7 +35,8 @@ type BackupOptions struct {
 	Version    int
 	Strategy   Strategy
 	Since      string
-	Objects    config.MysqlObjects
+	Objects    objects.Objects
+	Options    objects.Options
 	HasObjects bool
 }
 
@@ -84,6 +86,7 @@ func runFullBackup(ctx context.Context, w io.Writer, opts BackupOptions) error {
 		TLS:        opts.TLS,
 		AuthSource: opts.AuthSource,
 		Objects:    opts.Objects,
+		Options:    opts.Options,
 		HasObjects: opts.HasObjects,
 	})
 	if err != nil {

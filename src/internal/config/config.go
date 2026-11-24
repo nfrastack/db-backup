@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nfrastack/db-backup/internal/database/objects"
 	"github.com/nfrastack/db-backup/internal/license"
 	"gopkg.in/yaml.v3"
 )
@@ -674,20 +675,9 @@ func (c *Config) resolveJob(job *JobConfig) {
 				if len(job.Databases.Exclude) == 0 && len(prof.Exclude) > 0 && !job.unsetKey("databases") {
 					job.Databases.Exclude = prof.Exclude
 				}
-				if job.Databases.Routines == nil && prof.Routines != nil && !job.unsetKey("databases") {
-					job.Databases.Routines = prof.Routines
-				}
-				if job.Databases.Events == nil && prof.Events != nil && !job.unsetKey("databases") {
-					job.Databases.Events = prof.Events
-				}
-				if job.Databases.Triggers == nil && prof.Triggers != nil && !job.unsetKey("databases") {
-					job.Databases.Triggers = prof.Triggers
-				}
-				if job.Databases.Views == nil && prof.Views != nil && !job.unsetKey("databases") {
-					job.Databases.Views = prof.Views
-				}
-				if job.Databases.RawBlobs == nil && prof.RawBlobs != nil && !job.unsetKey("databases") {
-					job.Databases.RawBlobs = prof.RawBlobs
+				if !job.unsetKey("databases") {
+					job.Databases.Objects = objects.MergeObjects(prof.Objects, job.Databases.Objects)
+					job.Databases.Options = objects.MergeOptions(prof.Options, job.Databases.Options)
 				}
 				if job.Databases.Tables == nil && prof.Tables != nil && !job.unsetKey("tables") {
 					t := *prof.Tables
@@ -743,6 +733,11 @@ func (c *Config) resolveJob(job *JobConfig) {
 		} else if job.Databases == nil {
 			job.Databases = &DatabaseList{Include: []string{job.DatabaseRef}}
 		}
+	}
+
+	if job.Databases != nil && !job.unsetKey("databases") {
+		job.Databases.Objects = objects.MergeObjects(nil, job.Databases.Objects)
+		job.Databases.Options = objects.MergeOptions(nil, job.Databases.Options)
 	}
 
 	if !job.splitDBSet {

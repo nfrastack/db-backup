@@ -1,5 +1,13 @@
 ## dev
 
+   Breaking Change: Config structure has changed and some mysql options have been folded into
+   a new objects: and options: structure for databases and jobs.
+
+   ### Changed
+     - replace flat `routines/events/triggers/views/raw_blobs` mysql keys with
+       generic `objects:` / `options:` mappings.
+       - `raw_blobs` becomes `options: {blob_format: raw|hex}`
+       
 ## 5.0.12 2026-11-23 <code at nfrastack dot com>
 
    ### Changed
