@@ -33,6 +33,9 @@ type Dumper struct {
 	ctx        context.Context
 	Tables     *config.TableFilter
 	SchemaOnly bool
+	Expires    bool
+	Streams    bool
+	Data       bool
 	server     common.ServerVersion
 }
 
@@ -56,6 +59,12 @@ func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
 	fmt.Fprint(w, common.DumpBanner("#", "Redis",
 		fmt.Sprintf("Host: %s:%d  Server: %s", d.host, d.port, d.server.Display())))
 	fmt.Fprintf(w, "# Database: %d\n#\n\n", d.db)
+	if !d.Data {
+		log.Debug("redis", "backup done",
+			"scanned", 0, "dumped", 0, "skipped", 0,
+			"elapsed", time.Since(start).Round(time.Millisecond).String())
+		return nil
+	}
 	var cursor uint64
 	var scanned, dumped, skipped int
 	var skippedKeys []string
@@ -127,7 +136,7 @@ func NewDumper(host string, port int, pass string, tlsCfg ...*config.TLSConfig) 
 	if port == 0 {
 		port = 6379
 	}
-	d := &Dumper{host: host, port: port, pass: pass}
+	d := &Dumper{host: host, port: port, pass: pass, Expires: true, Streams: true, Data: true}
 	if len(tlsCfg) > 0 && tlsCfg[0] != nil {
 		d.tlsCfg = tlsCfg[0]
 	}
@@ -223,6 +232,12 @@ func (d *Dumper) SetConnectivity(cfg *config.ConnectivityConfig) {
 	}
 }
 
+func (d *Dumper) SetRedisObjects(o RedisObjects) {
+	d.Expires = o.Expires
+	d.Streams = o.Streams
+	d.Data = o.Data
+}
+
 func (d *Dumper) SetTableFilter(f *config.TableFilter, schemaOnly bool) {
 	d.Tables = f
 	d.SchemaOnly = schemaOnly
@@ -234,16 +249,24 @@ func (d *Dumper) ctxOrBg() context.Context {
 	return context.Background()
 }
 func (d *Dumper) dumpKey(ctx context.Context, w io.Writer, key string) error {
-	ttl, err := d.client.TTL(ctx, key).Result()
-	if err != nil {
-		return fmt.Errorf("ttl: %w", err)
-	}
-	if ttl < 0 {
-		ttl = 0
+	var ttl time.Duration
+	if d.Expires {
+		var err error
+		ttl, err = d.client.TTL(ctx, key).Result()
+		if err != nil {
+			return fmt.Errorf("ttl: %w", err)
+		}
+		if ttl < 0 {
+			ttl = 0
+		}
 	}
 	typ, err := d.client.Type(ctx, key).Result()
 	if err != nil {
 		return fmt.Errorf("type: %w", err)
+	}
+	if typ == "stream" && !d.Streams {
+		log.Trace("redis", "stream skipped by objects", "key", key)
+		return nil
 	}
 	qKey := QuoteRedis(key)
 	log.Trace("redis", "dumping key", "key", key, "type", typ, "ttl", ttl.String())

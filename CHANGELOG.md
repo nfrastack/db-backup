@@ -10,6 +10,9 @@
        - (postgres) support for skipping functions, aggregates, triggers, views, materialized views
          rules, policies, extensions, types, sequences, indexes, constraints, comments, blobs,
          publications, drops, data, owner, acl, collations
+       - (redis) support for skipping expires, streams, data
+
+
    ### Changed
      - replace flat `routines/events/triggers/views/raw_blobs` mysql keys with
        generic `objects:` / `options:` mappings.
