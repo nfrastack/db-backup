@@ -543,35 +543,54 @@ dbbackup_generate_configuration() {
                 done
             fi
 
-            # MYSQL_STORED_PROCEDURES is the 4.x alias for routines
-            local mysql_events mysql_routines mysql_triggers mysql_views mysql_sp_alias mysql_raw_blobs
-            mysql_events="$(_dbbackup_getv "${inst}" MYSQL_EVENTS TRUE)"
-            mysql_routines="$(_dbbackup_getv "${inst}" MYSQL_ROUTINES "")"
-            if [ -z "${mysql_routines}" ]; then
-                mysql_sp_alias="$(_dbbackup_getv "${inst}" MYSQL_STORED_PROCEDURES "")"
-                if [ -n "${mysql_sp_alias}" ]; then
-                    mysql_routines="${mysql_sp_alias}"
-                else
-                    mysql_routines="TRUE"
-                fi
+            local db_objects db_options opair okey oval
+            db_objects="$(_dbbackup_getv "${inst}" OBJECTS "")"
+            if [ -n "${db_objects}" ]; then
+                local oparts=()
+                IFS=',' read -r -a oparts <<< "${db_objects}"
+                for opair in "${oparts[@]}"; do
+                    okey="${opair%%=*}"; okey="${okey// /}"; okey="${okey,,}"
+                    oval="${opair#*=}"; oval="${oval// /}"; oval="${oval,,}"
+                    if [ "${opair// /}" = "${okey}" ] || [ -z "${okey}" ]; then
+                        print_warn "DB${inst}_OBJECTS entry ${opair@Q} is not key=value - skipped"
+                        continue
+                    fi
+                    DBB_ITEM="${okey}"
+                    case "${oval}" in
+                        true )
+                            yq -i '.profiles.databases[strenv(DBB_REF)].objects[strenv(DBB_ITEM)] = true' "${CONFIG_FILE_PATH}"
+                        ;;
+                        false )
+                            yq -i '.profiles.databases[strenv(DBB_REF)].objects[strenv(DBB_ITEM)] = false' "${CONFIG_FILE_PATH}"
+                        ;;
+                        unset )
+                            yq -i 'del(.profiles.databases[strenv(DBB_REF)].objects[strenv(DBB_ITEM)])' "${CONFIG_FILE_PATH}"
+                        ;;
+                        * )
+                            print_warn "DB${inst}_OBJECTS entry ${opair@Q} must be true, false or unset - skipped"
+                        ;;
+                    esac
+                done
             fi
-            mysql_triggers="$(_dbbackup_getv "${inst}" MYSQL_TRIGGERS TRUE)"
-            mysql_views="$(_dbbackup_getv "${inst}" MYSQL_VIEWS TRUE)"
-            mysql_raw_blobs="$(_dbbackup_getv "${inst}" MYSQL_RAW_BLOBS FALSE)"
-            if [ "$(_dbbackup_tyone "${mysql_events}")" = "false" ]; then
-                yq -i '.profiles.databases[strenv(DBB_REF)].events = false' "${CONFIG_FILE_PATH}"
-            fi
-            if [ "$(_dbbackup_tyone "${mysql_routines}")" = "false" ]; then
-                yq -i '.profiles.databases[strenv(DBB_REF)].routines = false' "${CONFIG_FILE_PATH}"
-            fi
-            if [ "$(_dbbackup_tyone "${mysql_triggers}")" = "false" ]; then
-                yq -i '.profiles.databases[strenv(DBB_REF)].triggers = false' "${CONFIG_FILE_PATH}"
-            fi
-            if [ "$(_dbbackup_tyone "${mysql_views}")" = "false" ]; then
-                yq -i '.profiles.databases[strenv(DBB_REF)].views = false' "${CONFIG_FILE_PATH}"
-            fi
-            if [ "$(_dbbackup_tyone "${mysql_raw_blobs}")" = "true" ]; then
-                yq -i '.profiles.databases[strenv(DBB_REF)].raw_blobs = true' "${CONFIG_FILE_PATH}"
+            db_options="$(_dbbackup_getv "${inst}" OPTIONS "")"
+            if [ -n "${db_options}" ]; then
+                local vparts=()
+                IFS=',' read -r -a vparts <<< "${db_options}"
+                for opair in "${vparts[@]}"; do
+                    okey="${opair%%=*}"; okey="${okey// /}"
+                    oval="${opair#*=}"; oval="${oval// /}"
+                    if [ "${opair// /}" = "${okey}" ] || [ -z "${okey}" ]; then
+                        print_warn "DB${inst}_OPTIONS entry ${opair@Q} is not key=value - skipped"
+                        continue
+                    fi
+                    DBB_ITEM="${okey}"
+                    DBB_VAL="${oval}"
+                    if [ "${oval,,}" = "unset" ]; then
+                        yq -i 'del(.profiles.databases[strenv(DBB_REF)].options[strenv(DBB_ITEM)])' "${CONFIG_FILE_PATH}"
+                    else
+                        yq -i '.profiles.databases[strenv(DBB_REF)].options[strenv(DBB_ITEM)] = strenv(DBB_VAL)' "${CONFIG_FILE_PATH}"
+                    fi
+                done
             fi
         fi
     done
@@ -1499,6 +1518,8 @@ _dbbackup_warn_deprecated() {
                         MONGO_CUSTOM_URI \
                         MYSQL_SINGLE_TRANSACTION \
                         MYSQL_MAX_ALLOWED_PACKET \
+                        MYSQL_ROUTINES MYSQL_EVENTS MYSQL_TRIGGERS MYSQL_VIEWS \
+                        MYSQL_RAW_BLOBS MYSQL_STORED_PROCEDURES \
                         S3_EXTRA_OPTS BLOBXFER_MODE \
                         BLOBXFER_STORAGE_ACCOUNT \
                         BLOBXFER_STORAGE_ACCOUNT_KEY \
