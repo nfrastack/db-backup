@@ -3,6 +3,7 @@
    Breaking Change:
      - Config structure has objects: and options: structure has been introduced.
      - Old mysql Keys have been removed and migrated
+     - Require Go 1.27.4 for compilation
 
    ### Added
      - add --object and --option cli overrides
