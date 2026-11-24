@@ -109,6 +109,7 @@ type Dumper struct {
 	ctx             context.Context
 	lastPingVersion string
 	mode            string
+	Data            bool
 	server          common.ServerVersion
 }
 
@@ -236,6 +237,7 @@ func NewDumper(host string, port int, user, pass, dbName string, version int, tl
 		version:      version,
 		client:       common.HTTPClient(nil, 30*time.Second),
 		streamClient: common.HTTPClient(nil, 0),
+		Data:         true,
 	}
 	if len(tlsCfg) > 0 && tlsCfg[0] != nil {
 		d.tlsCfg = tlsCfg[0]
@@ -314,6 +316,10 @@ func (d *Dumper) detect(ctx context.Context, explicit int) error {
 		"host", d.host, "port", d.port,
 		"version", "v2", "version_source", "detected")
 	return nil
+}
+
+func (d *Dumper) SetInfluxObjects(o InfluxObjects) {
+	d.Data = o.Data
 }
 
 func (d *Dumper) SetConnectivity(cfg *config.ConnectivityConfig) {
@@ -451,6 +457,9 @@ func (d *Dumper) tagKeysFor(db, m string, bulk map[string]map[string]bool) map[s
 
 func (d *Dumper) dumpMeasurements(w *bufio.Writer, db, since, until string) (*dumpStats, error) {
 	st := &dumpStats{}
+	if !d.Data {
+		return st, nil
+	}
 	result, err := d.query(db, "SHOW MEASUREMENTS")
 	if err != nil {
 		return nil, fmt.Errorf("list measurements: %w", err)
