@@ -93,6 +93,18 @@ _dbbackup_apply_config_includes() {
     print_info "CONFIG_INCLUDE layered ${_dbb_n} snippet(s) over ${cfg}"
 }
 
+dbbackup_boot_config() {
+    transform_var file \
+                        'DB*' \
+                        'DEFAULT*' \
+                        'RESTORE*'
+
+
+    dbbackup_bootstrap_filesystem
+    dbbackup_generate_configuration
+    dbbackup_generate_helpers
+}
+
 dbbackup_generate_configuration() {
     if [ "${SETUP_TYPE,,}" = "manual" ]; then
         print_info "SETUP_TYPE=MANUAL - skipping automatic environment variable configuration"

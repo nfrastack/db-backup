@@ -100,3 +100,5 @@ RUN echo "" && \
     container_build_log add "DB Backup" "${dbbver}" "${IMAGE_REPO_URL}" && \
     package remove DBBACKUP_BUILD_DEPS && \
     package cleanup
+
+ENTRYPOINT ["/container/entrypoint"]

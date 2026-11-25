@@ -10,15 +10,7 @@ set +a
 
 SERVICE_NAME="db-backup"
 
-transform_var file \
-                    'DB*' \
-                    'DEFAULT*' \
-                    'RESTORE*'
-
-
-dbbackup_bootstrap_filesystem
-dbbackup_generate_configuration
-dbbackup_generate_helpers
+dbbackup_boot_config
 
 if [ "${MODE,,}" = "manual" ] && var_nottrue "${MANUAL_RUN_FOREVER}"; then
     for service in \

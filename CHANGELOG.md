@@ -27,6 +27,7 @@
 
    ### Changed
      - bump metadata sidecar version to 3
+     - (container) rewrite entrypoint to allow docker to output proper exit code when runing in manual mode
      - dump modifications
        - (mysql) remove flat `routines/events/triggers/views/raw_blobs` keys
        - (mysql) change `raw_blobs` to options.blob_format
