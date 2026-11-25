@@ -33,7 +33,7 @@ func Spec() registry.EngineSpec {
 			}
 			d := NewDumper(p)
 			if o.HasObjects {
-				d.SetSqliteObjects(ResolveObjects(o.Objects))
+				d.SetSqliteObjects(ResolveObjects(o.Objects, o.Options))
 			}
 			return d, nil
 		},

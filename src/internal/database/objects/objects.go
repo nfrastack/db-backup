@@ -106,6 +106,22 @@ func (o Options) Get(key string) string {
 	return o[key]
 }
 
+func (o Options) GetBool(key string, def bool) bool {
+	v, ok := o[key]
+	if !ok {
+		return def
+	}
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return def
+	}
+	b, err := strconv.ParseBool(strings.ToLower(v))
+	if err != nil {
+		return def
+	}
+	return b
+}
+
 func MergeOptions(profile, job Options) Options {
 	var out Options
 	for k, v := range profile {

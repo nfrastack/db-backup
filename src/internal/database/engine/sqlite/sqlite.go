@@ -53,20 +53,21 @@ func fileReadable(path string) bool {
 }
 
 type Dumper struct {
-	path       string
-	db         *sql.DB
-	connCfg    *config.ConnectivityConfig
-	ctx        context.Context
-	Tables     *config.TableFilter
-	SchemaOnly bool
-	Views      bool
-	Triggers   bool
-	Indexes    bool
-	Sequences  bool
-	Stats      bool
-	Data       bool
-	Drops      bool
-	server     common.ServerVersion
+	path              string
+	db                *sql.DB
+	connCfg           *config.ConnectivityConfig
+	ctx               context.Context
+	Tables            *config.TableFilter
+	SchemaOnly        bool
+	Views             bool
+	Triggers          bool
+	Indexes           bool
+	Sequences         bool
+	Stats             bool
+	Data              bool
+	Drops             bool
+	SingleTransaction bool
+	server            common.ServerVersion
 }
 
 func (d *Dumper) Close() error {
@@ -83,16 +84,19 @@ func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
 		fmt.Sprintf("File: %s  Server: %s", d.path, d.server.Display())))
 	fmt.Fprintf(w, "--\n\n")
 
-	d.db.SetMaxOpenConns(1)
-	if _, err := d.db.ExecContext(d.ctxOrBg(), "BEGIN"); err != nil {
-		return fmt.Errorf("begin snapshot: %w", err)
-	}
-	snapshotCommitted := false
-	defer func() {
-		if !snapshotCommitted {
-			d.db.ExecContext(context.Background(), "ROLLBACK")
+	snapshotCommitted := true
+	if d.SingleTransaction {
+		d.db.SetMaxOpenConns(1)
+		if _, err := d.db.ExecContext(d.ctxOrBg(), "BEGIN"); err != nil {
+			return fmt.Errorf("begin snapshot: %w", err)
 		}
-	}()
+		snapshotCommitted = false
+		defer func() {
+			if !snapshotCommitted {
+				d.db.ExecContext(context.Background(), "ROLLBACK")
+			}
+		}()
+	}
 
 	tables, err := d.listTables()
 	if err != nil {
@@ -129,10 +133,12 @@ func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := d.db.ExecContext(d.ctxOrBg(), "COMMIT"); err != nil {
-		return fmt.Errorf("commit snapshot: %w", err)
+	if d.SingleTransaction {
+		if _, err := d.db.ExecContext(d.ctxOrBg(), "COMMIT"); err != nil {
+			return fmt.Errorf("commit snapshot: %w", err)
+		}
+		snapshotCommitted = true
 	}
-	snapshotCommitted = true
 	fmt.Fprintf(w, "COMMIT;\n")
 	log.Debug("sqlite", "backup done",
 		"path", d.path, "tables", len(tables), "rows", totalRows, "extras", extras,
@@ -141,7 +147,7 @@ func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
 }
 
 func NewDumper(path string) *Dumper {
-	return &Dumper{path: path, Views: true, Triggers: true, Indexes: true, Sequences: true, Stats: true, Data: true, Drops: true}
+	return &Dumper{path: path, Views: true, Triggers: true, Indexes: true, Sequences: true, Stats: true, Data: true, Drops: true, SingleTransaction: true}
 }
 
 func (d *Dumper) Open() error {
@@ -201,6 +207,7 @@ func (d *Dumper) SetSqliteObjects(o SqliteObjects) {
 	d.Stats = o.Stats
 	d.Data = o.Data
 	d.Drops = o.Drops
+	d.SingleTransaction = o.SingleTransaction
 }
 
 func (d *Dumper) SetTableFilter(f *config.TableFilter, schemaOnly bool) {

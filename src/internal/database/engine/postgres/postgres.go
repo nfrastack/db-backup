@@ -62,6 +62,7 @@ type Dumper struct {
 	Acl               bool
 	Collations        bool
 	FailOnUnencodable bool
+	SingleTransaction bool
 }
 
 func (d *Dumper) aclGrants(query, schema string, args ...any) ([]pgGrant, error) {
@@ -115,6 +116,7 @@ func (d *Dumper) cloneForDB(db string) *Dumper {
 		Acl:               d.Acl,
 		Collations:        d.Collations,
 		FailOnUnencodable: d.FailOnUnencodable,
+		SingleTransaction: d.SingleTransaction,
 	}
 }
 
@@ -874,15 +876,18 @@ func (d *Dumper) dumpDatabase(w io.Writer, dbName string) error {
 	dbStart := time.Now()
 	fmt.Fprintf(w, "\n-- Database: %s\n", dbName)
 
-	if _, err := d.conn.Exec(d.ctxOrBg(), "START TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"); err != nil {
-		return fmt.Errorf("begin snapshot: %w", err)
-	}
-	snapshotCommitted := false
-	defer func() {
-		if !snapshotCommitted {
-			d.conn.Exec(context.Background(), "ROLLBACK")
+	snapshotCommitted := true
+	if d.SingleTransaction {
+		if _, err := d.conn.Exec(d.ctxOrBg(), "START TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"); err != nil {
+			return fmt.Errorf("begin snapshot: %w", err)
 		}
-	}()
+		snapshotCommitted = false
+		defer func() {
+			if !snapshotCommitted {
+				d.conn.Exec(context.Background(), "ROLLBACK")
+			}
+		}()
+	}
 
 	tables, err := d.listTables(dbName)
 	if err != nil {
@@ -1046,10 +1051,12 @@ func (d *Dumper) dumpDatabase(w io.Writer, dbName string) error {
 			fmt.Fprint(w, r)
 		}
 	}
-	if _, err := d.conn.Exec(d.ctxOrBg(), "COMMIT"); err != nil {
-		return fmt.Errorf("commit snapshot: %w", err)
+	if d.SingleTransaction {
+		if _, err := d.conn.Exec(d.ctxOrBg(), "COMMIT"); err != nil {
+			return fmt.Errorf("commit snapshot: %w", err)
+		}
+		snapshotCommitted = true
 	}
-	snapshotCommitted = true
 	log.Debug("postgres", "database done",
 		"database", dbName, "tables", len(tables),
 		"elapsed", time.Since(dbStart).Round(time.Millisecond).String())
@@ -4307,6 +4314,7 @@ func NewDumper(host string, port int, user, pass, dbname string, tlsCfg ...*conf
 		Types: true, Sequences: true, Indexes: true, Constraints: true,
 		Comments: true, Blobs: true, Publications: true, Drops: true,
 		Data: true, Owner: true, Acl: true, Collations: true,
+		SingleTransaction: true,
 	}
 	if len(tlsCfg) > 0 && tlsCfg[0] != nil {
 		d.tlsCfg = tlsCfg[0]
@@ -4437,6 +4445,7 @@ func (d *Dumper) SetConnectivity(cfg *config.ConnectivityConfig) {
 }
 
 func (d *Dumper) SetPostgresObjects(o PostgresObjects) {
+	d.SingleTransaction = o.SingleTransaction
 	d.Functions = o.Functions
 	d.Aggregates = o.Aggregates
 	d.Triggers = o.Triggers

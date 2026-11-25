@@ -18,9 +18,11 @@
        - (postgres) support for skipping functions, aggregates, triggers, views, materialized views
          rules, policies, extensions, types, sequences, indexes, constraints, comments, blobs,
          publications, drops, data, owner, acl, collations
-       - (postgres) wrap operation in transaction
+       - (postgres) wrap operation in transaction via options.single_transaction
+       - (mysql) wrap operation in transaction via options.single_transaction
        - (redis) support for skipping expires, streams, data
        - (sqlite) support for skipping views, triggers, indexes, sequences, data, drops
+       - (sqlite) wrap operation in transaction via options.single_transaction
      - restore additions
        - (sqlite) wrap operation in transaction
        - WARN when restoring dumps that have been made with skipped options

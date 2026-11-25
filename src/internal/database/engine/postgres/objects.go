@@ -32,6 +32,7 @@ type PostgresObjects struct {
 	Acl               bool
 	Collations        bool
 	FailOnUnencodable bool
+	SingleTransaction bool
 }
 
 func ObjectsSpec() objects.Spec {
@@ -46,12 +47,14 @@ func ObjectsSpec() objects.Spec {
 		},
 		Options: map[string]objects.OptionSpec{
 			"fail_on_unencodable": {Type: "bool"},
+			"single_transaction":  {Type: "bool"},
 		},
 	}
 }
 
 func ResolveObjects(o objects.Objects, opts objects.Options) PostgresObjects {
 	return PostgresObjects{
+		SingleTransaction: opts.GetBool("single_transaction", true),
 		Functions:         o.Get("functions"),
 		Aggregates:        o.Get("aggregates"),
 		Triggers:          o.Get("triggers"),

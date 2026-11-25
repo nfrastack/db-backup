@@ -11,11 +11,12 @@ import (
 )
 
 type MysqlObjects struct {
-	Routines bool
-	Events   bool
-	Triggers bool
-	Views    bool
-	RawBlobs bool
+	Routines          bool
+	Events            bool
+	Triggers          bool
+	Views             bool
+	RawBlobs          bool
+	SingleTransaction bool
 }
 
 func ObjectsSpec() objects.Spec {
@@ -24,18 +25,20 @@ func ObjectsSpec() objects.Spec {
 		Aliases: []string{"mariadb"},
 		Objects: []string{"routines", "events", "triggers", "views"},
 		Options: map[string]objects.OptionSpec{
-			"blob_format": {Type: "enum", Values: []string{"raw", "hex"}},
+			"blob_format":        {Type: "enum", Values: []string{"raw", "hex"}},
+			"single_transaction": {Type: "bool"},
 		},
 	}
 }
 
 func ResolveObjects(o objects.Objects, opts objects.Options) MysqlObjects {
 	return MysqlObjects{
-		Routines: o.Get("routines"),
-		Events:   o.Get("events"),
-		Triggers: o.Get("triggers"),
-		Views:    o.Get("views"),
-		RawBlobs: strings.EqualFold(strings.TrimSpace(opts.Get("blob_format")), "raw"),
+		Routines:          o.Get("routines"),
+		Events:            o.Get("events"),
+		Triggers:          o.Get("triggers"),
+		Views:             o.Get("views"),
+		RawBlobs:          strings.EqualFold(strings.TrimSpace(opts.Get("blob_format")), "raw"),
+		SingleTransaction: opts.GetBool("single_transaction", true),
 	}
 }
 

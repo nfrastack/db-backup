@@ -717,6 +717,7 @@ func (d *Dumper) SetMysqlObjects(o MysqlObjects) {
 	d.Triggers = o.Triggers
 	d.Views = o.Views
 	d.RawBlobs = o.RawBlobs
+	d.SingleTransaction = o.SingleTransaction
 }
 
 func (d *Dumper) SetTableFilter(f *config.TableFilter, schemaOnly bool) {
