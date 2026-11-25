@@ -186,7 +186,11 @@ func (s *Scheduler) postBackup(job config.JobConfig) map[string]time.Duration {
 	}
 	if job.Archive != nil && job.Archive.Retention != nil {
 		start := time.Now()
-		s.applyPrune(job, archiveStorageCfg(job), job.Archive.Retention)
+		acfg := archiveStorageCfg(job)
+		if job.Archive.Storage != nil {
+			acfg = job.Archive.Storage
+		}
+		s.applyPrune(job, acfg, job.Archive.Retention)
 		steps["prune"] += time.Since(start)
 	}
 	return steps

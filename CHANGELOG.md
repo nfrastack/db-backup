@@ -10,6 +10,7 @@
      - add more container environment variables to match config file
      - allow dumping to multiple storage backends per job (supporter)
      - (container) add CONFIG_INCLUDE variable to add config snippets via file:// or base64
+     - (container) archive to non fs backends via ARCHIVE_LOCATION and retention prunes backend (supporter)
      - dump additions
        - (couch) support for skipping attachments, designDocs, data
        - (influx) support for skipping data

@@ -141,6 +141,11 @@ dbbackup_generate_configuration() {
 
     for _dbb_d in \
         DEFAULT_ARCHIVE_LAST DEFAULT_ARCHIVE_PATH DEFAULT_ARCHIVE_RETENTION_LAST DEFAULT_ARCHIVE_RETENTION_WITHIN DEFAULT_ARCHIVE_WITHIN \
+        DEFAULT_ARCHIVE_LOCATION DEFAULT_ARCHIVE_FILESYSTEM_PATH \
+        DEFAULT_ARCHIVE_AZURE_ACCOUNT DEFAULT_ARCHIVE_AZURE_KEY DEFAULT_ARCHIVE_AZURE_CONTAINER DEFAULT_ARCHIVE_AZURE_PATH \
+        DEFAULT_ARCHIVE_GCS_BUCKET DEFAULT_ARCHIVE_GCS_KEY DEFAULT_ARCHIVE_GCS_PATH \
+        DEFAULT_ARCHIVE_S3_BUCKET DEFAULT_ARCHIVE_S3_CERT_CA_FILE DEFAULT_ARCHIVE_S3_CERT_SKIP_VERIFY DEFAULT_ARCHIVE_S3_HOST DEFAULT_ARCHIVE_S3_KEY_ID DEFAULT_ARCHIVE_S3_KEY_SECRET DEFAULT_ARCHIVE_S3_PATH DEFAULT_ARCHIVE_S3_PROTOCOL DEFAULT_ARCHIVE_S3_REGION \
+        DEFAULT_ARCHIVE_WEBDAV_PASS DEFAULT_ARCHIVE_WEBDAV_PATH DEFAULT_ARCHIVE_WEBDAV_URL DEFAULT_ARCHIVE_WEBDAV_USER \
         DEFAULT_AUTH_SOURCE \
         DEFAULT_AZURE_ACCOUNT DEFAULT_AZURE_KEY DEFAULT_AZURE_CONTAINER DEFAULT_AZURE_PATH \
         DEFAULT_BACKUP_BEGIN DEFAULT_BACKUP_FILENAME DEFAULT_BACKUP_INTERVAL DEFAULT_BACKUP_LOCATION DEFAULT_BLACKOUT_BEGIN DEFAULT_BLACKOUT_DAYS DEFAULT_BLACKOUT_END \
@@ -906,6 +911,34 @@ dbbackup_generate_configuration() {
         local archive_path="$(_dbbackup_getv "${inst}" ARCHIVE_PATH "")"
         local archive_retention_last="$(_dbbackup_getv "${inst}" ARCHIVE_RETENTION_LAST "")"
         local archive_retention_within="$(_dbbackup_getv "${inst}" ARCHIVE_RETENTION_WITHIN "")"
+        local archive_location="$(_dbbackup_getv "${inst}" ARCHIVE_LOCATION "")"
+        archive_location="${archive_location,,}"
+        # archive storage: filesystem
+        local archive_fspath="$(_dbbackup_getv "${inst}" ARCHIVE_FILESYSTEM_PATH "")"
+        # archive storage: azure
+        local archive_azure_account="$(_dbbackup_getv "${inst}" ARCHIVE_AZURE_ACCOUNT "")"
+        local archive_azure_key="$(_dbbackup_getv "${inst}" ARCHIVE_AZURE_KEY "")"
+        local archive_azure_container="$(_dbbackup_getv "${inst}" ARCHIVE_AZURE_CONTAINER "")"
+        local archive_azure_path="$(_dbbackup_getv "${inst}" ARCHIVE_AZURE_PATH "")"
+        # archive storage: gcs
+        local archive_gcs_bucket="$(_dbbackup_getv "${inst}" ARCHIVE_GCS_BUCKET "")"
+        local archive_gcs_key="$(_dbbackup_getv "${inst}" ARCHIVE_GCS_KEY "")"
+        local archive_gcs_path="$(_dbbackup_getv "${inst}" ARCHIVE_GCS_PATH "")"
+        # archive storage: s3
+        local archive_s3_bucket="$(_dbbackup_getv "${inst}" ARCHIVE_S3_BUCKET "")"
+        local archive_s3_path="$(_dbbackup_getv "${inst}" ARCHIVE_S3_PATH "")"
+        local archive_s3_region="$(_dbbackup_getv "${inst}" ARCHIVE_S3_REGION "")"
+        local archive_s3_host="$(_dbbackup_getv "${inst}" ARCHIVE_S3_HOST "")"
+        local archive_s3_protocol="$(_dbbackup_getv "${inst}" ARCHIVE_S3_PROTOCOL "")"
+        local archive_s3_key_id="$(_dbbackup_getv "${inst}" ARCHIVE_S3_KEY_ID "")"
+        local archive_s3_key_secret="$(_dbbackup_getv "${inst}" ARCHIVE_S3_KEY_SECRET "")"
+        local archive_s3_cert_ca_file="$(_dbbackup_getv "${inst}" ARCHIVE_S3_CERT_CA_FILE "")"
+        local archive_s3_cert_skip_verify="$(_dbbackup_getv "${inst}" ARCHIVE_S3_CERT_SKIP_VERIFY "")"
+        # archive storage: webdav
+        local archive_webdav_url="$(_dbbackup_getv "${inst}" ARCHIVE_WEBDAV_URL "")"
+        local archive_webdav_user="$(_dbbackup_getv "${inst}" ARCHIVE_WEBDAV_USER "")"
+        local archive_webdav_pass="$(_dbbackup_getv "${inst}" ARCHIVE_WEBDAV_PASS "")"
+        local archive_webdav_path="$(_dbbackup_getv "${inst}" ARCHIVE_WEBDAV_PATH "")"
         # legacy ARCHIVE_TIME (minutes) is a deprecated alias for ARCHIVE_WITHIN.
         local legacy_archive_time="$(_dbbackup_getv "${inst}" ARCHIVE_TIME "")"
         if [ -n "${legacy_archive_time}" ]; then
@@ -1394,6 +1427,149 @@ dbbackup_generate_configuration() {
         if [ -n "${archive_path}" ]; then
             DBB_V="${archive_path}"
             yq -i '.jobs[strenv(DBB_JNUM) | tonumber].archive.path = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+        fi
+        local archive_explicit=""
+        for _dbb_av in ARCHIVE_LOCATION ARCHIVE_FILESYSTEM_PATH ARCHIVE_AZURE_ACCOUNT ARCHIVE_AZURE_KEY ARCHIVE_AZURE_CONTAINER ARCHIVE_AZURE_PATH ARCHIVE_GCS_BUCKET ARCHIVE_GCS_KEY ARCHIVE_GCS_PATH ARCHIVE_S3_BUCKET ARCHIVE_S3_PATH ARCHIVE_S3_REGION ARCHIVE_S3_HOST ARCHIVE_S3_PROTOCOL ARCHIVE_S3_KEY_ID ARCHIVE_S3_KEY_SECRET ARCHIVE_S3_CERT_CA_FILE ARCHIVE_S3_CERT_SKIP_VERIFY ARCHIVE_WEBDAV_URL ARCHIVE_WEBDAV_USER ARCHIVE_WEBDAV_PASS ARCHIVE_WEBDAV_PATH; do
+            if [ -n "$(_dbbackup_explicit_env "${inst}" "${_dbb_av}")" ]; then
+                archive_explicit="1"
+                break
+            fi
+        done
+        if [ -n "${archive_explicit}" ]; then
+            if [ -n "${archive_fspath}" ]; then
+                archive_location="filesystem"
+            fi
+            case "${archive_location}" in
+                azure )
+                    DBB_B="azure"
+                    yq -i '.jobs[strenv(DBB_JNUM) | tonumber].archive.storage = {"backend": strenv(DBB_B)}' "${CONFIG_FILE_PATH}"
+                    if [ -n "${archive_azure_account}" ]; then
+                        DBB_V="${archive_azure_account}"
+                        yq -i '.jobs[strenv(DBB_JNUM) | tonumber].archive.storage.account = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+                    fi
+                    if [ -n "${archive_azure_key}" ]; then
+                        DBB_V="${archive_azure_key}"
+                        yq -i '.jobs[strenv(DBB_JNUM) | tonumber].archive.storage.key = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+                    fi
+                    if [ -n "${archive_azure_container}" ]; then
+                        DBB_V="${archive_azure_container}"
+                        yq -i '.jobs[strenv(DBB_JNUM) | tonumber].archive.storage.bucket = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+                    fi
+                    if [ -n "${archive_azure_path}" ]; then
+                        DBB_V="${archive_azure_path}"
+                        yq -i '.jobs[strenv(DBB_JNUM) | tonumber].archive.storage.path = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+                    fi
+                ;;
+                filesystem )
+                    if [ -n "${archive_fspath}" ]; then
+                        DBB_B="filesystem"
+                        DBB_P="${archive_fspath}"
+                        yq -i '.jobs[strenv(DBB_JNUM) | tonumber].archive.storage = {"backend": strenv(DBB_B), "path": strenv(DBB_P)}' "${CONFIG_FILE_PATH}"
+                    fi
+                ;;
+                gcs )
+                    DBB_B="gcs"
+                    yq -i '.jobs[strenv(DBB_JNUM) | tonumber].archive.storage = {"backend": strenv(DBB_B)}' "${CONFIG_FILE_PATH}"
+                    if [ -n "${archive_gcs_bucket}" ]; then
+                        DBB_V="${archive_gcs_bucket}"
+                        yq -i '.jobs[strenv(DBB_JNUM) | tonumber].archive.storage.bucket = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+                    fi
+                    if [ -n "${archive_gcs_key}" ]; then
+                        DBB_V="${archive_gcs_key}"
+                        yq -i '.jobs[strenv(DBB_JNUM) | tonumber].archive.storage.key = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+                    fi
+                    if [ -n "${archive_gcs_path}" ]; then
+                        DBB_V="${archive_gcs_path}"
+                        yq -i '.jobs[strenv(DBB_JNUM) | tonumber].archive.storage.path = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+                    fi
+                ;;
+                s3 )
+                    DBB_B="s3"
+                    yq -i '.jobs[strenv(DBB_JNUM) | tonumber].archive.storage = {"backend": strenv(DBB_B)}' "${CONFIG_FILE_PATH}"
+                    if [ -n "${archive_s3_bucket}" ]; then
+                        DBB_V="${archive_s3_bucket}"
+                        yq -i '.jobs[strenv(DBB_JNUM) | tonumber].archive.storage.bucket = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+                    fi
+                    if [ -n "${archive_s3_path}" ]; then
+                        DBB_V="${archive_s3_path}"
+                        yq -i '.jobs[strenv(DBB_JNUM) | tonumber].archive.storage.path = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+                    fi
+                    if [ -n "${archive_s3_region}" ]; then
+                        DBB_V="${archive_s3_region}"
+                        yq -i '.jobs[strenv(DBB_JNUM) | tonumber].archive.storage.region = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+                    fi
+                    if [ -n "${archive_s3_host}" ]; then
+                        DBB_V="${archive_s3_host}"
+                        case "${DBB_V}" in
+                            *://*) ;;
+                            *)
+                                if [ -n "${archive_s3_protocol}" ]; then
+                                    DBB_V="${archive_s3_protocol}://${archive_s3_host}"
+                                else
+                                    DBB_V="https://${archive_s3_host}"
+                                fi
+                            ;;
+                        esac
+                        yq -i '.jobs[strenv(DBB_JNUM) | tonumber].archive.storage.endpoint = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+                    fi
+                    if [ -n "${archive_s3_key_id}" ]; then
+                        DBB_V="${archive_s3_key_id}"
+                        yq -i '.jobs[strenv(DBB_JNUM) | tonumber].archive.storage.key_id = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+                    fi
+                    if [ -n "${archive_s3_key_secret}" ]; then
+                        DBB_V="${archive_s3_key_secret}"
+                        yq -i '.jobs[strenv(DBB_JNUM) | tonumber].archive.storage.key_secret = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+                    fi
+                    if [ -n "${archive_s3_cert_ca_file}" ] || [ -n "${archive_s3_cert_skip_verify}" ]; then
+                        yq -i '.jobs[strenv(DBB_JNUM) | tonumber].archive.storage.tls = {"enable": true}' "${CONFIG_FILE_PATH}"
+                        if [ -n "${archive_s3_cert_ca_file}" ]; then
+                            DBB_V="${archive_s3_cert_ca_file}"
+                            yq -i '.jobs[strenv(DBB_JNUM) | tonumber].archive.storage.tls.ca_file = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+                        fi
+                        if [ -n "${archive_s3_cert_skip_verify}" ]; then
+                            case "${archive_s3_cert_skip_verify,,}" in
+                                true | 1 | yes )
+                                    yq -i '.jobs[strenv(DBB_JNUM) | tonumber].archive.storage.tls.verify = false' "${CONFIG_FILE_PATH}"
+                                ;;
+                                false | 0 | no )
+                                    yq -i '.jobs[strenv(DBB_JNUM) | tonumber].archive.storage.tls.verify = true' "${CONFIG_FILE_PATH}"
+                                ;;
+                                * )
+                                    print_warn "DB${inst}_ARCHIVE_S3_CERT_SKIP_VERIFY=${archive_s3_cert_skip_verify} is not a valid boolean - defaulting to verify=true"
+                                    yq -i '.jobs[strenv(DBB_JNUM) | tonumber].archive.storage.tls.verify = true' "${CONFIG_FILE_PATH}"
+                                ;;
+                            esac
+                        fi
+                    fi
+                ;;
+                webdav )
+                    DBB_B="webdav"
+                    yq -i '.jobs[strenv(DBB_JNUM) | tonumber].archive.storage = {"backend": strenv(DBB_B)}' "${CONFIG_FILE_PATH}"
+                    if [ -n "${archive_webdav_url}" ]; then
+                        DBB_V="${archive_webdav_url}"
+                        yq -i '.jobs[strenv(DBB_JNUM) | tonumber].archive.storage.url = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+                    fi
+                    if [ -n "${archive_webdav_user}" ]; then
+                        DBB_V="${archive_webdav_user}"
+                        yq -i '.jobs[strenv(DBB_JNUM) | tonumber].archive.storage.user = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+                    fi
+                    if [ -n "${archive_webdav_pass}" ]; then
+                        DBB_V="${archive_webdav_pass}"
+                        yq -i '.jobs[strenv(DBB_JNUM) | tonumber].archive.storage.pass = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+                    fi
+                    if [ -n "${archive_webdav_path}" ]; then
+                        DBB_V="${archive_webdav_path}"
+                        yq -i '.jobs[strenv(DBB_JNUM) | tonumber].archive.storage.path = strenv(DBB_V)' "${CONFIG_FILE_PATH}"
+                    fi
+                ;;
+                "" )
+                    print_warn "DB${inst}_ARCHIVE_* backend variables are set but DB${inst}_ARCHIVE_LOCATION is empty - set ARCHIVE_LOCATION to filesystem, azure, gcs, s3 or webdav"
+                ;;
+                * )
+                    print_error "DB${inst}_ARCHIVE_LOCATION=${archive_location} is not a valid backend (want filesystem|azure|gcs|s3|webdav)"
+                    exit 1
+                ;;
+            esac
         fi
 
         # maintenance
