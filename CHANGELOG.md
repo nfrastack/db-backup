@@ -29,6 +29,7 @@
 
    ### Changed
      - bump metadata sidecar version to 3
+     - post hooks now fire for every failure stage with DBB_STAGE/DBB_ERROR detail
      - (container) rewrite entrypoint to allow docker to output proper exit code when runing in manual mode
      - dump modifications
        - (mysql) remove flat `routines/events/triggers/views/raw_blobs` keys

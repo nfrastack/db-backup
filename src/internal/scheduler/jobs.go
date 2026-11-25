@@ -59,7 +59,7 @@ func (s *Scheduler) execMaintain(job config.JobConfig) error {
 	runner.RunHooks(job, "pre", "maintain", dbName, nil)
 	results, err := database.Maintain(job.Type, job.Host, port, job.User, job.Pass, dbName, job.AuthSource, mcfg, job.TLS)
 	if err != nil {
-		runner.RunHooks(job, "post", "maintain", dbName, map[string]string{"DBB_STATUS": "failed"})
+		runner.RunHooks(job, "post", "maintain", dbName, map[string]string{"DBB_STATUS": "failed", "DBB_STAGE": "maintain", "DBB_ERROR": err.Error()})
 		return err
 	}
 
