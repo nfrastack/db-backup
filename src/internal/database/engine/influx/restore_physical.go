@@ -210,6 +210,28 @@ func extractTar(r io.Reader, dir string) error {
 	}
 }
 
+func resolveStagingFile(dir, name string) (string, error) {
+	if strings.TrimSpace(name) == "" {
+		return "", fmt.Errorf("influx: empty fileName in manifest")
+	}
+	if filepath.IsAbs(name) {
+		return "", fmt.Errorf("influx: absolute fileName %q not allowed", name)
+	}
+	if filepath.Base(name) != name {
+		return "", fmt.Errorf("influx: fileName %q must be a plain file name", name)
+	}
+	cleaned := filepath.Clean(name)
+	if cleaned == "." || cleaned == ".." {
+		return "", fmt.Errorf("influx: invalid fileName %q", name)
+	}
+	joined := filepath.Join(dir, cleaned)
+	rel, err := filepath.Rel(dir, joined)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf("influx: fileName %q escapes restore dir", name)
+	}
+	return joined, nil
+}
+
 func fileNameList(files map[string]fileBlob) []string {
 	names := make([]string, 0, len(files))
 	for name := range files {
@@ -510,7 +532,10 @@ func (d *Dumper) restorePhysical(r io.Reader, target string) error {
 						"bucket", name, "shard", sh.ID)
 					continue
 				}
-				path := filepath.Join(tmpDir, sh.FileName)
+				path, err := resolveStagingFile(tmpDir, sh.FileName)
+				if err != nil {
+					return err
+				}
 				if err := d.postShard(newID, path, sh.Compression == physicalCompressionGzip); err != nil {
 					return err
 				}
