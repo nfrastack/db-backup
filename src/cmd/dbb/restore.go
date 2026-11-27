@@ -74,6 +74,7 @@ func cmdRestore(args []string) int {
 	storageProfile := fs.String("storage-profile", "", "Storage profile (resolved from -c <config>)")
 	restoreProfile := fs.String("profile", "", "Restore profile (resolved from -c <config>, profiles.restore)")
 	createDB := fs.Bool("create-db", true, "Create the target database if it does not exist")
+	verify := fs.Bool("verify", false, "Verify backup checksums before restoring")
 	compressType := fs.String("compress", "", "Compression type (auto-detect from filename if empty)")
 	encryptionType := fs.String("encryption", "auto", "Encryption type (auto|age|gpg|openssl) - auto detects from magic bytes or the sidecar")
 	agePass := fs.String("age-passphrase", "", "Age passphrase for decryption")
@@ -128,6 +129,9 @@ func cmdRestore(args []string) int {
 			}
 			if !explicitFlags["create-db"] && r.CreateDB != nil {
 				common.CreateDBOnRestore = *r.CreateDB
+			}
+			if !explicitFlags["verify"] && r.Verify != nil && *r.Verify {
+				*verify = true
 			}
 		}
 		if r != nil {
@@ -297,7 +301,7 @@ func cmdRestore(args []string) int {
 			fmt.Fprintf(os.Stderr, "ERROR: restore requires a backup file (--file). run without --non-interactive to enter interactive mode\n")
 			return 1
 		}
-		interactiveRestore()
+		interactiveRestore(*verify)
 		return 0
 	}
 
@@ -308,7 +312,7 @@ func cmdRestore(args []string) int {
 			line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 			line = strings.TrimSpace(line)
 			if strings.EqualFold(line, "y") || strings.EqualFold(line, "yes") {
-				interactiveRestore()
+				interactiveRestore(*verify)
 				return 0
 			}
 		}
@@ -345,9 +349,6 @@ func cmdRestore(args []string) int {
 		log.Debug("restore", "chain resolved", "depth", len(order), "order", strings.Join(order, " -> "))
 	}
 
-	warnRestoreServerCompat(st, order[len(order)-1], *dbType, *dbHost, *dbPort, *dbUser, pass, *dbName, restoreAuthSource, restoreTLS)
-	warnRestoreExcludedObjects(st, order[len(order)-1])
-
 	opts := retention.DecryptOpts{
 		EncryptionType: *encryptionType,
 		AgePass:        *agePass,
@@ -357,6 +358,15 @@ func cmdRestore(args []string) int {
 		FallbackPass:   restorePassphrase,
 		FallbackID:     restoreIdentity,
 	}
+	if *verify {
+		if err := verifyRestoreOrder(st, order, opts, *compressType); err != nil {
+			fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
+			return 1
+		}
+	}
+
+	warnRestoreServerCompat(st, order[len(order)-1], *dbType, *dbHost, *dbPort, *dbUser, pass, *dbName, restoreAuthSource, restoreTLS)
+	warnRestoreExcludedObjects(st, order[len(order)-1])
 
 	var restoredBytes int64
 	restoreChecksum := ""
@@ -696,7 +706,7 @@ func formatBytes(n int64) string {
 		return fmt.Sprintf("%dB", n)
 	}
 }
-func interactiveRestore() {
+func interactiveRestore(verify bool) {
 	rd := bufio.NewReader(os.Stdin)
 
 	fmt.Fprintf(os.Stderr, "\ndb-backup Interactive Restore\n")
@@ -749,6 +759,7 @@ func interactiveRestore() {
 	}
 
 	if profileMode {
+		verify = verify || (effRestore.Verify != nil && *effRestore.Verify)
 		if effRestore.Storage != nil {
 			switch strings.ToLower(effRestore.Storage.Backend) {
 			case "azure", "gcs":
@@ -818,6 +829,18 @@ func interactiveRestore() {
 			os.Exit(1)
 		}
 
+		opts := retention.DecryptOpts{
+			FallbackPass: effRestore.Passphrase,
+			FallbackID:   effRestore.Identity,
+			Identity:     effRestore.Identity,
+		}
+		if verify {
+			if err := verifyRestoreOrder(pst, order, opts, ""); err != nil {
+				fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
+				os.Exit(1)
+			}
+		}
+
 		totalStart := time.Now()
 		for gi, gf := range order {
 			t0 := time.Now()
@@ -832,11 +855,6 @@ func interactiveRestore() {
 			var encMeta *retention.EncryptionMeta
 			if sc, err := retention.ReadSidecar(pst, gf); err == nil {
 				encMeta = sc.Encryption
-			}
-			opts := retention.DecryptOpts{
-				FallbackPass: effRestore.Passphrase,
-				FallbackID:   effRestore.Identity,
-				Identity:     effRestore.Identity,
 			}
 			decoded, oerr := retention.OpenBackup(cr, encMeta, opts, gf, "")
 			if oerr != nil {

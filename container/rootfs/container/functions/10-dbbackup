@@ -1737,6 +1737,10 @@ dbbackup_generate_configuration() {
             DBB_RESTORE_STORAGE="${RESTORE_STORAGE}"
             yq -i '.restore.storage = strenv(DBB_RESTORE_STORAGE)' "${CONFIG_FILE_PATH}"
         fi
+        if [ -n "${RESTORE_VERIFY}" ]; then
+            DBB_RESTORE_VERIFY="$(_dbbackup_tyone "${RESTORE_VERIFY}")"
+            yq -i '.restore.verify = (strenv(DBB_RESTORE_VERIFY) == "true")' "${CONFIG_FILE_PATH}"
+        fi
         if [ -n "${RESTORE_IDENTITY}" ]; then
             yq -i '.restore.identity = "env://RESTORE_IDENTITY"' "${CONFIG_FILE_PATH}"
         fi

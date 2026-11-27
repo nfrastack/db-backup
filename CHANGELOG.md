@@ -25,6 +25,7 @@
        - (sqlite) support for skipping views, triggers, indexes, sequences, data, drops
        - (sqlite) wrap operation in transaction via options.single_transaction
      - restore additions
+       - add support for verifying backup before restoring
        - (sqlite) wrap operation in transaction
        - WARN when restoring dumps that have been made with skipped options
 

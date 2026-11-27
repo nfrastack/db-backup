@@ -47,23 +47,44 @@ func cmdVerify(args []string) int {
 		return 1
 	}
 
-	sc, err := retention.ReadSidecar(st, *filePath)
+	n, csType, err := verifyBackup(st, *filePath, retention.DecryptOpts{
+		EncryptionType: *encryptionType,
+		AgePass:        *agePass,
+		GPGPass:        *gpgPass,
+		OpenSSLPAss:    *opensslPass,
+		Identity:       *identity,
+	}, "")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "ERROR: read sidecar: %v\n", err)
+		fmt.Fprintf(os.Stderr, "FAIL %s: %v\n", *filePath, err)
 		return 1
 	}
+	fmt.Fprintf(os.Stdout, "OK  %s (%d bytes, %s)\n", *filePath, n, string(csType))
+	return 0
+}
 
+func verifyRestoreOrder(st storage.Storage, order []string, opts retention.DecryptOpts, compressType string) error {
+	for i, filePath := range order {
+		hint := ""
+		if i == len(order)-1 {
+			hint = compressType
+		}
+		n, csType, err := verifyBackup(st, filePath, opts, hint)
+		if err != nil {
+			return fmt.Errorf("verify %s: %w", filePath, err)
+		}
+		fmt.Fprintf(os.Stderr, "Verified %s (%d bytes, %s)\n", filePath, n, csType)
+	}
+	return nil
+}
+
+func verifyBackup(st storage.Storage, filePath string, opts retention.DecryptOpts, compressType string) (int64, checksum.Type, error) {
+	sc, err := retention.ReadSidecar(st, filePath)
+	if err != nil {
+		return 0, checksum.None, fmt.Errorf("read sidecar: %w", err)
+	}
 	if len(sc.Checksums) == 0 {
-		fmt.Fprintf(os.Stderr, "ERROR: no checksums in sidecar for %s\n", *filePath)
-		return 1
+		return 0, checksum.None, fmt.Errorf("no checksums in sidecar for %s", filePath)
 	}
-
-	rc, n, err := st.Download(context.Background(), *filePath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "ERROR: download: %v\n", err)
-		return 1
-	}
-	defer rc.Close()
 
 	var csType checksum.Type
 	var expected string
@@ -83,40 +104,34 @@ func cmdVerify(args []string) int {
 			break
 		}
 	}
+	if csType == checksum.None {
+		return 0, checksum.None, fmt.Errorf("unsupported checksum in sidecar for %s", filePath)
+	}
+
+	rc, n, err := st.Download(context.Background(), filePath)
+	if err != nil {
+		return 0, checksum.None, fmt.Errorf("download: %w", err)
+	}
+	defer rc.Close()
 
 	hasher, err := checksum.New(csType, io.Discard)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "ERROR: checksum: %v\n", err)
-		return 1
+		return 0, checksum.None, fmt.Errorf("checksum: %w", err)
 	}
-
 	r := io.Reader(rc)
 	if uncompressed {
-		decoded, err := retention.OpenBackup(r, sc.Encryption, retention.DecryptOpts{
-			EncryptionType: *encryptionType,
-			AgePass:        *agePass,
-			GPGPass:        *gpgPass,
-			OpenSSLPAss:    *opensslPass,
-			Identity:       *identity,
-		}, *filePath, "")
+		decoded, err := retention.OpenBackup(r, sc.Encryption, opts, filePath, compressType)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "ERROR: decrypt: %v\n", err)
-			return 1
+			return 0, checksum.None, fmt.Errorf("decrypt: %w", err)
 		}
 		r = decoded
 	}
-
 	if _, err := io.Copy(hasher, r); err != nil {
-		fmt.Fprintf(os.Stderr, "ERROR: read: %v\n", err)
-		return 1
+		return 0, checksum.None, fmt.Errorf("read: %w", err)
 	}
-
 	got := hasher.Sum()
-	if got == expected {
-		fmt.Fprintf(os.Stdout, "OK  %s (%d bytes, %s)\n", *filePath, n, string(csType))
-	} else {
-		fmt.Fprintf(os.Stderr, "FAIL %s: expected %s, got %s\n", *filePath, expected, got)
-		return 1
+	if got != expected {
+		return 0, checksum.None, fmt.Errorf("checksum mismatch: expected %s, got %s", expected, got)
 	}
-	return 0
+	return n, csType, nil
 }

@@ -193,6 +193,13 @@ profiles:
       user: dbbackup
       group: dbbackup
 
+  restore:
+    verified-mysql:
+      file: mysql-appdb-prod-full-20260811_120000.sql.zst
+      connection: production-mysql
+      storage: fs-analytics
+      verify: true
+
 # Jobs
 jobs:
   # Profile reference style: database + backup profile + retention

@@ -46,6 +46,9 @@ func mergeRestore(dst, src *config.RestoreConfig) {
 	if dst.CreateDB == nil {
 		dst.CreateDB = src.CreateDB
 	}
+	if dst.Verify == nil {
+		dst.Verify = src.Verify
+	}
 }
 
 func resolveRestore(c *config.Config, r *config.RestoreConfig) {

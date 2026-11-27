@@ -99,6 +99,7 @@ type RestoreConfig struct {
 	Identity   string         `yaml:"identity,omitempty"`
 	Passphrase string         `yaml:"passphrase,omitempty"`
 	CreateDB   *bool          `yaml:"create_db,omitempty"`
+	Verify     *bool          `yaml:"verify,omitempty"`
 	Type       string         `yaml:"-"`
 	Host       string         `yaml:"-"`
 	Port       int            `yaml:"-"`
