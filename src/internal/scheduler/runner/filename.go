@@ -75,8 +75,7 @@ func dbToken(job config.JobConfig, dbName string) string {
 		return "all"
 	}
 	if dbName != "" && !strings.EqualFold(dbName, "ALL") {
-		dbName = strings.ReplaceAll(dbName, ",", "_")
-		dbName = strings.ReplaceAll(dbName, "-", "_")
+		dbName = strings.NewReplacer(",", "_", "-", "_", "/", "_", `\`, "_").Replace(dbName)
 	}
 	return dbName
 }
