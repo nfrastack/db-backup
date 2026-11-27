@@ -336,6 +336,14 @@ func newWebDAVStorage(opts map[string]string) (Storage, error) {
 	if u, err := url.Parse(baseURL); err != nil || u.Host == "" {
 		return nil, fmt.Errorf("webdav: invalid url %q (set webdav.url to a URL such as https://host/path)", opts["url"])
 	}
+	if err := ValidateHTTPURL(baseURL); err != nil {
+		return nil, fmt.Errorf("webdav: invalid url: %w", err)
+	}
+	if HasTLSOpts(opts) {
+		if err := RequireHTTPS(baseURL); err != nil {
+			return nil, fmt.Errorf("webdav url: %w", err)
+		}
+	}
 
 	client, err := webdavClient(opts)
 	if err != nil {

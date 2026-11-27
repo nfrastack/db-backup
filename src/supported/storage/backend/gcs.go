@@ -47,11 +47,12 @@ var (
 )
 
 type gcsStorage struct {
-	bucket   string
-	prefix   string
-	tok      *gcsToken
-	client   *http.Client
-	endpoint string
+	bucket      string
+	prefix      string
+	tok         *gcsToken
+	client      *http.Client
+	endpoint    string
+	tlsRequired bool
 }
 
 type gcsToken struct {
@@ -371,6 +372,11 @@ func (s *gcsStorage) do(ctx context.Context, method, rawURL string, body io.Read
 }
 
 func (s *gcsStorage) doHdr(ctx context.Context, method, rawURL string, body io.Reader, hdr map[string]string) (*http.Response, error) {
+	if s.tlsRequired {
+		if err := storage.RequireHTTPS(rawURL); err != nil {
+			return nil, fmt.Errorf("gcs request URL: %w", err)
+		}
+	}
 	tok, err := s.auth(ctx)
 	if err != nil {
 		return nil, err
@@ -389,6 +395,11 @@ func (s *gcsStorage) doHdr(ctx context.Context, method, rawURL string, body io.R
 	return s.client.Do(req)
 }
 func (s *gcsStorage) fetchToken(ctx context.Context) (*gcsToken, error) {
+	if s.tlsRequired {
+		if err := storage.RequireHTTPS(s.tok.tokenURI); err != nil {
+			return nil, fmt.Errorf("gcs token URL: %w", err)
+		}
+	}
 	header, _ := json.Marshal(map[string]string{"alg": "RS256", "typ": "JWT"})
 	now := time.Now().Unix()
 	claims, _ := json.Marshal(map[string]any{
@@ -483,18 +494,40 @@ func newGCSStorage(opts map[string]string) (storage.Storage, error) {
 		k.TokenURI = testTokenURI
 	}
 
+	tlsRequired := storage.HasTLSOpts(opts)
 	client := &http.Client{Timeout: 3600 * time.Second}
-	if storage.HasTLSOpts(opts) {
+	if tlsRequired {
 		client, err = storage.TLSHTTPClient(opts)
 		if err != nil {
 			return nil, fmt.Errorf("gcs: %w", err)
 		}
 	}
 
+	endpoint := strings.TrimRight(strings.TrimSpace(opts["endpoint"]), "/")
+	if endpoint != "" {
+		if !strings.Contains(endpoint, "://") {
+			endpoint = "https://" + endpoint
+		}
+		if err := storage.ValidateHTTPURL(endpoint); err != nil {
+			return nil, fmt.Errorf("gcs: invalid endpoint: %w", err)
+		}
+		if tlsRequired {
+			if err := storage.RequireHTTPS(endpoint); err != nil {
+				return nil, fmt.Errorf("gcs endpoint: %w", err)
+			}
+		}
+	}
+	if tlsRequired {
+		if err := storage.RequireHTTPS(k.TokenURI); err != nil {
+			return nil, fmt.Errorf("gcs token endpoint: %w", err)
+		}
+	}
+
 	return &gcsStorage{
-		bucket:   bucket,
-		prefix:   strings.TrimPrefix(opts["path"], "/"),
-		endpoint: strings.TrimRight(opts["endpoint"], "/"),
+		bucket:      bucket,
+		prefix:      strings.TrimPrefix(opts["path"], "/"),
+		endpoint:    endpoint,
+		tlsRequired: tlsRequired,
 		tok: &gcsToken{
 			clientEmail: k.ClientEmail,
 			privateKey:  k.PrivateKey,

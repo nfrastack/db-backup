@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -23,12 +24,49 @@ func HasTLSOpts(opts map[string]string) bool {
 	return false
 }
 
+func ValidateHTTPURL(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL: %w", err)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("URL must include a host")
+	}
+	if !strings.EqualFold(u.Scheme, "http") && !strings.EqualFold(u.Scheme, "https") {
+		return fmt.Errorf("unsupported URL scheme %q (want http or https)", u.Scheme)
+	}
+	return nil
+}
+
+func RequireHTTPS(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("tls: invalid URL: %w", err)
+	}
+	if !strings.EqualFold(u.Scheme, "https") {
+		return fmt.Errorf("tls: URL scheme %q is not allowed (want https)", u.Scheme)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("tls: URL must include a host")
+	}
+	return nil
+}
+
 func TLSHTTPClient(opts map[string]string) (*http.Client, error) {
 	tr, err := tlsTransport(opts)
 	if err != nil {
 		return nil, err
 	}
-	return &http.Client{Timeout: 3600 * time.Second, Transport: tr}, nil
+	client := &http.Client{Timeout: 3600 * time.Second, Transport: tr}
+	if HasTLSOpts(opts) {
+		client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("stopped after 10 redirects")
+			}
+			return RequireHTTPS(req.URL.String())
+		}
+	}
+	return client, nil
 }
 
 func tlsTransport(opts map[string]string) (*http.Transport, error) {

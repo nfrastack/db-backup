@@ -385,6 +385,14 @@ func newAzureStorage(opts map[string]string) (storage.Storage, error) {
 		if u, err := url.Parse(endpoint); err != nil || u.Host == "" {
 			return nil, fmt.Errorf("azure: invalid endpoint %q", opts["endpoint"])
 		}
+		if err := storage.ValidateHTTPURL(endpoint); err != nil {
+			return nil, fmt.Errorf("azure: invalid endpoint: %w", err)
+		}
+		if storage.HasTLSOpts(opts) {
+			if err := storage.RequireHTTPS(endpoint); err != nil {
+				return nil, fmt.Errorf("azure endpoint: %w", err)
+			}
+		}
 	}
 
 	log.Debug("azure", "backend initialised",

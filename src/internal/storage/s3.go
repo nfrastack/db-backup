@@ -624,6 +624,11 @@ func newS3Storage(opts map[string]string) (Storage, error) {
 	if err != nil {
 		return nil, err
 	}
+	if HasTLSOpts(opts) && endpoint != "" {
+		if err := RequireHTTPS(endpoint); err != nil {
+			return nil, fmt.Errorf("s3 endpoint: %w", err)
+		}
+	}
 
 	client := &http.Client{Timeout: 3600 * time.Second}
 	if HasTLSOpts(opts) {
@@ -671,6 +676,9 @@ func normalizeEndpoint(raw string) (string, error) {
 			display = u.Redacted()
 		}
 		return "", fmt.Errorf("s3: invalid endpoint %q (set S3_HOST to a hostname and S3_PROTOCOL to http or https)", display)
+	}
+	if err := ValidateHTTPURL(endpoint); err != nil {
+		return "", fmt.Errorf("s3: invalid endpoint: %w", err)
 	}
 	return endpoint, nil
 }
