@@ -109,6 +109,7 @@
           buildInputs = with pkgs; [
             gnumake
             go
+            govulncheck
             yq-go
           ];
         });
