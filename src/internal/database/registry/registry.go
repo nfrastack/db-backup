@@ -46,12 +46,14 @@ type EngineSpec struct {
 	Label       string
 	DefaultPort int
 
-	New             func(o Options) (Engine, error)
-	IncrementalDump func(ctx context.Context, w io.Writer, host string, port int, user, pass, dbName, strategy, since, authSource string, tlsCfg *config.TLSConfig) error
-	ListDatabases   func(host string, port int, user, pass, authSource string, tlsCfg *config.TLSConfig) ([]string, error)
-	Maintain        func(host string, port int, user, pass, dbName, authSource string, cfg *common.MaintenanceCfg, tlsCfg *config.TLSConfig) ([]common.OpResult, error)
-	Restore         func(r io.Reader, host string, port int, user, pass, dbName, authSource string, tlsCfg *config.TLSConfig) error
-	RestoreChain    func(paths, names []string, restore func(name string, r io.Reader) error) (int64, error)
+	New                    func(o Options) (Engine, error)
+	IncrementalDump        func(ctx context.Context, w io.Writer, host string, port int, user, pass, dbName, strategy, since, authSource string, tlsCfg *config.TLSConfig) error
+	ListDatabases          func(host string, port int, user, pass, authSource string, tlsCfg *config.TLSConfig) ([]string, error)
+	Maintain               func(host string, port int, user, pass, dbName, authSource string, cfg *common.MaintenanceCfg, tlsCfg *config.TLSConfig) ([]common.OpResult, error)
+	Restore                func(r io.Reader, host string, port int, user, pass, dbName, authSource string, tlsCfg *config.TLSConfig) error
+	RestoreWithLimits      func(r io.Reader, host string, port int, user, pass, dbName, authSource string, tlsCfg *config.TLSConfig, limits config.PhysicalRestoreLimits) error
+	RestoreChain           func(paths, names []string, restore func(name string, r io.Reader) error) (int64, error)
+	RestoreChainWithLimits func(paths, names []string, restore func(name string, r io.Reader) error, limits config.PhysicalRestoreLimits) (int64, error)
 }
 
 type IncrementalSpec struct {

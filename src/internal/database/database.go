@@ -134,8 +134,18 @@ func PgEnsureLogicalSlots(ctx context.Context, host string, port int, user, pass
 }
 
 func RestoreTo(r io.Reader, dbType, host string, port int, user, pass, dbName, authSource string, tlsCfg *config.TLSConfig) error {
+	return RestoreToWithLimits(r, dbType, host, port, user, pass, dbName, authSource, tlsCfg, config.DefaultPhysicalRestoreLimits())
+}
+
+func RestoreToWithLimits(r io.Reader, dbType, host string, port int, user, pass, dbName, authSource string, tlsCfg *config.TLSConfig, limits config.PhysicalRestoreLimits) error {
 	spec := registry.LookupEngine(dbType)
-	if spec == nil || spec.Restore == nil {
+	if spec == nil {
+		return fmt.Errorf("unsupported database type: %s", dbType)
+	}
+	if spec.RestoreWithLimits != nil {
+		return spec.RestoreWithLimits(r, host, port, user, pass, dbName, authSource, tlsCfg, limits)
+	}
+	if spec.Restore == nil {
 		return fmt.Errorf("unsupported database type: %s", dbType)
 	}
 	return spec.Restore(r, host, port, user, pass, dbName, authSource, tlsCfg)

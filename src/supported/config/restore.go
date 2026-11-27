@@ -49,6 +49,10 @@ func mergeRestore(dst, src *config.RestoreConfig) {
 	if dst.Verify == nil {
 		dst.Verify = src.Verify
 	}
+	if dst.PhysicalRestore == nil && src.PhysicalRestore != nil {
+		cp := *src.PhysicalRestore
+		dst.PhysicalRestore = &cp
+	}
 }
 
 func resolveRestore(c *config.Config, r *config.RestoreConfig) error {
@@ -118,6 +122,13 @@ func resolveRestore(c *config.Config, r *config.RestoreConfig) error {
 			}
 			*field.dst = v
 		}
+	}
+	if r.PhysicalRestore != nil {
+		limits, err := r.PhysicalRestore.WithDefaults()
+		if err != nil {
+			return fmt.Errorf("restore physical_restore: %w", err)
+		}
+		r.PhysicalRestore = &limits
 	}
 	return nil
 }

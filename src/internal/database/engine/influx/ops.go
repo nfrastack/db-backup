@@ -42,11 +42,21 @@ func Maintain() ([]common.OpResult, error) {
 }
 
 func Restore(r io.Reader, host string, port int, user, pass, dbName, authSource string, tlsCfg *config.TLSConfig) error {
+	return RestoreWithLimits(r, host, port, user, pass, dbName, authSource, tlsCfg, config.DefaultPhysicalRestoreLimits())
+}
+
+func RestoreWithLimits(r io.Reader, host string, port int, user, pass, dbName, authSource string, tlsCfg *config.TLSConfig, limits config.PhysicalRestoreLimits) error {
+	var err error
+	limits, err = limits.WithDefaults()
+	if err != nil {
+		return fmt.Errorf("influx: restore limits: %w", err)
+	}
 	if strings.TrimSpace(dbName) == "" || strings.EqualFold(dbName, "all") {
 		return fmt.Errorf("influx restore requires a single target --name (got %q)", dbName)
 	}
 
 	d := NewDumper(host, port, user, pass, dbName, 0, tlsCfg)
+	d.SetPhysicalRestoreLimits(limits)
 	d.SetConnectivity(&config.ConnectivityConfig{
 		Enabled:       new(true),
 		Method:        config.MethodFull,

@@ -91,23 +91,24 @@ type ConnConfig struct {
 }
 
 type RestoreConfig struct {
-	File       string         `yaml:"file"`
-	Base       string         `yaml:"base,omitempty"`
-	Connection string         `yaml:"connection"`
-	StorageRef string         `yaml:"storage"`
-	ProfileRef string         `yaml:"profile,omitempty"`
-	Identity   string         `yaml:"identity,omitempty"`
-	Passphrase string         `yaml:"passphrase,omitempty"`
-	CreateDB   *bool          `yaml:"create_db,omitempty"`
-	Verify     *bool          `yaml:"verify,omitempty"`
-	Type       string         `yaml:"-"`
-	Host       string         `yaml:"-"`
-	Port       int            `yaml:"-"`
-	User       string         `yaml:"-"`
-	Pass       string         `yaml:"-"`
-	AuthSource string         `yaml:"-"`
-	TLS        *TLSConfig     `yaml:"-"`
-	Storage    *StorageConfig `yaml:"-"`
+	File            string                 `yaml:"file"`
+	Base            string                 `yaml:"base,omitempty"`
+	Connection      string                 `yaml:"connection"`
+	StorageRef      string                 `yaml:"storage"`
+	ProfileRef      string                 `yaml:"profile,omitempty"`
+	Identity        string                 `yaml:"identity,omitempty"`
+	Passphrase      string                 `yaml:"passphrase,omitempty"`
+	CreateDB        *bool                  `yaml:"create_db,omitempty"`
+	Verify          *bool                  `yaml:"verify,omitempty"`
+	PhysicalRestore *PhysicalRestoreLimits `yaml:"physical_restore,omitempty"`
+	Type            string                 `yaml:"-"`
+	Host            string                 `yaml:"-"`
+	Port            int                    `yaml:"-"`
+	User            string                 `yaml:"-"`
+	Pass            string                 `yaml:"-"`
+	AuthSource      string                 `yaml:"-"`
+	TLS             *TLSConfig             `yaml:"-"`
+	Storage         *StorageConfig         `yaml:"-"`
 }
 
 type LicenseConfig struct {

@@ -44,6 +44,7 @@
      - refuse encryption profile mixing passphrase and recipients
      - restore modifications
        - (influx) normalize physical restore shard paths
+       - (influx) bind manifests and extraction within limits
      - tls modifications
        - don't fall back to plain when configuration invalid
        - fix gcs storage

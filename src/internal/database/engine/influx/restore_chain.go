@@ -9,10 +9,20 @@ import (
 	"io"
 	"os"
 
+	"github.com/nfrastack/db-backup/internal/config"
 	"github.com/nfrastack/db-backup/internal/log"
 )
 
 func RestoreChain(paths []string, names []string, restore func(name string, r io.Reader) error) (int64, error) {
+	return RestoreChainWithLimits(paths, names, restore, config.DefaultPhysicalRestoreLimits())
+}
+
+func RestoreChainWithLimits(paths []string, names []string, restore func(name string, r io.Reader) error, limits config.PhysicalRestoreLimits) (int64, error) {
+	var err error
+	limits, err = limits.WithDefaults()
+	if err != nil {
+		return 0, fmt.Errorf("influx: restore limits: %w", err)
+	}
 	if len(paths) == 0 {
 		return 0, fmt.Errorf("influx: nothing to restore")
 	}
@@ -54,7 +64,7 @@ func RestoreChain(paths []string, names []string, restore func(name string, r io
 			return 0, fmt.Errorf("influx: temp file: %w", err)
 		}
 		mergedName := merged.Name()
-		if err := MergePhysicalTarFiles(paths, merged); err != nil {
+		if err := mergePhysicalTarFiles(paths, merged, limits); err != nil {
 			merged.Close()
 			return 0, err
 		}

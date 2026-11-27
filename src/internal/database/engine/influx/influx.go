@@ -107,6 +107,7 @@ type Dumper struct {
 	client          *http.Client
 	connCfg         *config.ConnectivityConfig
 	streamClient    *http.Client
+	restoreLimits   config.PhysicalRestoreLimits
 	ctx             context.Context
 	lastPingVersion string
 	mode            string
@@ -238,16 +239,17 @@ func NewDumper(host string, port int, user, pass, dbName string, version int, tl
 		err = streamErr
 	}
 	d := &Dumper{
-		host:         host,
-		port:         port,
-		user:         user,
-		pass:         pass,
-		dbName:       dbName,
-		version:      version,
-		client:       client,
-		initErr:      err,
-		streamClient: streamClient,
-		Data:         true,
+		host:          host,
+		port:          port,
+		user:          user,
+		pass:          pass,
+		dbName:        dbName,
+		version:       version,
+		client:        client,
+		initErr:       err,
+		streamClient:  streamClient,
+		restoreLimits: config.DefaultPhysicalRestoreLimits(),
+		Data:          true,
 	}
 	if len(tlsCfg) > 0 && tlsCfg[0] != nil {
 		d.tlsCfg = tlsCfg[0]
@@ -336,6 +338,10 @@ func (d *Dumper) detect(ctx context.Context, explicit int) error {
 
 func (d *Dumper) SetInfluxObjects(o InfluxObjects) {
 	d.Data = o.Data
+}
+
+func (d *Dumper) SetPhysicalRestoreLimits(limits config.PhysicalRestoreLimits) {
+	d.restoreLimits = limits
 }
 
 func (d *Dumper) SetConnectivity(cfg *config.ConnectivityConfig) {

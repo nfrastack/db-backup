@@ -33,6 +33,10 @@ func Spec() registry.EngineSpec {
 		Restore: func(r io.Reader, host string, port int, user, pass, dbName, authSource string, tlsCfg *config.TLSConfig) error {
 			return Restore(r, host, port, user, pass, dbName, authSource, tlsCfg)
 		},
-		RestoreChain: RestoreChain,
+		RestoreWithLimits: func(r io.Reader, host string, port int, user, pass, dbName, authSource string, tlsCfg *config.TLSConfig, limits config.PhysicalRestoreLimits) error {
+			return RestoreWithLimits(r, host, port, user, pass, dbName, authSource, tlsCfg, limits)
+		},
+		RestoreChain:           RestoreChain,
+		RestoreChainWithLimits: RestoreChainWithLimits,
 	}
 }

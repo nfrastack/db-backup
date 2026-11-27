@@ -103,6 +103,7 @@ func cmdRestore(args []string) int {
 	var restoreStorage *config.StorageConfig
 	var restoreIdentity, restorePassphrase, restoreAuthSource string
 	restoreAuthSource = *authSource
+	restoreLimits := config.DefaultPhysicalRestoreLimits()
 
 	if len(fs.Args()) > 0 && len(globalConfigPaths) == 0 {
 		fmt.Fprintf(os.Stderr, "ERROR: job '%s' requires a config file\n", fs.Arg(0))
@@ -129,6 +130,12 @@ func cmdRestore(args []string) int {
 			return 1
 		}
 		if r != nil {
+			resolvedLimits, err := r.ResolvePhysicalRestoreLimits()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "ERROR: restore limits: %v\n", err)
+				return 1
+			}
+			restoreLimits = resolvedLimits
 			if err := license.AllowRestore(); err != nil {
 				fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
 				fmt.Fprintf(os.Stderr, "  Community restores support AGE encryption and filesystem/S3/webDAV storage only\n")
@@ -427,10 +434,10 @@ func cmdRestore(args []string) int {
 			tmp.Close()
 			paths = append(paths, tmp.Name())
 		}
-		n, err := engSpec.RestoreChain(paths, order, func(name string, r io.Reader) error {
+		n, err := engSpec.RestoreChainWithLimits(paths, order, func(name string, r io.Reader) error {
 			cr := &countingReader{r: r}
 			stop := startMeter("Restoring "+formatBytes(cr.Bytes())+": ", &cr.n)
-			if err := database.RestoreTo(cr, *dbType, *dbHost, *dbPort, *dbUser, pass, *dbName, restoreAuthSource, restoreTLS); err != nil {
+			if err := database.RestoreToWithLimits(cr, *dbType, *dbHost, *dbPort, *dbUser, pass, *dbName, restoreAuthSource, restoreTLS, restoreLimits); err != nil {
 				close(stop)
 				return fmt.Errorf("restore %s: %w", name, err)
 			}
@@ -438,7 +445,7 @@ func cmdRestore(args []string) int {
 			time.Sleep(50 * time.Millisecond)
 			fmt.Fprintf(os.Stderr, "%s: %s streamed\033[K\n", name, formatBytes(cr.Bytes()))
 			return nil
-		})
+		}, restoreLimits)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "ERROR: restore: %v\n", err)
 			return 1
@@ -448,7 +455,7 @@ func cmdRestore(args []string) int {
 		fmt.Fprintf(os.Stderr, "Restore complete (%d backup(s))\n", len(paths))
 		return 0
 	}
-	if engSpec != nil && engSpec.RestoreChain != nil {
+	if engSpec != nil && (engSpec.RestoreChain != nil || engSpec.RestoreChainWithLimits != nil) {
 		return restoreChain()
 	}
 	for gi, gf := range order {
@@ -522,7 +529,7 @@ func cmdRestore(args []string) int {
 		cr := &countingReader{r: decoded}
 		stop := startMeter(stage+" "+formatBytes(cr.Bytes())+": ", &cr.n)
 
-		if err := database.RestoreTo(cr, *dbType, *dbHost, *dbPort, *dbUser, pass, *dbName, restoreAuthSource, restoreTLS); err != nil {
+		if err := database.RestoreToWithLimits(cr, *dbType, *dbHost, *dbPort, *dbUser, pass, *dbName, restoreAuthSource, restoreTLS, restoreLimits); err != nil {
 			close(stop)
 			rc.Close()
 			fmt.Fprintf(os.Stderr, "ERROR: restore %s: %v\n", gf, err)
@@ -742,6 +749,7 @@ func interactiveRestore(verify bool) {
 	profileMode := false
 	var effRestore *config.RestoreConfig
 	var profileCfg *config.StorageConfig
+	restoreLimits := config.DefaultPhysicalRestoreLimits()
 	if len(restoreProfileNames) > 0 {
 		fmt.Fprintf(os.Stderr, "\nRestore profiles in config:\n")
 		for i, name := range restoreProfileNames {
@@ -777,6 +785,12 @@ func interactiveRestore(verify bool) {
 	}
 
 	if profileMode {
+		var err error
+		restoreLimits, err = effRestore.ResolvePhysicalRestoreLimits()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "ERROR: restore limits: %v\n", err)
+			os.Exit(1)
+		}
 		verify = verify || (effRestore.Verify != nil && *effRestore.Verify)
 		if effRestore.Storage != nil {
 			switch strings.ToLower(effRestore.Storage.Backend) {
@@ -889,8 +903,8 @@ func interactiveRestore(verify bool) {
 			if memPort == 0 {
 				memPort = runner.DefaultPort(memType)
 			}
-			if err := database.RestoreTo(decoded, memType, effRestore.Host, memPort,
-				effRestore.User, effRestore.Pass, memDB, "", nil); err != nil {
+			if err := database.RestoreToWithLimits(decoded, memType, effRestore.Host, memPort,
+				effRestore.User, effRestore.Pass, memDB, "", nil, restoreLimits); err != nil {
 				rc.Close()
 				close(stop)
 				fmt.Fprintf(os.Stderr, "\nERROR: restore %s: %v\n", gf, err)
@@ -1288,7 +1302,7 @@ func interactiveRestore(verify bool) {
 		} else {
 			fmt.Fprintf(os.Stderr, "restoring base (%d/%d)...\n", idx+1, len(chain))
 		}
-		if err := database.RestoreTo(dr, rType, rHost, portNum, rUser, rPass, rDB, "", nil); err != nil {
+		if err := database.RestoreToWithLimits(dr, rType, rHost, portNum, rUser, rPass, rDB, "", nil, config.DefaultPhysicalRestoreLimits()); err != nil {
 			close(stop2)
 			fmt.Fprintf(os.Stderr, "\nERROR: restore %s: %v\n", item, err)
 			os.Exit(1)

@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nfrastack/db-backup/internal/config"
 	"github.com/nfrastack/db-backup/internal/log"
 )
 
@@ -28,10 +29,49 @@ func IsTarStream(peek []byte) bool {
 	return isTarStream(peek)
 }
 
+func checkPhysicalTarSize(hdr *tar.Header, total int64, limits config.PhysicalRestoreLimits) error {
+	if hdr.Size < 0 {
+		return fmt.Errorf("influx: negative size for tar entry %q", hdr.Name)
+	}
+	if hdr.Size > limits.MaxFileBytes {
+		return fmt.Errorf("influx: tar entry %q exceeds %d-byte file limit", hdr.Name, limits.MaxFileBytes)
+	}
+	if total > limits.MaxTotalBytes-hdr.Size {
+		return fmt.Errorf("influx: physical restore exceeds %d-byte total limit", limits.MaxTotalBytes)
+	}
+	return nil
+}
+
+func readPhysicalManifest(r io.Reader, limits config.PhysicalRestoreLimits) (physicalManifest, error) {
+	var pm physicalManifest
+	b, err := io.ReadAll(io.LimitReader(r, limits.ManifestMaxBytes+1))
+	if err != nil {
+		return pm, fmt.Errorf("read manifest: %w", err)
+	}
+	if int64(len(b)) > limits.ManifestMaxBytes {
+		return pm, fmt.Errorf("manifest exceeds %d-byte limit", limits.ManifestMaxBytes)
+	}
+	if err := json.Unmarshal(b, &pm); err != nil {
+		return pm, fmt.Errorf("decode manifest: %w", err)
+	}
+	return pm, nil
+}
+
 func MergePhysicalTarFiles(paths []string, w io.Writer) error {
+	return mergePhysicalTarFiles(paths, w, config.DefaultPhysicalRestoreLimits())
+}
+
+func mergePhysicalTarFiles(paths []string, w io.Writer, limits config.PhysicalRestoreLimits) error {
+	var err error
+	limits, err = limits.WithDefaults()
+	if err != nil {
+		return fmt.Errorf("influx: restore limits: %w", err)
+	}
 	var manifests []physicalManifest
 	byPath := map[string]string{}
 	var names []string
+	entries := 0
+	var totalBytes int64
 	for _, path := range paths {
 		f, err := os.Open(path)
 		if err != nil {
@@ -47,20 +87,25 @@ func MergePhysicalTarFiles(paths []string, w io.Writer) error {
 				f.Close()
 				return fmt.Errorf("influx: merge tar read: %w", err)
 			}
+			entries++
+			if entries > limits.MaxEntries {
+				f.Close()
+				return fmt.Errorf("influx: physical restore exceeds %d tar entries", limits.MaxEntries)
+			}
 			if hdr.Typeflag != tar.TypeReg {
 				continue
 			}
+			if err := checkPhysicalTarSize(hdr, totalBytes, limits); err != nil {
+				f.Close()
+				return err
+			}
+			totalBytes += hdr.Size
 			name := filepath.Base(hdr.Name)
 			if strings.HasSuffix(name, "."+physicalManifestExtension) {
-				body, err := io.ReadAll(tr)
+				pm, err := readPhysicalManifest(tr, limits)
 				if err != nil {
 					f.Close()
-					return fmt.Errorf("influx: merge manifest read: %w", err)
-				}
-				var pm physicalManifest
-				if err := json.Unmarshal(body, &pm); err != nil {
-					f.Close()
-					return fmt.Errorf("influx: merge manifest decode: %w", err)
+					return fmt.Errorf("influx: merge manifest: %w", err)
 				}
 				manifests = append(manifests, pm)
 			} else {
@@ -97,7 +142,7 @@ func MergePhysicalTarFiles(paths []string, w io.Writer) error {
 				return &closeReader{Reader: tr, closer: f}, hdr.Size, nil
 			}
 		}
-	}, ordered)
+	}, ordered, limits)
 	if err != nil {
 		return err
 	}
@@ -105,8 +150,19 @@ func MergePhysicalTarFiles(paths []string, w io.Writer) error {
 }
 
 func MergePhysicalTars(datas [][]byte) ([]byte, error) {
+	return mergePhysicalTars(datas, config.DefaultPhysicalRestoreLimits())
+}
+
+func mergePhysicalTars(datas [][]byte, limits config.PhysicalRestoreLimits) ([]byte, error) {
+	var err error
+	limits, err = limits.WithDefaults()
+	if err != nil {
+		return nil, fmt.Errorf("influx: restore limits: %w", err)
+	}
 	files := map[string]fileBlob{}
 	var manifests []physicalManifest
+	entries := 0
+	var totalBytes int64
 	for _, data := range datas {
 		tr := tar.NewReader(bytes.NewReader(data))
 		for {
@@ -117,22 +173,31 @@ func MergePhysicalTars(datas [][]byte) ([]byte, error) {
 			if err != nil {
 				return nil, fmt.Errorf("influx: merge tar read: %w", err)
 			}
+			entries++
+			if entries > limits.MaxEntries {
+				return nil, fmt.Errorf("influx: physical restore exceeds %d tar entries", limits.MaxEntries)
+			}
 			if hdr.Typeflag != tar.TypeReg {
+				continue
+			}
+			if err := checkPhysicalTarSize(hdr, totalBytes, limits); err != nil {
+				return nil, err
+			}
+			totalBytes += hdr.Size
+			name := filepath.Base(hdr.Name)
+			if strings.HasSuffix(name, "."+physicalManifestExtension) {
+				pm, err := readPhysicalManifest(tr, limits)
+				if err != nil {
+					return nil, fmt.Errorf("influx: merge manifest: %w", err)
+				}
+				manifests = append(manifests, pm)
 				continue
 			}
 			body, err := io.ReadAll(tr)
 			if err != nil {
 				return nil, fmt.Errorf("influx: merge tar read: %w", err)
 			}
-			name := filepath.Base(hdr.Name)
 			files[name] = fileBlob{name: name, data: body}
-			if strings.HasSuffix(name, "."+physicalManifestExtension) {
-				var pm physicalManifest
-				if err := json.Unmarshal(body, &pm); err != nil {
-					return nil, fmt.Errorf("influx: merge manifest decode: %w", err)
-				}
-				manifests = append(manifests, pm)
-			}
 		}
 	}
 	merged, names, err := mergeSets(manifests, fileNameList(files))
@@ -143,7 +208,7 @@ func MergePhysicalTars(datas [][]byte) ([]byte, error) {
 	tw := tar.NewWriter(&out)
 	if err := writeMerged(tw, merged, func(name string) (io.Reader, int64, error) {
 		return bytes.NewReader(files[name].data), int64(len(files[name].data)), nil
-	}, names); err != nil {
+	}, names, limits); err != nil {
 		return nil, err
 	}
 	if err := tw.Close(); err != nil {
@@ -182,7 +247,18 @@ func (d *Dumper) ensureBucketAbsent(name string) error {
 }
 
 func extractTar(r io.Reader, dir string) error {
+	return extractTarWithLimits(r, dir, config.DefaultPhysicalRestoreLimits())
+}
+
+func extractTarWithLimits(r io.Reader, dir string, limits config.PhysicalRestoreLimits) error {
+	var err error
+	limits, err = limits.WithDefaults()
+	if err != nil {
+		return fmt.Errorf("influx: restore limits: %w", err)
+	}
 	tr := tar.NewReader(r)
+	entries := 0
+	var totalBytes int64
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -191,17 +267,31 @@ func extractTar(r io.Reader, dir string) error {
 		if err != nil {
 			return fmt.Errorf("influx: tar read: %w", err)
 		}
+		entries++
+		if entries > limits.MaxEntries {
+			return fmt.Errorf("influx: physical restore exceeds %d tar entries", limits.MaxEntries)
+		}
 		if hdr.Typeflag != tar.TypeReg {
 			continue
 		}
-		out, err := os.OpenFile(filepath.Join(dir, filepath.Base(hdr.Name)),
+		if err := checkPhysicalTarSize(hdr, totalBytes, limits); err != nil {
+			return err
+		}
+		totalBytes += hdr.Size
+		name := filepath.Base(hdr.Name)
+		if strings.HasSuffix(name, "."+physicalManifestExtension) && hdr.Size > limits.ManifestMaxBytes {
+			return fmt.Errorf("influx: manifest exceeds %d-byte limit", limits.ManifestMaxBytes)
+		}
+		path := filepath.Join(dir, name)
+		out, err := os.OpenFile(path,
 			os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 		if err != nil {
 			return fmt.Errorf("influx: tar extract: %w", err)
 		}
-		_, err = io.Copy(out, tr)
+		_, err = io.CopyN(out, tr, hdr.Size)
 		cerr := out.Close()
 		if err != nil {
+			os.Remove(path)
 			return fmt.Errorf("influx: tar extract: %w", err)
 		}
 		if cerr != nil {
@@ -483,20 +573,24 @@ func (d *Dumper) restorePhysical(r io.Reader, target string) error {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	if err := extractTar(r, tmpDir); err != nil {
+	if err := extractTarWithLimits(r, tmpDir, d.restoreLimits); err != nil {
 		return err
 	}
 	manifests, err := filepath.Glob(filepath.Join(tmpDir, "*."+physicalManifestExtension))
 	if err != nil || len(manifests) == 0 {
 		return fmt.Errorf("influx: no manifest in backup")
 	}
-	raw, err := os.ReadFile(manifests[0])
+	mf, err := os.Open(manifests[0])
 	if err != nil {
 		return fmt.Errorf("influx: read manifest: %w", err)
 	}
-	var m physicalManifest
-	if err := json.Unmarshal(raw, &m); err != nil {
-		return fmt.Errorf("influx: decode manifest: %w", err)
+	m, err := readPhysicalManifest(mf, d.restoreLimits)
+	closeErr := mf.Close()
+	if err != nil {
+		return fmt.Errorf("influx: %w", err)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("influx: close manifest: %w", closeErr)
 	}
 	if m.Version != physicalManifestVersion {
 		return fmt.Errorf("influx: manifest version %d (want %d)", m.Version, physicalManifestVersion)
@@ -579,12 +673,15 @@ func selectRestoreBucket(m physicalManifest, target string) (physicalBucketEntry
 	return physicalBucketEntry{}, "", fmt.Errorf("influx: target %q matches no backed up bucket (%s)", target, strings.Join(names, ", "))
 }
 
-func writeMerged(tw *tar.Writer, merged physicalManifest, open func(name string) (io.Reader, int64, error), names []string) error {
+func writeMerged(tw *tar.Writer, merged physicalManifest, open func(name string) (io.Reader, int64, error), names []string, limits config.PhysicalRestoreLimits) error {
 	var mBuf bytes.Buffer
 	enc := json.NewEncoder(&mBuf)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(merged); err != nil {
 		return fmt.Errorf("influx: merge manifest encode: %w", err)
+	}
+	if int64(mBuf.Len()) > limits.ManifestMaxBytes {
+		return fmt.Errorf("influx: merged manifest exceeds %d-byte limit", limits.ManifestMaxBytes)
 	}
 	mName := "merged." + physicalManifestExtension
 	if err := tw.WriteHeader(&tar.Header{Name: mName, Mode: 0o600, Size: int64(mBuf.Len())}); err != nil {
