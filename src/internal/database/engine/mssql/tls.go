@@ -14,14 +14,23 @@ import (
 
 func ConnStr(user, pass, host string, port int, db string, tlsCfg *config.TLSConfig) string {
 	hostPort := net.JoinHostPort(host, fmt.Sprintf("%d", port))
-	if tlsCfg == nil || !tlsCfg.Enable {
-		return fmt.Sprintf("sqlserver://%s:%s@%s?database=%s&encrypt=disable", url.QueryEscape(user), url.QueryEscape(pass), hostPort, url.QueryEscape(db))
+	auth := ""
+	if user != "" {
+		auth = url.QueryEscape(user) + ":" + url.QueryEscape(pass) + "@"
 	}
-	p := fmt.Sprintf("sqlserver://%s:%s@%s?database=%s&encrypt=true", url.QueryEscape(user), url.QueryEscape(pass), hostPort, url.QueryEscape(db))
-	if !tlsCfg.VerifyCerts() {
-		p += "&TrustServerCertificate=true"
-	} else if tlsCfg.CAFile != "" {
-		p += "&certificate=" + tlsCfg.CAFile
+	p := fmt.Sprintf("sqlserver://%s%s?database=%s", auth, hostPort, url.QueryEscape(db))
+	if tlsCfg == nil || !tlsCfg.Enable {
+		p += "&encrypt=disable"
+	} else {
+		p += "&encrypt=true"
+		if !tlsCfg.VerifyCerts() {
+			p += "&TrustServerCertificate=true"
+		} else if tlsCfg.CAFile != "" {
+			p += "&certificate=" + tlsCfg.CAFile
+		}
+	}
+	if user == "" {
+		p += "&trusted_connection=yes"
 	}
 	return p
 }
