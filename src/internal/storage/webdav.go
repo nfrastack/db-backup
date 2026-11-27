@@ -337,6 +337,11 @@ func newWebDAVStorage(opts map[string]string) (Storage, error) {
 		return nil, fmt.Errorf("webdav: invalid url %q (set webdav.url to a URL such as https://host/path)", opts["url"])
 	}
 
+	client, err := webdavClient(opts)
+	if err != nil {
+		return nil, fmt.Errorf("webdav: %w", err)
+	}
+
 	log.Debug("webdav", "backend initialised",
 		"host", endpointHost(baseURL), "path", strings.Trim(strings.TrimPrefix(opts["path"], "/"), "/"),
 		"user", opts["user"], "tls_verify", opts["tls_verify"], "status", "debug")
@@ -345,7 +350,7 @@ func newWebDAVStorage(opts map[string]string) (Storage, error) {
 		prefix:  strings.Trim(strings.TrimPrefix(opts["path"], "/"), "/"),
 		user:    opts["user"],
 		pass:    opts["pass"],
-		client:  webdavClient(opts),
+		client:  client,
 	}, nil
 }
 
@@ -373,6 +378,6 @@ func (s *webdavStorage) setAuth(req *http.Request) {
 	}
 }
 
-func webdavClient(opts map[string]string) *http.Client {
+func webdavClient(opts map[string]string) (*http.Client, error) {
 	return TLSHTTPClient(opts)
 }

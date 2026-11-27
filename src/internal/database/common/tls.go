@@ -34,7 +34,10 @@ func BuildTLSConfig(cfg *config.TLSConfig) (*tls.Config, error) {
 		tc.RootCAs = pool
 	}
 
-	if cfg.CertFile != "" && cfg.KeyFile != "" {
+	if (cfg.CertFile == "") != (cfg.KeyFile == "") {
+		return nil, fmt.Errorf("client certificate and key must be configured together")
+	}
+	if cfg.CertFile != "" {
 		cert, err := tls.LoadX509KeyPair(cfg.CertFile, cfg.KeyFile)
 		if err != nil {
 			return nil, fmt.Errorf("load client certificate: %w", err)

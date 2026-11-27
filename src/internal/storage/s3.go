@@ -627,8 +627,10 @@ func newS3Storage(opts map[string]string) (Storage, error) {
 
 	client := &http.Client{Timeout: 3600 * time.Second}
 	if HasTLSOpts(opts) {
-		client = TLSHTTPClient(opts)
-		client.Timeout = 3600 * time.Second
+		client, err = TLSHTTPClient(opts)
+		if err != nil {
+			return nil, fmt.Errorf("s3: %w", err)
+		}
 	}
 
 	s := &s3Storage{

@@ -371,7 +371,10 @@ func newAzureStorage(opts map[string]string) (storage.Storage, error) {
 
 	client := &http.Client{Timeout: 120 * time.Second}
 	if storage.HasTLSOpts(opts) {
-		client = storage.TLSHTTPClient(opts)
+		client, err = storage.TLSHTTPClient(opts)
+		if err != nil {
+			return nil, fmt.Errorf("azure: %w", err)
+		}
 	}
 
 	endpoint := strings.TrimRight(strings.TrimSpace(opts["endpoint"]), "/")
