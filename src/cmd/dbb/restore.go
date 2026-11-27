@@ -336,23 +336,10 @@ func cmdRestore(args []string) int {
 		return 0
 	}
 
-	order := []string{*filePath}
-	{
-		cur := *filePath
-		for range 64 {
-			base := ""
-			if cur == *filePath && *basePath != "" {
-				base = *basePath
-			} else if sc, err := retention.ReadSidecar(st, cur); err == nil {
-				base = sc.Base
-			}
-			base = strings.TrimSuffix(base, ".json")
-			if base == "" || base == cur {
-				break
-			}
-			order = append([]string{base}, order...)
-			cur = base
-		}
+	order, err := resolveRestoreOrder(st, *filePath, *basePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
+		return 1
 	}
 	if len(order) > 1 {
 		log.Debug("restore", "chain resolved", "depth", len(order), "order", strings.Join(order, " -> "))
@@ -533,6 +520,38 @@ func cmdRestore(args []string) int {
 	manualOpDetail = manualDetail{engine: *dbType, bytes: restoredBytes, checksum: restoreChecksum}
 	fmt.Fprintf(os.Stderr, "Restore complete (%d backup(s))\n", len(order))
 	return 0
+}
+
+func resolveRestoreOrder(st storage.Storage, filePath, basePath string) ([]string, error) {
+	order := []string{filePath}
+	seen := map[string]bool{filepath.Clean(filePath): true}
+	current := filePath
+	for len(order) < 64 {
+		base := ""
+		if current == filePath && basePath != "" {
+			base = basePath
+		} else if sc, err := retention.ReadSidecar(st, current); err == nil {
+			base = sc.Base
+		}
+		base = strings.TrimSuffix(base, ".json")
+		if base == "" {
+			return order, nil
+		}
+		if !filepath.IsLocal(base) {
+			return nil, fmt.Errorf("invalid base backup path %q", base)
+		}
+		base = filepath.Clean(base)
+		if base == "." {
+			return nil, fmt.Errorf("invalid base backup path %q", base)
+		}
+		if seen[base] {
+			return nil, fmt.Errorf("cyclic backup chain at %q", base)
+		}
+		seen[base] = true
+		order = append([]string{base}, order...)
+		current = base
+	}
+	return nil, fmt.Errorf("backup chain exceeds 64 files")
 }
 
 func warnRestoreExcludedObjects(st storage.Storage, file string) {
@@ -793,18 +812,10 @@ func interactiveRestore() {
 			os.Exit(0)
 		}
 
-		order := []string{fileName}
-		cur := fileName
-		for range 64 {
-			base := ""
-			if sc, err := retention.ReadSidecar(pst, cur); err == nil {
-				base = strings.TrimSuffix(sc.Base, ".json")
-			}
-			if base == "" || base == cur {
-				break
-			}
-			order = append([]string{base}, order...)
-			cur = base
+		order, err := resolveRestoreOrder(pst, fileName, "")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
+			os.Exit(1)
 		}
 
 		totalStart := time.Now()
