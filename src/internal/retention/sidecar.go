@@ -18,8 +18,9 @@ import (
 )
 
 const (
-	FormatName    = "dbbackup.sidecar"
-	SchemaVersion = 3
+	FormatName     = "dbbackup.sidecar"
+	SchemaVersion  = 3
+	maxSidecarSize = 1 << 20
 )
 
 type Sidecar struct {
@@ -142,14 +143,20 @@ func ParseTimestamp(filename string) (time.Time, bool) {
 }
 func ReadSidecar(st storage.Storage, filename string) (*Sidecar, error) {
 	name := SidecarName(filename)
-	rc, _, err := st.Download(context.Background(), name)
+	rc, size, err := st.Download(context.Background(), name)
 	if err != nil {
 		return nil, fmt.Errorf("download sidecar %s: %w", name, err)
 	}
 	defer rc.Close()
-	b, err := io.ReadAll(rc)
+	if size > maxSidecarSize {
+		return nil, fmt.Errorf("sidecar %s exceeds %d-byte limit", name, maxSidecarSize)
+	}
+	b, err := io.ReadAll(io.LimitReader(rc, maxSidecarSize+1))
 	if err != nil {
 		return nil, fmt.Errorf("read sidecar: %w", err)
+	}
+	if len(b) > maxSidecarSize {
+		return nil, fmt.Errorf("sidecar %s exceeds %d-byte limit", name, maxSidecarSize)
 	}
 	var sc Sidecar
 	if err := json.Unmarshal(b, &sc); err != nil {
@@ -195,6 +202,9 @@ func WriteSidecar(st storage.Storage, filename string, sc *Sidecar) error {
 	data, err := json.MarshalIndent(sc, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal sidecar: %w", err)
+	}
+	if len(data) > maxSidecarSize {
+		return fmt.Errorf("sidecar exceeds %d-byte limit", maxSidecarSize)
 	}
 	name := SidecarName(filename)
 	_, err = st.Upload(context.Background(), name, strings.NewReader(string(data)))

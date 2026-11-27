@@ -33,6 +33,7 @@
    ### Changed
      - bump metadata sidecar version to 3
      - contain filesystem paths and sanitize database filename tokens
+     - enforce sidecar limit to 1MB
      - fail closed when secret references cannot be resolved instead of using the reference as a literal credential
      - post hooks now fire for every failure stage with DBB_STAGE/DBB_ERROR detail
      - reject invalid storage tls settings instead of ignoring CA, client certificate, key, or version errors
