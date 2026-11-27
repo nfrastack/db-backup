@@ -73,6 +73,55 @@ type fsStorage struct {
 	group    string
 }
 
+func (s *fsStorage) resolvePath(name string) (string, error) {
+	if !filepath.IsLocal(name) {
+		return "", fmt.Errorf("filesystem: path %q escapes storage root", name)
+	}
+	base, err := filepath.Abs(s.basePath)
+	if err != nil {
+		return "", fmt.Errorf("filesystem: resolve root: %w", err)
+	}
+	resolvedBase, err := resolveExistingPath(base)
+	if err != nil {
+		return "", fmt.Errorf("filesystem: resolve root: %w", err)
+	}
+	full := filepath.Join(base, name)
+	resolvedFull, err := resolveExistingPath(full)
+	if err != nil {
+		return "", fmt.Errorf("filesystem: resolve path: %w", err)
+	}
+	rel, err := filepath.Rel(resolvedBase, resolvedFull)
+	if err != nil || !filepath.IsLocal(rel) {
+		return "", fmt.Errorf("filesystem: path %q escapes storage root", name)
+	}
+	return full, nil
+}
+
+func resolveExistingPath(path string) (string, error) {
+	current := path
+	var missing []string
+	for {
+		if _, err := os.Lstat(current); err == nil {
+			resolved, err := filepath.EvalSymlinks(current)
+			if err != nil {
+				return "", err
+			}
+			for i := len(missing) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, missing[i])
+			}
+			return resolved, nil
+		} else if !os.IsNotExist(err) {
+			return "", err
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", fmt.Errorf("no existing parent for %s", path)
+		}
+		missing = append(missing, filepath.Base(current))
+		current = parent
+	}
+}
+
 type Storage interface {
 	Upload(ctx context.Context, path string, r io.Reader) (int64, error)
 	Download(ctx context.Context, path string) (io.ReadCloser, int64, error)
@@ -105,7 +154,11 @@ func (s *fsStorage) Delete(ctx context.Context, path string) error {
 		return ctx.Err()
 	default:
 	}
-	return os.Remove(filepath.Join(s.basePath, path))
+	fullPath, err := s.resolvePath(path)
+	if err != nil {
+		return err
+	}
+	return os.Remove(fullPath)
 }
 
 func (s *fsStorage) Download(ctx context.Context, path string) (io.ReadCloser, int64, error) {
@@ -114,7 +167,10 @@ func (s *fsStorage) Download(ctx context.Context, path string) (io.ReadCloser, i
 		return nil, 0, ctx.Err()
 	default:
 	}
-	fullPath := filepath.Join(s.basePath, path)
+	fullPath, err := s.resolvePath(path)
+	if err != nil {
+		return nil, 0, err
+	}
 	f, err := os.Open(fullPath)
 	if err != nil {
 		return nil, 0, fmt.Errorf("open: %w", err)
@@ -133,20 +189,30 @@ func (s *fsStorage) List(ctx context.Context, prefix string) ([]Entry, error) {
 		return nil, ctx.Err()
 	default:
 	}
-	if prefix != "" && !strings.HasSuffix(prefix, "/") {
-		if fi, err := os.Stat(filepath.Join(s.basePath, prefix)); err == nil && !fi.IsDir() {
-			rel, _ := filepath.Rel(s.basePath, filepath.Join(s.basePath, prefix))
-			return []Entry{{Path: rel, Size: fi.Size(), ModTime: fi.ModTime().UnixNano()}}, nil
+	root, err := s.resolvePath(".")
+	if err != nil {
+		return nil, err
+	}
+	searchPath := root
+	if prefix != "" {
+		searchPath, err = s.resolvePath(prefix)
+		if err != nil {
+			return nil, err
+		}
+		if !strings.HasSuffix(prefix, "/") {
+			if fi, err := os.Stat(searchPath); err == nil && !fi.IsDir() {
+				rel, _ := filepath.Rel(root, searchPath)
+				return []Entry{{Path: rel, Size: fi.Size(), ModTime: fi.ModTime().UnixNano()}}, nil
+			}
 		}
 	}
-	searchPath := filepath.Join(s.basePath, prefix)
 	if fi, err := os.Stat(searchPath); err != nil {
 		if os.IsNotExist(err) {
 			if prefix == "" {
 				return nil, nil
 			}
 			var filtered []Entry
-			_ = filepath.WalkDir(s.basePath, func(path string, d os.DirEntry, err error) error {
+			_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 				select {
 				case <-ctx.Done():
 					return ctx.Err()
@@ -155,7 +221,7 @@ func (s *fsStorage) List(ctx context.Context, prefix string) ([]Entry, error) {
 				if err != nil || d.IsDir() {
 					return nil
 				}
-				rel, _ := filepath.Rel(s.basePath, path)
+				rel, _ := filepath.Rel(root, path)
 				if !strings.HasPrefix(rel, prefix) {
 					return nil
 				}
@@ -170,12 +236,12 @@ func (s *fsStorage) List(ctx context.Context, prefix string) ([]Entry, error) {
 		}
 		return nil, fmt.Errorf("stat: %w", err)
 	} else if !fi.IsDir() {
-		rel, _ := filepath.Rel(s.basePath, searchPath)
+		rel, _ := filepath.Rel(root, searchPath)
 		return []Entry{{Path: rel, Size: fi.Size(), ModTime: fi.ModTime().UnixNano()}}, nil
 	}
 
 	var entries []Entry
-	err := filepath.WalkDir(searchPath, func(path string, d os.DirEntry, err error) error {
+	err = filepath.WalkDir(searchPath, func(path string, d os.DirEntry, err error) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -187,7 +253,7 @@ func (s *fsStorage) List(ctx context.Context, prefix string) ([]Entry, error) {
 		if d.IsDir() {
 			return nil
 		}
-		rel, _ := filepath.Rel(s.basePath, path)
+		rel, _ := filepath.Rel(root, path)
 		fi, err := d.Info()
 		if err != nil {
 			return nil
@@ -263,11 +329,17 @@ func (s *fsStorage) Upload(ctx context.Context, path string, r io.Reader) (int64
 		return 0, ctx.Err()
 	default:
 	}
-	fullPath := filepath.Join(s.basePath, path)
+	fullPath, err := s.resolvePath(path)
+	if err != nil {
+		return 0, err
+	}
 
 	dir := filepath.Dir(fullPath)
 	if err := os.MkdirAll(dir, 0750); err != nil {
 		return 0, fmt.Errorf("mkdir: %w", err)
+	}
+	if _, err := s.resolvePath(path); err != nil {
+		return 0, err
 	}
 
 	tmpFile, err := os.CreateTemp(dir, ".tmp-"+filepath.Base(fullPath)+"-*.part")
