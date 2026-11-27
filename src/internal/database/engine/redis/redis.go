@@ -182,13 +182,17 @@ func (d *Dumper) OpenContext(ctx context.Context) error {
 		"auth", d.authMode())
 	probe := func() error { return common.TCPDial(d.host, d.port) }
 	connect := func() error {
+		tc, err := common.BuildTLSConfig(d.tlsCfg)
+		if err != nil {
+			return fmt.Errorf("redis: tls: %w", err)
+		}
 		opts := &redis.Options{
 			Addr:        net.JoinHostPort(d.host, fmt.Sprintf("%d", d.port)),
 			Password:    d.pass,
 			DB:          d.db,
 			DialTimeout: 10 * time.Second,
 		}
-		if tc, err := common.BuildTLSConfig(d.tlsCfg); err == nil && tc != nil {
+		if tc != nil {
 			opts.TLSConfig = tc
 		}
 		d.client = redis.NewClient(opts)

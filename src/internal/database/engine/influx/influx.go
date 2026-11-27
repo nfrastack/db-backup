@@ -103,6 +103,7 @@ type Dumper struct {
 	dbName          string
 	version         int
 	tlsCfg          *config.TLSConfig
+	initErr         error
 	client          *http.Client
 	connCfg         *config.ConnectivityConfig
 	streamClient    *http.Client
@@ -146,6 +147,9 @@ type influxQueryResult struct {
 func (d *Dumper) Close() error { return nil }
 
 func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
+	if d.initErr != nil {
+		return fmt.Errorf("influx: tls: %w", d.initErr)
+	}
 	mode := d.mode
 	if mode == "" {
 		mode = resolveBackupMode(common.BackupModeFromContext(d.ctxOrBg()))
@@ -228,6 +232,11 @@ func NewDumper(host string, port int, user, pass, dbName string, version int, tl
 	if port == 0 {
 		port = 8086
 	}
+	client, err := common.HTTPClient(nil, 30*time.Second)
+	streamClient, streamErr := common.HTTPClient(nil, 0)
+	if err == nil {
+		err = streamErr
+	}
 	d := &Dumper{
 		host:         host,
 		port:         port,
@@ -235,14 +244,18 @@ func NewDumper(host string, port int, user, pass, dbName string, version int, tl
 		pass:         pass,
 		dbName:       dbName,
 		version:      version,
-		client:       common.HTTPClient(nil, 30*time.Second),
-		streamClient: common.HTTPClient(nil, 0),
+		client:       client,
+		initErr:      err,
+		streamClient: streamClient,
 		Data:         true,
 	}
 	if len(tlsCfg) > 0 && tlsCfg[0] != nil {
 		d.tlsCfg = tlsCfg[0]
-		d.client = common.HTTPClient(d.tlsCfg, 30*time.Second)
-		d.streamClient = common.HTTPClient(d.tlsCfg, 0)
+		d.client, d.initErr = common.HTTPClient(d.tlsCfg, 30*time.Second)
+		d.streamClient, streamErr = common.HTTPClient(d.tlsCfg, 0)
+		if d.initErr == nil {
+			d.initErr = streamErr
+		}
 	}
 	return d
 }
@@ -252,6 +265,9 @@ func (d *Dumper) Open() error {
 }
 
 func (d *Dumper) OpenContext(ctx context.Context) error {
+	if d.initErr != nil {
+		return fmt.Errorf("influx: tls: %w", d.initErr)
+	}
 	d.ctx = ctx
 	d.mode = resolveBackupMode(common.BackupModeFromContext(ctx))
 	explicit := d.version
@@ -942,6 +958,9 @@ func stringifyTag(v any) string {
 }
 
 func (d *Dumper) listDatabases() ([]string, error) {
+	if d.initErr != nil {
+		return nil, fmt.Errorf("influx: tls: %w", d.initErr)
+	}
 	if d.Version() == 2 {
 		names, err := d.listV2Buckets()
 		if err == nil {

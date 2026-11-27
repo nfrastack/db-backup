@@ -27,7 +27,11 @@ var (
 )
 
 func ListDatabases(host string, port int, user, pass string, tlsCfg *config.TLSConfig) ([]string, error) {
-	db, err := sql.Open("mysql", ConnectDSN(user, pass, host, port, "charset=utf8mb4", TLSNameFor(tlsCfg)))
+	tlsName, err := TLSNameFor(tlsCfg)
+	if err != nil {
+		return nil, fmt.Errorf("tls: %w", err)
+	}
+	db, err := sql.Open("mysql", ConnectDSN(user, pass, host, port, "charset=utf8mb4", tlsName))
 	if err != nil {
 		return nil, fmt.Errorf("connect: %w", err)
 	}
@@ -54,7 +58,11 @@ func ListDatabases(host string, port int, user, pass string, tlsCfg *config.TLSC
 }
 
 func Maintain(host string, port int, user, pass, dbName string, cfg *common.MaintenanceCfg, tlsCfg *config.TLSConfig) ([]common.OpResult, error) {
-	db, err := sql.Open("mysql", ConnectDSN(user, pass, host, port, "charset=utf8mb4&multiStatements=true", TLSNameFor(tlsCfg)))
+	tlsName, err := TLSNameFor(tlsCfg)
+	if err != nil {
+		return nil, fmt.Errorf("tls: %w", err)
+	}
+	db, err := sql.Open("mysql", ConnectDSN(user, pass, host, port, "charset=utf8mb4&multiStatements=true", tlsName))
 	if err != nil {
 		return nil, fmt.Errorf("connect: %w", err)
 	}
@@ -82,8 +90,12 @@ func Maintain(host string, port int, user, pass, dbName string, cfg *common.Main
 
 func Restore(r io.Reader, host string, port int, user, pass, dbName string, tlsCfg *config.TLSConfig) error {
 	firstDB := common.FirstDBName(dbName)
+	tlsName, err := TLSNameFor(tlsCfg)
+	if err != nil {
+		return fmt.Errorf("tls: %w", err)
+	}
 	db, err := sql.Open("mysql", ConnectDSN(user, pass, host, port,
-		"charset=utf8mb4&multiStatements=true&interpolateParams=true", TLSNameFor(tlsCfg)))
+		"charset=utf8mb4&multiStatements=true&interpolateParams=true", tlsName))
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)
 	}

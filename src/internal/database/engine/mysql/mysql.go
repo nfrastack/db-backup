@@ -633,9 +633,11 @@ func (d *Dumper) OpenContext(ctx context.Context) error {
 				return err
 			}
 			if tc != nil {
-				if name, err := RegisterTLS(tc); err == nil {
-					d.tlsName = name
+				name, err := RegisterTLS(tc)
+				if err != nil {
+					return err
 				}
+				d.tlsName = name
 			}
 		}
 		dsn := ConnectDSN(d.user, d.pass, d.host, d.port,

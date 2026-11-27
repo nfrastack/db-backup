@@ -22,7 +22,10 @@ import (
 )
 
 func CheckSupport(ctx context.Context, host string, port int, pass string, tlsCfg *config.TLSConfig) error {
-	rdb := redis.ClientFor(host, port, pass, tlsCfg)
+	rdb, err := redis.ClientFor(host, port, pass, tlsCfg)
+	if err != nil {
+		return err
+	}
 	defer rdb.Close()
 
 	if ctx == nil {
@@ -41,7 +44,10 @@ func CheckSupport(ctx context.Context, host string, port int, pass string, tlsCf
 }
 
 func IncrementalDump(ctx context.Context, w io.Writer, host string, port int, pass string, tlsCfg *config.TLSConfig) error {
-	rdb := redis.ClientFor(host, port, pass, tlsCfg)
+	rdb, err := redis.ClientFor(host, port, pass, tlsCfg)
+	if err != nil {
+		return err
+	}
 	defer rdb.Close()
 
 	if ctx == nil {
@@ -115,7 +121,10 @@ func IncrementalSpec() registry.IncrementalSpec {
 	}
 }
 func Position(ctx context.Context, host string, port int, pass string, tlsCfg *config.TLSConfig) (string, error) {
-	rdb := redis.ClientFor(host, port, pass, tlsCfg)
+	rdb, err := redis.ClientFor(host, port, pass, tlsCfg)
+	if err != nil {
+		return "", err
+	}
 	defer rdb.Close()
 
 	if ctx == nil {

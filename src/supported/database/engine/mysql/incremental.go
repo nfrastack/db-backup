@@ -33,7 +33,11 @@ func CheckSupport(ctx context.Context, host string, port int, user, pass string,
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	db, err := sql.Open("mysql", mysql.ConnectDSN(user, pass, host, port, "charset=utf8mb4", mysql.TLSNameFor(tlsCfg)))
+	tlsName, err := mysql.TLSNameFor(tlsCfg)
+	if err != nil {
+		return fmt.Errorf("tls: %w", err)
+	}
+	db, err := sql.Open("mysql", mysql.ConnectDSN(user, pass, host, port, "charset=utf8mb4", tlsName))
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)
 	}
@@ -64,8 +68,12 @@ func IncrementalDump(ctx context.Context, w io.Writer, host string, port int, us
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	tlsName, err := mysql.TLSNameFor(tlsCfg)
+	if err != nil {
+		return fmt.Errorf("tls: %w", err)
+	}
 	db, err := sql.Open("mysql", mysql.ConnectDSN(user, pass, host, port,
-		"charset=utf8mb4&multiStatements=true&interpolateParams=true", mysql.TLSNameFor(tlsCfg)))
+		"charset=utf8mb4&multiStatements=true&interpolateParams=true", tlsName))
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)
 	}
@@ -181,7 +189,11 @@ func Position(ctx context.Context, host string, port int, user, pass string, tls
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	db, err := sql.Open("mysql", mysql.ConnectDSN(user, pass, host, port, "charset=utf8mb4", mysql.TLSNameFor(tlsCfg)))
+	tlsName, err := mysql.TLSNameFor(tlsCfg)
+	if err != nil {
+		return "", fmt.Errorf("tls: %w", err)
+	}
+	db, err := sql.Open("mysql", mysql.ConnectDSN(user, pass, host, port, "charset=utf8mb4", tlsName))
 	if err != nil {
 		return "", err
 	}

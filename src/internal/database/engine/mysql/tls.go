@@ -50,17 +50,10 @@ func RegisterTLS(tc *tls.Config) (string, error) {
 	return name, nil
 }
 
-func TLSNameFor(cfg *config.TLSConfig) string {
-	if cfg == nil || !cfg.Enable {
-		return ""
-	}
+func TLSNameFor(cfg *config.TLSConfig) (string, error) {
 	tc, err := common.BuildTLSConfig(cfg)
 	if err != nil || tc == nil {
-		return ""
+		return "", err
 	}
-	name, err := RegisterTLS(tc)
-	if err != nil {
-		return ""
-	}
-	return name
+	return RegisterTLS(tc)
 }

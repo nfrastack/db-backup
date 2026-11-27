@@ -40,7 +40,11 @@ func listTables(db *sql.DB, dbName string) ([]string, error) {
 	return tables, rows.Err()
 }
 func maintain(host string, port int, user, pass, dbName, authSource string, cfg *common.MaintenanceCfg, tlsCfg *config.TLSConfig) ([]common.OpResult, error) {
-	db, err := sql.Open("mysql", mysqlcore.ConnectDSN(user, pass, host, port, "charset=utf8mb4&multiStatements=true", mysqlcore.TLSNameFor(tlsCfg)))
+	tlsName, err := mysqlcore.TLSNameFor(tlsCfg)
+	if err != nil {
+		return nil, fmt.Errorf("tls: %w", err)
+	}
+	db, err := sql.Open("mysql", mysqlcore.ConnectDSN(user, pass, host, port, "charset=utf8mb4&multiStatements=true", tlsName))
 	if err != nil {
 		return nil, fmt.Errorf("connect: %w", err)
 	}

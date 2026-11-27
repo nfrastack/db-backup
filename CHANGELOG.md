@@ -25,13 +25,14 @@
        - (sqlite) support for skipping views, triggers, indexes, sequences, data, drops
        - (sqlite) wrap operation in transaction via options.single_transaction
      - restore additions
-       - add support for verifying backup before restoring
+       - add support for verifying backup before operation
        - (sqlite) wrap operation in transaction
        - WARN when restoring dumps that have been made with skipped options
 
    ### Changed
      - bump metadata sidecar version to 3
      - contain filesystem paths and sanitize database filename tokens
+     - don't fall back to plain when tls configuration invalid
      - post hooks now fire for every failure stage with DBB_STAGE/DBB_ERROR detail
      - (container) rewrite entrypoint to allow docker to output proper exit code when runing in manual mode
      - dump modifications
