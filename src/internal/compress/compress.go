@@ -25,6 +25,8 @@ const (
 	Bzip2 Type = "bz"
 	XZip  Type = "xz"
 	Zstd  Type = "zstd"
+
+	zstdDecodeWindow = 64 << 20
 )
 
 const rsyncSegmentSize = 1 << 20
@@ -189,7 +191,10 @@ func (c *xzComp) Decompress(r io.Reader) (io.Reader, error) {
 }
 
 func (c *zstdComp) Decompress(r io.Reader) (io.Reader, error) {
-	dec, err := zstd.NewReader(r)
+	dec, err := zstd.NewReader(r,
+		zstd.WithDecoderMaxMemory(zstdDecodeWindow),
+		zstd.WithDecoderConcurrency(1),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("zstd: %w", err)
 	}

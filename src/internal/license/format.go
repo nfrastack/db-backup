@@ -16,6 +16,8 @@ import (
 	"github.com/klauspost/compress/zstd"
 )
 
+const maxLicenseSize = 1 << 20
+
 var (
 	magicGzip = []byte{0x1f, 0x8b}
 	magicZstd = []byte{0x28, 0xb5, 0x2f, 0xfd}
@@ -68,9 +70,12 @@ func inflateGzip(data []byte) (string, error) {
 		return "", fmt.Errorf("gzip license: %w", err)
 	}
 	defer zr.Close()
-	out, err := io.ReadAll(io.LimitReader(zr, 1<<20))
+	out, err := io.ReadAll(io.LimitReader(zr, maxLicenseSize+1))
 	if err != nil {
 		return "", fmt.Errorf("gzip license: %w", err)
+	}
+	if len(out) > maxLicenseSize {
+		return "", errors.New("decompressed license exceeds size limit")
 	}
 	s := strings.TrimSpace(string(out))
 	if !looksLikeArtifact(s) {
@@ -80,16 +85,20 @@ func inflateGzip(data []byte) (string, error) {
 }
 
 func inflateZstd(data []byte) (string, error) {
-	dec, err := zstd.NewReader(nil,
+	dec, err := zstd.NewReader(bytes.NewReader(data),
 		zstd.WithDecoderConcurrency(1),
-		zstd.WithDecoderMaxMemory(8<<20))
+		zstd.WithDecoderMaxMemory(8<<20),
+	)
 	if err != nil {
 		return "", fmt.Errorf("zstd license: %w", err)
 	}
 	defer dec.Close()
-	out, err := dec.DecodeAll(data, nil)
+	out, err := io.ReadAll(io.LimitReader(dec, maxLicenseSize+1))
 	if err != nil {
 		return "", fmt.Errorf("zstd license: %w", err)
+	}
+	if len(out) > maxLicenseSize {
+		return "", errors.New("decompressed license exceeds size limit")
 	}
 	s := strings.TrimSpace(string(out))
 	if !looksLikeArtifact(s) {
