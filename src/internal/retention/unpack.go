@@ -31,9 +31,16 @@ func OpenBackup(r io.Reader, meta *EncryptionMeta, opts DecryptOpts, name, compr
 		return nil, err
 	}
 	if t != encrypt.None {
-		pass := resolveSecretLocal(passFor(opts, t))
+		pass, err := config.ResolveSecret(passFor(opts, t))
+		if err != nil {
+			return nil, fmt.Errorf("resolve decryption passphrase: %w", err)
+		}
+		id, err := config.ResolveSecret(firstNonEmpty(opts.Identity, opts.FallbackID))
+		if err != nil {
+			return nil, fmt.Errorf("resolve decryption identity: %w", err)
+		}
 		var ids []string
-		if id := resolveSecretLocal(firstNonEmpty(opts.Identity, opts.FallbackID)); id != "" {
+		if id != "" {
 			ids = []string{id}
 		}
 		switch t {
@@ -95,9 +102,6 @@ func passFor(opts DecryptOpts, t encrypt.Type) string {
 	default:
 		return ""
 	}
-}
-func resolveSecretLocal(v string) string {
-	return config.ResolveSecret(v)
 }
 
 func resolveType(r io.Reader, meta *EncryptionMeta, opts DecryptOpts) (encrypt.Type, io.Reader, error) {

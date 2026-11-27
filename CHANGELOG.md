@@ -9,6 +9,7 @@
      - add --object and --option cli overrides
      - add more container environment variables to match config file
      - allow dumping to multiple storage backends per job (supporter)
+     - fail when secret env:// references cannot be resolved
      - (container) add CONFIG_INCLUDE variable to add config snippets via file:// or base64
      - (container) archive to non fs backends via ARCHIVE_LOCATION and retention prunes backend (supporter)
      - dump additions
@@ -35,6 +36,7 @@
      - don't fall back to plain when tls configuration invalid
      - reject invalid storage tls settings instead of ignoring CA, client certificate, key, or version errors
      - fix tls configuration for gcs storage
+     - fail closed when secret references cannot be resolved instead of using the reference as a literal credential
      - post hooks now fire for every failure stage with DBB_STAGE/DBB_ERROR detail
      - (container) rewrite entrypoint to allow docker to output proper exit code when runing in manual mode
      - dump modifications

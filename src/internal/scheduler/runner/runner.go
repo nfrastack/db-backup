@@ -120,7 +120,6 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 		}
 	}()
 
-	pass := ResolveSecret(job.Pass)
 	port := job.Port
 	if port == 0 {
 		port = DefaultPort(job.Type)
@@ -171,6 +170,12 @@ func Run(ctx context.Context, job config.JobConfig, trigger string) (err error) 
 		}
 		return LogFail(job, "backup failed", stage, ferr)
 	}
+
+	resolvedPass, secretErr := ResolveSecret(job.Pass)
+	if secretErr != nil {
+		return fail("secret", fmt.Errorf("resolve database pass: %w", secretErr))
+	}
+	pass := resolvedPass
 
 	if job.Databases != nil && len(job.Databases.Include) > 1 &&
 		containsGlobals(job.Databases.Include) {

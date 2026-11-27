@@ -93,7 +93,11 @@ func cmdRestore(args []string) int {
 	explicitFlags := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { explicitFlags[f.Name] = true })
 
-	pass := runner.ResolveSecret(*dbPass)
+	pass, err := runner.ResolveSecret(*dbPass)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ERROR: database pass: %v\n", err)
+		return 1
+	}
 
 	var restoreTLS *config.TLSConfig
 	var restoreStorage *config.StorageConfig
@@ -115,7 +119,11 @@ func cmdRestore(args []string) int {
 			return 1
 		}
 
-		r := cfg.EffectiveRestore(*restoreProfile)
+		r, err := cfg.EffectiveRestore(*restoreProfile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "ERROR: restore profile: %v\n", err)
+			return 1
+		}
 		if *restoreProfile != "" && r == nil {
 			fmt.Fprintf(os.Stderr, "ERROR: restore profile '%s' not found in config\n", *restoreProfile)
 			return 1
@@ -187,7 +195,7 @@ func cmdRestore(args []string) int {
 					*dbName = dbNames
 					*storagePath = job.Storage.Path
 					if pass == "" {
-						pass = runner.ResolveSecret(job.Pass)
+						pass = job.Pass
 					}
 					restoreTLS = job.TLS
 					restoreStorage = job.Storage
@@ -717,7 +725,12 @@ func interactiveRestore(verify bool) {
 	var cfg *config.Config
 	var restoreProfileNames []string
 	if len(globalConfigPaths) > 0 {
-		cfg, _ = config.LoadConfig(globalConfigPaths...)
+		var err error
+		cfg, err = config.LoadConfig(globalConfigPaths...)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "ERROR: config: %v\n", err)
+			os.Exit(1)
+		}
 		if cfg != nil && cfg.RestoreProfiles != nil {
 			for name := range cfg.RestoreProfiles {
 				restoreProfileNames = append(restoreProfileNames, name)
@@ -742,7 +755,12 @@ func interactiveRestore(verify bool) {
 		fmt.Fprintf(os.Stderr, "Use a restore profile? [1-%d, N]: ", len(restoreProfileNames))
 		if v := strings.TrimSpace(readLine(rd)); v != "" && strings.ToLower(v) != "n" {
 			if idx, err := strconv.Atoi(v); err == nil && idx >= 1 && idx <= len(restoreProfileNames) {
-				if r := cfg.EffectiveRestore(restoreProfileNames[idx-1]); r != nil {
+				r, err := cfg.EffectiveRestore(restoreProfileNames[idx-1])
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "ERROR: restore profile: %v\n", err)
+					os.Exit(1)
+				}
+				if r != nil {
 					effRestore = r
 					profileMode = true
 				}

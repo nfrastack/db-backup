@@ -40,7 +40,11 @@ func cmdMaintain(args []string) int {
 		return 0
 	}
 
-	pass := runner.ResolveSecret(*dbPass)
+	pass, err := runner.ResolveSecret(*dbPass)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ERROR: database pass: %v\n", err)
+		return 1
+	}
 
 	var maintainTLS *config.TLSConfig
 
@@ -71,7 +75,7 @@ func cmdMaintain(args []string) int {
 					*dbPort = port
 					*dbUser = job.User
 					if pass == "" {
-						pass = runner.ResolveSecret(job.Pass)
+						pass = job.Pass
 					}
 					dbNames := ""
 					if job.Databases != nil && len(job.Databases.Include) > 0 {

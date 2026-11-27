@@ -42,7 +42,7 @@ type Config struct {
 	RestoreProfiles     map[string]RestoreConfig     `yaml:"-"`
 }
 
-var SupporterResolveRestore = func(c *Config, r *RestoreConfig) {}
+var SupporterResolveRestore = func(c *Config, r *RestoreConfig) error { return nil }
 
 type ProfilesConfig struct {
 	Connections map[string]ConnConfig        `yaml:"connections,omitempty"`
@@ -237,20 +237,22 @@ type StartupConfig struct {
 	TempDir         string                 `yaml:"temp_dir,omitempty"`
 }
 
-func (c *Config) EffectiveRestore(profileName string) *RestoreConfig {
+func (c *Config) EffectiveRestore(profileName string) (*RestoreConfig, error) {
 	if c == nil {
-		return nil
+		return nil, nil
 	}
 	if profileName != "" {
 		prof, ok := c.RestoreProfiles[profileName]
 		if !ok {
-			return nil
+			return nil, nil
 		}
 		r := prof
-		c.ResolveRestore(&r)
-		return &r
+		if err := c.ResolveRestore(&r); err != nil {
+			return nil, err
+		}
+		return &r, nil
 	}
-	return c.Restore
+	return c.Restore, nil
 }
 
 func (v *CheckNewVersionConfig) IsEnabled() bool {
@@ -304,7 +306,9 @@ func LoadConfig(paths ...string) (*Config, error) {
 	}
 
 	for i := range cfg.Jobs {
-		resolveSecrets(&cfg.Jobs[i])
+		if err := resolveSecrets(&cfg.Jobs[i]); err != nil {
+			return nil, err
+		}
 	}
 
 	for _, job := range cfg.Jobs {
@@ -326,7 +330,9 @@ func LoadConfig(paths ...string) (*Config, error) {
 		return nil, fmt.Errorf("no backup jobs or restore target configured")
 	}
 
-	cfg.ResolveRestore(cfg.Restore)
+	if err := cfg.ResolveRestore(cfg.Restore); err != nil {
+		return nil, fmt.Errorf("restore: %w", err)
+	}
 
 	return &cfg, nil
 }
@@ -400,7 +406,9 @@ func LoadStorageProfile(paths []string, name string) (*StorageConfig, error) {
 	if !ok {
 		return nil, fmt.Errorf("storage profile %q not found in %s", name, strings.Join(paths, ", "))
 	}
-	prof.resolveSecrets()
+	if err := prof.resolveSecrets(); err != nil {
+		return nil, fmt.Errorf("storage profile %q: %w", name, err)
+	}
 	return &prof, nil
 }
 func ParseRetention(s string) (time.Duration, error) {
@@ -458,24 +466,26 @@ func ReadStatsState(stateDir string) (*StatsState, error) {
 	}
 	return &st, nil
 }
-func (c *Config) ResolveRestore(r *RestoreConfig) {
+func (c *Config) ResolveRestore(r *RestoreConfig) error {
 	if r == nil {
-		return
+		return nil
 	}
-	SupporterResolveRestore(c, r)
+	return SupporterResolveRestore(c, r)
 }
 
-func (c *Config) ResolveRestoreProfile(name string) *RestoreConfig {
+func (c *Config) ResolveRestoreProfile(name string) (*RestoreConfig, error) {
 	if c == nil || c.RestoreProfiles == nil {
-		return nil
+		return nil, nil
 	}
 	prof, ok := c.RestoreProfiles[name]
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	r := prof
-	c.ResolveRestore(&r)
-	return &r
+	if err := c.ResolveRestore(&r); err != nil {
+		return nil, err
+	}
+	return &r, nil
 }
 
 func ResolveStateDir(configured string) string {

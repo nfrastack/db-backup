@@ -58,7 +58,7 @@ func RandomID(nBytes int) string {
 	return hex.EncodeToString(b)
 }
 
-func ResolveSecret(val string) string {
+func ResolveSecret(val string) (string, error) {
 	return config.ResolveSecret(val)
 }
 

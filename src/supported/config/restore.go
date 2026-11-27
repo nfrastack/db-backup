@@ -51,9 +51,9 @@ func mergeRestore(dst, src *config.RestoreConfig) {
 	}
 }
 
-func resolveRestore(c *config.Config, r *config.RestoreConfig) {
+func resolveRestore(c *config.Config, r *config.RestoreConfig) error {
 	if r == nil {
-		return
+		return nil
 	}
 	if r.ProfileRef != "" && c != nil && c.RestoreProfiles != nil {
 		if prof, ok := c.RestoreProfiles[r.ProfileRef]; ok {
@@ -82,7 +82,42 @@ func resolveRestore(c *config.Config, r *config.RestoreConfig) {
 			r.Storage = &cp
 		}
 	}
-	r.Pass = config.ResolveSecret(r.Pass)
-	r.Identity = config.ResolveSecret(r.Identity)
-	r.Passphrase = config.ResolveSecret(r.Passphrase)
+	if r.Storage != nil {
+		if err := r.Storage.ResolveSecrets(); err != nil {
+			return fmt.Errorf("restore storage: %w", err)
+		}
+	}
+	for _, field := range []struct {
+		name string
+		dst  *string
+	}{
+		{name: "host", dst: &r.Host},
+		{name: "user", dst: &r.User},
+		{name: "pass", dst: &r.Pass},
+		{name: "identity", dst: &r.Identity},
+		{name: "passphrase", dst: &r.Passphrase},
+	} {
+		v, err := config.ResolveSecret(*field.dst)
+		if err != nil {
+			return fmt.Errorf("restore %s: %w", field.name, err)
+		}
+		*field.dst = v
+	}
+	if r.TLS != nil {
+		for _, field := range []struct {
+			name string
+			dst  *string
+		}{
+			{name: "tls.ca_file", dst: &r.TLS.CAFile},
+			{name: "tls.cert_file", dst: &r.TLS.CertFile},
+			{name: "tls.key_file", dst: &r.TLS.KeyFile},
+		} {
+			v, err := config.ResolveSecret(*field.dst)
+			if err != nil {
+				return fmt.Errorf("restore %s: %w", field.name, err)
+			}
+			*field.dst = v
+		}
+	}
+	return nil
 }

@@ -164,6 +164,12 @@ func cmdDump(args []string) int {
 
 	dbNames := runner.SplitCsv(*dbName)
 
+	resolvedPass, err := runner.ResolveSecret(*dbPass)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ERROR: database pass: %v\n", err)
+		return 1
+	}
+
 	storageCfg, err := config.ResolveStorageArg(globalConfigPaths, *storageProfile, *storagePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
@@ -176,7 +182,7 @@ func cmdDump(args []string) int {
 		Host:           *dbHost,
 		Port:           *dbPort,
 		User:           *dbUser,
-		Pass:           runner.ResolveSecret(*dbPass),
+		Pass:           resolvedPass,
 		Version:        *dbVersion,
 		Checksum:       *checksumType,
 		Compression:    &config.CompressionConfig{Type: *compressType, Level: *compressLevel},
@@ -200,6 +206,20 @@ func cmdDump(args []string) int {
 	}
 	if *opensslPass != "" {
 		job.EncryptionIdentity = *opensslPass
+	}
+	resolvedIdentity, err := runner.ResolveSecret(job.EncryptionIdentity)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ERROR: encryption passphrase or identity: %v\n", err)
+		return 1
+	}
+	job.EncryptionIdentity = resolvedIdentity
+	for i := range job.EncryptionIdentities {
+		resolved, err := runner.ResolveSecret(job.EncryptionIdentities[i])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "ERROR: encryption identity %d: %v\n", i+1, err)
+			return 1
+		}
+		job.EncryptionIdentities[i] = resolved
 	}
 	if job.Backup == nil {
 		job.Backup = &config.BackupConfig{}

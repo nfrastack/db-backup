@@ -607,30 +607,59 @@ func (j *JobConfig) ValidateWithEncryptionProfiles(profiles map[string]Encryptio
 	return nil
 }
 
-func resolveSecrets(job *JobConfig) {
-	job.Host = ResolveSecret(job.Host)
-	job.User = ResolveSecret(job.User)
-	job.Pass = ResolveSecret(job.Pass)
+func resolveSecrets(job *JobConfig) error {
+	for _, field := range []struct {
+		name string
+		dst  *string
+	}{
+		{name: "host", dst: &job.Host},
+		{name: "user", dst: &job.User},
+		{name: "pass", dst: &job.Pass},
+	} {
+		if err := resolveSecretField(field.dst, field.name); err != nil {
+			return fmt.Errorf("job %q: %w", job.Name, err)
+		}
+	}
 	if job.Storage != nil {
-		job.Storage.resolveSecrets()
+		if err := job.Storage.resolveSecrets(); err != nil {
+			return fmt.Errorf("job %q storage: %w", job.Name, err)
+		}
 	}
 	for i := range job.StorageProfiles {
 		if job.StorageProfiles[i].Storage != nil {
-			job.StorageProfiles[i].Storage.resolveSecrets()
+			if err := job.StorageProfiles[i].Storage.resolveSecrets(); err != nil {
+				return fmt.Errorf("job %q storage profile %d: %w", job.Name, i+1, err)
+			}
 		}
 	}
 	if job.Archive != nil && job.Archive.Storage != nil {
-		job.Archive.Storage.resolveSecrets()
+		if err := job.Archive.Storage.resolveSecrets(); err != nil {
+			return fmt.Errorf("job %q archive storage: %w", job.Name, err)
+		}
 	}
 	if job.TLS != nil {
-		job.TLS.CAFile = ResolveSecret(job.TLS.CAFile)
-		job.TLS.CertFile = ResolveSecret(job.TLS.CertFile)
-		job.TLS.KeyFile = ResolveSecret(job.TLS.KeyFile)
+		for _, field := range []struct {
+			name string
+			dst  *string
+		}{
+			{name: "tls.ca_file", dst: &job.TLS.CAFile},
+			{name: "tls.cert_file", dst: &job.TLS.CertFile},
+			{name: "tls.key_file", dst: &job.TLS.KeyFile},
+		} {
+			if err := resolveSecretField(field.dst, field.name); err != nil {
+				return fmt.Errorf("job %q: %w", job.Name, err)
+			}
+		}
 	}
-	job.EncryptionIdentity = ResolveSecret(job.EncryptionIdentity)
+	if err := resolveSecretField(&job.EncryptionIdentity, "encryption passphrase or identity"); err != nil {
+		return fmt.Errorf("job %q: %w", job.Name, err)
+	}
 	for i := range job.EncryptionIdentities {
-		job.EncryptionIdentities[i] = ResolveSecret(job.EncryptionIdentities[i])
+		if err := resolveSecretField(&job.EncryptionIdentities[i], fmt.Sprintf("encryption identity %d", i+1)); err != nil {
+			return fmt.Errorf("job %q: %w", job.Name, err)
+		}
 	}
+	return nil
 }
 
 func (a *ArchiveConfig) resolveStorage(c *Config) {
