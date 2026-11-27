@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nfrastack/db-backup/internal/database/objects"
+	"github.com/nfrastack/db-backup/internal/license"
 	"gopkg.in/yaml.v3"
 )
 
@@ -49,27 +51,21 @@ type CompressionConfig struct {
 }
 
 type DatabaseList struct {
-	Include  []string     `yaml:"include"`
-	Exclude  []string     `yaml:"exclude"`
-	Tables   *TableFilter `yaml:"tables,omitempty"`
-	Routines *bool        `yaml:"routines,omitempty"`
-	Events   *bool        `yaml:"events,omitempty"`
-	Triggers *bool        `yaml:"triggers,omitempty"`
-	Views    *bool        `yaml:"views,omitempty"`
-	RawBlobs *bool        `yaml:"raw_blobs,omitempty"`
+	Include []string        `yaml:"include"`
+	Exclude []string        `yaml:"exclude"`
+	Tables  *TableFilter    `yaml:"tables,omitempty"`
+	Objects objects.Objects `yaml:"objects,omitempty"`
+	Options objects.Options `yaml:"options,omitempty"`
 }
 
 type DbProfile struct {
-	Connection string       `yaml:"connection"`
-	Name       string       `yaml:"name,omitempty"`
-	Include    []string     `yaml:"include"`
-	Exclude    []string     `yaml:"exclude"`
-	Tables     *TableFilter `yaml:"tables,omitempty"`
-	Routines   *bool        `yaml:"routines,omitempty"`
-	Events     *bool        `yaml:"events,omitempty"`
-	Triggers   *bool        `yaml:"triggers,omitempty"`
-	Views      *bool        `yaml:"views,omitempty"`
-	RawBlobs   *bool        `yaml:"raw_blobs,omitempty"`
+	Connection string          `yaml:"connection"`
+	Name       string          `yaml:"name,omitempty"`
+	Include    []string        `yaml:"include"`
+	Exclude    []string        `yaml:"exclude"`
+	Tables     *TableFilter    `yaml:"tables,omitempty"`
+	Objects    objects.Objects `yaml:"objects,omitempty"`
+	Options    objects.Options `yaml:"options,omitempty"`
 }
 
 type EncryptionConfig struct {
@@ -113,6 +109,9 @@ type JobConfig struct {
 	DatabaseRef          string              `yaml:"database,omitempty"`
 	StorageRef           string              `yaml:"storage_profile,omitempty"`
 	BackupRef            string              `yaml:"backup_profile,omitempty"`
+	StorageProfiles      []StorageEntry      `yaml:"-"`
+	UploadMode           string              `yaml:"upload_mode,omitempty"`
+	OnStorageFailure     string              `yaml:"on_storage_failure,omitempty"`
 	ArchiveRef           string              `yaml:"-"`
 	EncryptionType       string              `yaml:"-"`
 	EncryptionIdentity   string              `yaml:"-"`
@@ -134,12 +133,62 @@ type MaintenanceConfig struct {
 	MemoryPurge *bool  `yaml:"memory_purge,omitempty"`
 }
 
-type MysqlObjects struct {
-	Routines bool
-	Events   bool
-	Triggers bool
-	Views    bool
-	RawBlobs bool
+func ValidateJobObjects(engine string, d *DatabaseList, jobName string) error {
+	if d == nil {
+		return nil
+	}
+	if err := objects.Validate(engine, d.Objects, d.Options); err != nil {
+		return fmt.Errorf("job %q %s", jobName, err.Error())
+	}
+	return nil
+}
+
+type StorageEntry struct {
+	StorageProfile string
+	Storage        *StorageConfig `yaml:"-"`
+}
+
+var storageBackendFields = map[string]bool{
+	"backend": true, "bucket": true, "path": true, "endpoint": true,
+	"region": true, "key_id": true, "key_secret": true, "account": true,
+	"key": true, "url": true, "pass": true, "file_mode": true,
+	"dir_mode": true, "user": true, "group": true, "tls": true,
+}
+
+func storageBackendField(key string) bool {
+	return storageBackendFields[strings.ToLower(strings.TrimSpace(key))]
+}
+
+func ValidateStorageProfiles(j *JobConfig, profiles map[string]StorageConfig) error {
+	if j == nil || len(j.StorageProfiles) == 0 {
+		return nil
+	}
+	for i := range j.StorageProfiles {
+		if j.StorageProfiles[i].StorageProfile == "" {
+			return fmt.Errorf("job %q storage.profiles[%d]: missing storage_profile", j.Name, i)
+		}
+		if j.StorageProfiles[i].Storage == nil {
+			if _, ok := profiles[j.StorageProfiles[i].StorageProfile]; !ok {
+				return fmt.Errorf("job %q storage.profiles[%d]: storage profile %q not found", j.Name, i, j.StorageProfiles[i].StorageProfile)
+			}
+		}
+	}
+	switch j.UploadMode {
+	case "", "sequential":
+	case "parallel":
+		return fmt.Errorf("job %q upload_mode %q is not supported yet (want sequential)", j.Name, j.UploadMode)
+	default:
+		return fmt.Errorf("job %q has unknown upload_mode %q (want sequential)", j.Name, j.UploadMode)
+	}
+	switch j.OnStorageFailure {
+	case "", "continue", "abort":
+	default:
+		return fmt.Errorf("job %q has unknown on_storage_failure %q (want continue|abort)", j.Name, j.OnStorageFailure)
+	}
+	if _, err := license.RequireValidLicense(); err != nil {
+		return fmt.Errorf("job %q multi-storage requires a Supporter license (not available in the Community edition): %s", j.Name, err)
+	}
+	return nil
 }
 
 type RetentionConfig struct {
@@ -217,27 +266,58 @@ func (d *DatabaseList) Excluded(name string) bool {
 	return globMatchAny(d.Exclude, name)
 }
 
-func (d *DatabaseList) ResolveMysqlObjects() MysqlObjects {
-	o := MysqlObjects{Routines: true, Events: true, Triggers: true, Views: true}
-	if d == nil {
-		return o
+func (d *DatabaseList) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind != yaml.MappingNode {
+		type raw DatabaseList
+		var r raw
+		if err := value.Decode(&r); err != nil {
+			return err
+		}
+		*d = DatabaseList(r)
+		return nil
 	}
-	if d.Routines != nil {
-		o.Routines = *d.Routines
+	for i := 0; i+1 < len(value.Content); i += 2 {
+		k := value.Content[i].Value
+		switch k {
+		case "include", "exclude", "tables", "objects", "options":
+		default:
+			return fmt.Errorf("databases: unknown field %q (want include|exclude|tables|objects|options)", k)
+		}
 	}
-	if d.Events != nil {
-		o.Events = *d.Events
+	type raw DatabaseList
+	var r raw
+	if err := value.Decode(&r); err != nil {
+		return err
 	}
-	if d.Triggers != nil {
-		o.Triggers = *d.Triggers
+	*d = DatabaseList(r)
+	return nil
+}
+
+func (p *DbProfile) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind != yaml.MappingNode {
+		type raw DbProfile
+		var r raw
+		if err := value.Decode(&r); err != nil {
+			return err
+		}
+		*p = DbProfile(r)
+		return nil
 	}
-	if d.Views != nil {
-		o.Views = *d.Views
+	for i := 0; i+1 < len(value.Content); i += 2 {
+		k := value.Content[i].Value
+		switch k {
+		case "connection", "name", "include", "exclude", "tables", "objects", "options":
+		default:
+			return fmt.Errorf("profiles.databases: unknown field %q (want connection|name|include|exclude|tables|objects|options)", k)
+		}
 	}
-	if d.RawBlobs != nil {
-		o.RawBlobs = *d.RawBlobs
+	type raw DbProfile
+	var r raw
+	if err := value.Decode(&r); err != nil {
+		return err
 	}
-	return o
+	*p = DbProfile(r)
+	return nil
 }
 
 func (s *SchemaOnly) Matches(table string) bool {
@@ -326,9 +406,62 @@ func (j *JobConfig) UnmarshalYAML(value *yaml.Node) error {
 	}
 	var unsets map[string]bool
 	var backupRef, storageRef, archiveRef string
+	var profileEntries []StorageEntry
+	var hasStorageProfiles, hasStorageProfile bool
 	for i := 0; i+1 < len(clone.Content); i += 2 {
 		key := clone.Content[i].Value
 		val := clone.Content[i+1]
+		if key == "storages" {
+			return fmt.Errorf("storages was renamed to storage: {profiles: [...]}")
+		}
+		if key == "storage" && val.Kind == yaml.MappingNode {
+			var keys []string
+			for j := 0; j+1 < len(val.Content); j += 2 {
+				keys = append(keys, val.Content[j].Value)
+			}
+			hasProfiles := false
+			for _, k := range keys {
+				if k == "profiles" {
+					hasProfiles = true
+				}
+			}
+			if hasProfiles {
+				if len(keys) > 1 {
+					return fmt.Errorf("storage profiles list cannot be combined with other storage settings (use one)")
+				}
+				hasStorageProfiles = true
+				if len(val.Content) != 2 || val.Content[1].Kind != yaml.SequenceNode {
+					return fmt.Errorf("storage profiles must be a list of profile names")
+				}
+				for _, item := range val.Content[1].Content {
+					switch item.Kind {
+					case yaml.ScalarNode:
+						if item.Tag != "!!str" {
+							return fmt.Errorf("storage profiles list must contain profile names")
+						}
+						n := strings.TrimSpace(item.Value)
+						if n == "" {
+							return fmt.Errorf("storage profiles list must not contain empty names")
+						}
+						profileEntries = append(profileEntries, StorageEntry{StorageProfile: n})
+					case yaml.MappingNode:
+						for j := 0; j+1 < len(item.Content); j += 2 {
+							if storageBackendField(item.Content[j].Value) {
+								return fmt.Errorf("inline storage backends are not allowed in a storage profiles list (define a profiles.storage entry and reference it by name)")
+							}
+						}
+						return fmt.Errorf("storage profiles list must contain profile names (e.g. - local-ssd)")
+					default:
+						return fmt.Errorf("storage profiles list must contain profile names")
+					}
+				}
+				clone.Content[i+1] = &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!null", Value: "null"}
+				continue
+			}
+		}
+		if key == "storage_profile" {
+			hasStorageProfile = true
+		}
 		if val.Kind != yaml.ScalarNode {
 			continue
 		}
@@ -355,10 +488,16 @@ func (j *JobConfig) UnmarshalYAML(value *yaml.Node) error {
 			}
 		}
 	}
+	if hasStorageProfiles && hasStorageProfile {
+		return fmt.Errorf("storage profiles list cannot be combined with storage_profile (use one)")
+	}
 	if err := clone.Decode(&r); err != nil {
 		return err
 	}
 	*j = JobConfig(r)
+	if profileEntries != nil {
+		j.StorageProfiles = profileEntries
+	}
 	if backupRef != "" {
 		j.BackupRef = backupRef
 	}
@@ -416,6 +555,16 @@ func (j *JobConfig) ValidateWithEncryptionProfiles(profiles map[string]Encryptio
 	}
 	if j.Encryption != "" {
 		if prof, ok := profiles[j.Encryption]; ok {
+			switch {
+			case strings.EqualFold(prof.Type, "age") && prof.Passphrase != "" && len(prof.Recipients) > 0:
+				return fmt.Errorf("job %q encryption profile %q sets both passphrase and recipients (use one)", j.Name, j.Encryption)
+			case (strings.EqualFold(prof.Type, "gpg") || strings.EqualFold(prof.Type, "openpgp") || strings.EqualFold(prof.Type, "pgp")) && prof.Passphrase != "" && len(prof.Recipients) > 0:
+				return fmt.Errorf("job %q encryption profile %q sets both passphrase and recipients (use one)", j.Name, j.Encryption)
+			case strings.EqualFold(prof.Type, "openssl") && len(prof.Recipients) > 0:
+				return fmt.Errorf("job %q encryption profile %q sets recipients, but openssl uses a passphrase only", j.Name, j.Encryption)
+			case strings.EqualFold(prof.Type, "openssl") && prof.Passphrase == "":
+				return fmt.Errorf("job %q encryption profile %q needs a passphrase for openssl", j.Name, j.Encryption)
+			}
 			switch prof.Type {
 			case "", "none", "age", "gpg", "openpgp", "pgp", "openssl":
 
@@ -452,28 +601,65 @@ func (j *JobConfig) ValidateWithEncryptionProfiles(profiles map[string]Encryptio
 			return fmt.Errorf("job %q retention.within: %w", j.Name, err)
 		}
 	}
+	if err := ValidateJobObjects(j.Type, j.Databases, j.Name); err != nil {
+		return err
+	}
 	return nil
 }
 
-func resolveSecrets(job *JobConfig) {
-	job.Host = ResolveSecret(job.Host)
-	job.User = ResolveSecret(job.User)
-	job.Pass = ResolveSecret(job.Pass)
+func resolveSecrets(job *JobConfig) error {
+	for _, field := range []struct {
+		name string
+		dst  *string
+	}{
+		{name: "host", dst: &job.Host},
+		{name: "user", dst: &job.User},
+		{name: "pass", dst: &job.Pass},
+	} {
+		if err := resolveSecretField(field.dst, field.name); err != nil {
+			return fmt.Errorf("job %q: %w", job.Name, err)
+		}
+	}
 	if job.Storage != nil {
-		job.Storage.resolveSecrets()
+		if err := job.Storage.resolveSecrets(); err != nil {
+			return fmt.Errorf("job %q storage: %w", job.Name, err)
+		}
+	}
+	for i := range job.StorageProfiles {
+		if job.StorageProfiles[i].Storage != nil {
+			if err := job.StorageProfiles[i].Storage.resolveSecrets(); err != nil {
+				return fmt.Errorf("job %q storage profile %d: %w", job.Name, i+1, err)
+			}
+		}
 	}
 	if job.Archive != nil && job.Archive.Storage != nil {
-		job.Archive.Storage.resolveSecrets()
+		if err := job.Archive.Storage.resolveSecrets(); err != nil {
+			return fmt.Errorf("job %q archive storage: %w", job.Name, err)
+		}
 	}
 	if job.TLS != nil {
-		job.TLS.CAFile = ResolveSecret(job.TLS.CAFile)
-		job.TLS.CertFile = ResolveSecret(job.TLS.CertFile)
-		job.TLS.KeyFile = ResolveSecret(job.TLS.KeyFile)
+		for _, field := range []struct {
+			name string
+			dst  *string
+		}{
+			{name: "tls.ca_file", dst: &job.TLS.CAFile},
+			{name: "tls.cert_file", dst: &job.TLS.CertFile},
+			{name: "tls.key_file", dst: &job.TLS.KeyFile},
+		} {
+			if err := resolveSecretField(field.dst, field.name); err != nil {
+				return fmt.Errorf("job %q: %w", job.Name, err)
+			}
+		}
 	}
-	job.EncryptionIdentity = ResolveSecret(job.EncryptionIdentity)
+	if err := resolveSecretField(&job.EncryptionIdentity, "encryption passphrase or identity"); err != nil {
+		return fmt.Errorf("job %q: %w", job.Name, err)
+	}
 	for i := range job.EncryptionIdentities {
-		job.EncryptionIdentities[i] = ResolveSecret(job.EncryptionIdentities[i])
+		if err := resolveSecretField(&job.EncryptionIdentities[i], fmt.Sprintf("encryption identity %d", i+1)); err != nil {
+			return fmt.Errorf("job %q: %w", job.Name, err)
+		}
 	}
+	return nil
 }
 
 func (a *ArchiveConfig) resolveStorage(c *Config) {

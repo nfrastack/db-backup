@@ -32,7 +32,7 @@ func SharedKey() string {
 
 func assembleToolKey() []byte {
 	out := make([]byte, 32)
-	for i := 0; i < 16; i++ {
+	for i := range 16 {
 		out[i] = toolKeySeedA[i] ^ toolKeyMask[i]
 		out[i+16] = toolKeySeedB[i] ^ toolKeyMask[i]
 	}

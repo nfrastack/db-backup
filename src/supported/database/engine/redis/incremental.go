@@ -22,7 +22,10 @@ import (
 )
 
 func CheckSupport(ctx context.Context, host string, port int, pass string, tlsCfg *config.TLSConfig) error {
-	rdb := redis.ClientFor(host, port, pass, tlsCfg)
+	rdb, err := redis.ClientFor(host, port, pass, tlsCfg)
+	if err != nil {
+		return err
+	}
 	defer rdb.Close()
 
 	if ctx == nil {
@@ -32,7 +35,7 @@ func CheckSupport(ctx context.Context, host string, port int, pass string, tlsCf
 	if err != nil {
 		return fmt.Errorf("replication info: %w", err)
 	}
-	for _, line := range strings.Split(info, "\n") {
+	for line := range strings.SplitSeq(info, "\n") {
 		if strings.HasPrefix(line, "master_replid:") {
 			return nil
 		}
@@ -41,7 +44,10 @@ func CheckSupport(ctx context.Context, host string, port int, pass string, tlsCf
 }
 
 func IncrementalDump(ctx context.Context, w io.Writer, host string, port int, pass string, tlsCfg *config.TLSConfig) error {
-	rdb := redis.ClientFor(host, port, pass, tlsCfg)
+	rdb, err := redis.ClientFor(host, port, pass, tlsCfg)
+	if err != nil {
+		return err
+	}
 	defer rdb.Close()
 
 	if ctx == nil {
@@ -115,7 +121,10 @@ func IncrementalSpec() registry.IncrementalSpec {
 	}
 }
 func Position(ctx context.Context, host string, port int, pass string, tlsCfg *config.TLSConfig) (string, error) {
-	rdb := redis.ClientFor(host, port, pass, tlsCfg)
+	rdb, err := redis.ClientFor(host, port, pass, tlsCfg)
+	if err != nil {
+		return "", err
+	}
 	defer rdb.Close()
 
 	if ctx == nil {
@@ -127,12 +136,12 @@ func Position(ctx context.Context, host string, port int, pass string, tlsCfg *c
 	}
 
 	var replID, offset string
-	for _, line := range strings.Split(info, "\n") {
-		if strings.HasPrefix(line, "master_replid:") {
-			replID = strings.TrimSpace(strings.TrimPrefix(line, "master_replid:"))
+	for line := range strings.SplitSeq(info, "\n") {
+		if after, ok := strings.CutPrefix(line, "master_replid:"); ok {
+			replID = strings.TrimSpace(after)
 		}
-		if strings.HasPrefix(line, "master_repl_offset:") {
-			offset = strings.TrimSpace(strings.TrimPrefix(line, "master_repl_offset:"))
+		if after, ok := strings.CutPrefix(line, "master_repl_offset:"); ok {
+			offset = strings.TrimSpace(after)
 		}
 	}
 	if replID == "" || offset == "" {

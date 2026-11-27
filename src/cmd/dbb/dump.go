@@ -15,9 +15,58 @@ import (
 
 	"github.com/nfrastack/db-backup/internal/config"
 	"github.com/nfrastack/db-backup/internal/database"
+	"github.com/nfrastack/db-backup/internal/database/objects"
 	"github.com/nfrastack/db-backup/internal/log"
 	"github.com/nfrastack/db-backup/internal/scheduler/runner"
 )
+
+type objectFlag objects.Objects
+
+func (f *objectFlag) String() string {
+	return ""
+}
+
+func (f *objectFlag) Set(s string) error {
+	k, v, ok := strings.Cut(s, "=")
+	k = strings.TrimSpace(k)
+	if !ok || k == "" {
+		return fmt.Errorf("--object must be key=value (got %q)", s)
+	}
+	var b bool
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "true":
+		b = true
+	case "false":
+		b = false
+	default:
+		return fmt.Errorf("--object %q must be true or false (got %q)", k, v)
+	}
+	if *f == nil {
+		*f = objectFlag{}
+	}
+	bb := b
+	(*f)[k] = &bb
+	return nil
+}
+
+type optionFlag map[string]string
+
+func (f *optionFlag) String() string {
+	return ""
+}
+
+func (f *optionFlag) Set(s string) error {
+	k, v, ok := strings.Cut(s, "=")
+	k = strings.TrimSpace(k)
+	if !ok || k == "" {
+		return fmt.Errorf("--option must be key=value (got %q)", s)
+	}
+	if *f == nil {
+		*f = optionFlag{}
+	}
+	(*f)[k] = v
+	return nil
+}
 
 func cmdDump(args []string) int {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -41,11 +90,10 @@ func cmdDump(args []string) int {
 	strategy := fs.String("strategy", "full", "Backup strategy (full|incremental|differential)")
 	splitDB := fs.Bool("split-db", true, "Backup each database into its own file")
 	globalsOnly := fs.Bool("globals", false, "Backup only global objects (PostgreSQL roles, grants)")
-	withRoutines := fs.Bool("routines", true, "Include stored procedures and functions (MySQL/MariaDB)")
-	withEvents := fs.Bool("events", true, "Include scheduled events (MySQL/MariaDB)")
-	withTriggers := fs.Bool("triggers", true, "Include triggers (MySQL/MariaDB)")
-	withViews := fs.Bool("views", true, "Include views (MySQL/MariaDB)")
-	withRawBlobs := fs.Bool("raw-blobs", false, "Write BLOB/BINARY as escaped raw string (MySQL/MariaDB)")
+	var objectFlags objectFlag
+	var optionFlags optionFlag
+	fs.Var(&objectFlags, "object", "Object inclusion toggle key=false (repeatable, e.g. --object views=false)")
+	fs.Var(&optionFlags, "option", "Object option key=value (repeatable, e.g. --option blob_format=raw)")
 	tablesInclude := fs.String("tables-include", "", "Only these tables/collections (comma separated, glob supported)")
 	tablesExclude := fs.String("tables-exclude", "", "Skip these tables/collections (comma separated, glob supported)")
 	tablesSchemaOnly := fs.String("tables-schema-only", "", "Dump structure only for these tables (comma separated, * = all)")
@@ -116,6 +164,12 @@ func cmdDump(args []string) int {
 
 	dbNames := runner.SplitCsv(*dbName)
 
+	resolvedPass, err := runner.ResolveSecret(*dbPass)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ERROR: database pass: %v\n", err)
+		return 1
+	}
+
 	storageCfg, err := config.ResolveStorageArg(globalConfigPaths, *storageProfile, *storagePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
@@ -128,7 +182,7 @@ func cmdDump(args []string) int {
 		Host:           *dbHost,
 		Port:           *dbPort,
 		User:           *dbUser,
-		Pass:           runner.ResolveSecret(*dbPass),
+		Pass:           resolvedPass,
 		Version:        *dbVersion,
 		Checksum:       *checksumType,
 		Compression:    &config.CompressionConfig{Type: *compressType, Level: *compressLevel},
@@ -153,6 +207,20 @@ func cmdDump(args []string) int {
 	if *opensslPass != "" {
 		job.EncryptionIdentity = *opensslPass
 	}
+	resolvedIdentity, err := runner.ResolveSecret(job.EncryptionIdentity)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ERROR: encryption passphrase or identity: %v\n", err)
+		return 1
+	}
+	job.EncryptionIdentity = resolvedIdentity
+	for i := range job.EncryptionIdentities {
+		resolved, err := runner.ResolveSecret(job.EncryptionIdentities[i])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "ERROR: encryption identity %d: %v\n", i+1, err)
+			return 1
+		}
+		job.EncryptionIdentities[i] = resolved
+	}
 	if job.Backup == nil {
 		job.Backup = &config.BackupConfig{}
 	}
@@ -162,6 +230,8 @@ func cmdDump(args []string) int {
 	if *globalsOnly {
 		job.Databases = &config.DatabaseList{Include: []string{"__globals__"}}
 	}
+	flagObjects := objects.Objects(objectFlags)
+	flagOptions := objects.Options(optionFlags)
 	if len(dbNames) > 0 && *dbName != "" {
 		include := dbNames
 		if *globalsOnly {
@@ -169,22 +239,16 @@ func cmdDump(args []string) int {
 			include = append(append([]string{}, dbNames...), "__globals__")
 		}
 		job.Databases = &config.DatabaseList{
-			Include:  include,
-			Routines: withRoutines,
-			Events:   withEvents,
-			Triggers: withTriggers,
-			Views:    withViews,
-			RawBlobs: withRawBlobs,
+			Include: include,
+			Objects: flagObjects,
+			Options: flagOptions,
 		}
 		if *dbExclude != "" {
 			job.Databases.Exclude = runner.SplitCsv(*dbExclude)
 		}
 	} else if job.Databases != nil {
-		job.Databases.Routines = withRoutines
-		job.Databases.Events = withEvents
-		job.Databases.Triggers = withTriggers
-		job.Databases.Views = withViews
-		job.Databases.RawBlobs = withRawBlobs
+		job.Databases.Objects = objects.MergeObjects(job.Databases.Objects, flagObjects)
+		job.Databases.Options = objects.MergeOptions(job.Databases.Options, flagOptions)
 	}
 	if *tablesInclude != "" || *tablesExclude != "" || *tablesSchemaOnly != "" {
 		if job.Databases == nil {
@@ -205,6 +269,12 @@ func cmdDump(args []string) int {
 			}
 		}
 		job.Databases.Tables = tf
+	}
+	if job.Databases != nil {
+		if err := objects.Validate(job.Type, job.Databases.Objects, job.Databases.Options); err != nil {
+			fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
+			return 1
+		}
 	}
 	if err := runner.Run(ctx, job, "manual"); err != nil {
 		return 1

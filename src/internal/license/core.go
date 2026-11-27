@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 )
@@ -94,12 +95,7 @@ func (l *License) Has(feature string) bool {
 	if l == nil {
 		return false
 	}
-	for _, f := range l.Features {
-		if f == feature {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(l.Features, feature)
 }
 
 func IsExpired(lic *License) bool {

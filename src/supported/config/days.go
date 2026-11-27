@@ -62,7 +62,7 @@ func parseDayList(s string) (*config.DayListData, error) {
 		Weekdays: map[time.Weekday]bool{},
 		DOM:      map[int]bool{},
 	}
-	for _, tok := range strings.Split(s, ",") {
+	for tok := range strings.SplitSeq(s, ",") {
 		tok = strings.TrimSpace(tok)
 		if tok == "" {
 			continue

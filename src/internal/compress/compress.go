@@ -25,6 +25,8 @@ const (
 	Bzip2 Type = "bz"
 	XZip  Type = "xz"
 	Zstd  Type = "zstd"
+
+	zstdDecodeWindow = 64 << 20
 )
 
 const rsyncSegmentSize = 1 << 20
@@ -113,10 +115,7 @@ func (c *gzipComp) Compress(w io.Writer, level int, opts Options) (io.WriteClose
 		lvl = level
 	}
 	if opts.Rsyncable || opts.Threads > 1 {
-		threads := opts.Threads
-		if threads < 1 {
-			threads = 1
-		}
+		threads := max(opts.Threads, 1)
 		return newChunkWriter(w, threads, func(buf *bytes.Buffer) (io.WriteCloser, error) {
 			return gzip.NewWriterLevel(buf, lvl)
 		})
@@ -138,10 +137,7 @@ func (c *zstdComp) Compress(w io.Writer, level int, opts Options) (io.WriteClose
 	}
 	zlevel := zstd.EncoderLevelFromZstd(level)
 	if opts.Rsyncable {
-		threads := opts.Threads
-		if threads < 1 {
-			threads = 1
-		}
+		threads := max(opts.Threads, 1)
 		return newChunkWriter(w, threads, func(buf *bytes.Buffer) (io.WriteCloser, error) {
 			enc, err := zstd.NewWriter(buf, zstd.WithEncoderLevel(zlevel), zstd.WithEncoderConcurrency(1))
 			if err != nil {
@@ -195,7 +191,10 @@ func (c *xzComp) Decompress(r io.Reader) (io.Reader, error) {
 }
 
 func (c *zstdComp) Decompress(r io.Reader) (io.Reader, error) {
-	dec, err := zstd.NewReader(r)
+	dec, err := zstd.NewReader(r,
+		zstd.WithDecoderMaxMemory(zstdDecodeWindow),
+		zstd.WithDecoderConcurrency(1),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("zstd: %w", err)
 	}
@@ -274,10 +273,7 @@ func (w *chunkWriter) Write(p []byte) (int, error) {
 			w.cur = make([]byte, 0, rsyncSegmentSize)
 		}
 		room := rsyncSegmentSize - len(w.cur)
-		take := room
-		if take > len(p) {
-			take = len(p)
-		}
+		take := min(room, len(p))
 		w.cur = append(w.cur, p[:take]...)
 		p = p[take:]
 		if len(w.cur) == rsyncSegmentSize {
@@ -332,10 +328,7 @@ func newChunkWriter(out io.Writer, threads int, makeEnc segmentEncoder) (io.Writ
 	if threads < 1 {
 		threads = 1
 	}
-	bufSize := threads * 4
-	if bufSize < 16 {
-		bufSize = 16
-	}
+	bufSize := max(threads*4, 16)
 	w := &chunkWriter{
 		out:     out,
 		makeEnc: makeEnc,

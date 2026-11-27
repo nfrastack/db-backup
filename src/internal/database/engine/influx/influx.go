@@ -103,12 +103,15 @@ type Dumper struct {
 	dbName          string
 	version         int
 	tlsCfg          *config.TLSConfig
+	initErr         error
 	client          *http.Client
 	connCfg         *config.ConnectivityConfig
 	streamClient    *http.Client
+	restoreLimits   config.PhysicalRestoreLimits
 	ctx             context.Context
 	lastPingVersion string
 	mode            string
+	Data            bool
 	server          common.ServerVersion
 }
 
@@ -145,6 +148,9 @@ type influxQueryResult struct {
 func (d *Dumper) Close() error { return nil }
 
 func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
+	if d.initErr != nil {
+		return fmt.Errorf("influx: tls: %w", d.initErr)
+	}
 	mode := d.mode
 	if mode == "" {
 		mode = resolveBackupMode(common.BackupModeFromContext(d.ctxOrBg()))
@@ -227,20 +233,31 @@ func NewDumper(host string, port int, user, pass, dbName string, version int, tl
 	if port == 0 {
 		port = 8086
 	}
+	client, err := common.HTTPClient(nil, 30*time.Second)
+	streamClient, streamErr := common.HTTPClient(nil, 0)
+	if err == nil {
+		err = streamErr
+	}
 	d := &Dumper{
-		host:         host,
-		port:         port,
-		user:         user,
-		pass:         pass,
-		dbName:       dbName,
-		version:      version,
-		client:       common.HTTPClient(nil, 30*time.Second),
-		streamClient: common.HTTPClient(nil, 0),
+		host:          host,
+		port:          port,
+		user:          user,
+		pass:          pass,
+		dbName:        dbName,
+		version:       version,
+		client:        client,
+		initErr:       err,
+		streamClient:  streamClient,
+		restoreLimits: config.DefaultPhysicalRestoreLimits(),
+		Data:          true,
 	}
 	if len(tlsCfg) > 0 && tlsCfg[0] != nil {
 		d.tlsCfg = tlsCfg[0]
-		d.client = common.HTTPClient(d.tlsCfg, 30*time.Second)
-		d.streamClient = common.HTTPClient(d.tlsCfg, 0)
+		d.client, d.initErr = common.HTTPClient(d.tlsCfg, 30*time.Second)
+		d.streamClient, streamErr = common.HTTPClient(d.tlsCfg, 0)
+		if d.initErr == nil {
+			d.initErr = streamErr
+		}
 	}
 	return d
 }
@@ -250,6 +267,9 @@ func (d *Dumper) Open() error {
 }
 
 func (d *Dumper) OpenContext(ctx context.Context) error {
+	if d.initErr != nil {
+		return fmt.Errorf("influx: tls: %w", d.initErr)
+	}
 	d.ctx = ctx
 	d.mode = resolveBackupMode(common.BackupModeFromContext(ctx))
 	explicit := d.version
@@ -314,6 +334,14 @@ func (d *Dumper) detect(ctx context.Context, explicit int) error {
 		"host", d.host, "port", d.port,
 		"version", "v2", "version_source", "detected")
 	return nil
+}
+
+func (d *Dumper) SetInfluxObjects(o InfluxObjects) {
+	d.Data = o.Data
+}
+
+func (d *Dumper) SetPhysicalRestoreLimits(limits config.PhysicalRestoreLimits) {
+	d.restoreLimits = limits
 }
 
 func (d *Dumper) SetConnectivity(cfg *config.ConnectivityConfig) {
@@ -451,6 +479,9 @@ func (d *Dumper) tagKeysFor(db, m string, bulk map[string]map[string]bool) map[s
 
 func (d *Dumper) dumpMeasurements(w *bufio.Writer, db, since, until string) (*dumpStats, error) {
 	st := &dumpStats{}
+	if !d.Data {
+		return st, nil
+	}
 	result, err := d.query(db, "SHOW MEASUREMENTS")
 	if err != nil {
 		return nil, fmt.Errorf("list measurements: %w", err)
@@ -588,14 +619,12 @@ func (d *Dumper) dumpMeasurementsParallel(w *bufio.Writer, db string, st *dumpSt
 
 	tasks := make(chan exportTask)
 	var wg sync.WaitGroup
-	for i := 0; i < workers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range workers {
+		wg.Go(func() {
 			for t := range tasks {
 				d.runTask(w, &wmu, db, states[t.m], t)
 			}
-		}()
+		})
 	}
 
 	for i, m := range measurements {
@@ -706,8 +735,7 @@ func (d *Dumper) runTask(w *bufio.Writer, wmu *sync.Mutex, db string, ms *measSt
 		return nil
 	}
 	err := d.queryChunked(db, q, true, t.tags, t.ftypes, emit)
-	var csvErr *csvParseError
-	if errors.As(err, &csvErr) {
+	if _, ok := errors.AsType[*csvParseError](err); ok {
 		log.Debug("influx", "csv decode failed - retrying window as json",
 			"database", db, "measurement", t.m,
 			"start", t.start, "end", t.end, "error", err.Error())
@@ -801,10 +829,7 @@ func appendLineProtocolValue(b *strings.Builder, v any) {
 
 func buildLineProtocolInto(b *strings.Builder, m string, cols []string, row []any, tags map[string]bool, ftypes map[string]string) bool {
 	b.WriteString(m)
-	n := len(cols)
-	if len(row) < n {
-		n = len(row)
-	}
+	n := min(len(row), len(cols))
 	ts := ""
 	for i := 0; i < n; i++ {
 		col := cols[i]
@@ -939,6 +964,9 @@ func stringifyTag(v any) string {
 }
 
 func (d *Dumper) listDatabases() ([]string, error) {
+	if d.initErr != nil {
+		return nil, fmt.Errorf("influx: tls: %w", d.initErr)
+	}
 	if d.Version() == 2 {
 		names, err := d.listV2Buckets()
 		if err == nil {

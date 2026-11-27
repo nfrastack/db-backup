@@ -34,7 +34,10 @@ func BuildTLSConfig(cfg *config.TLSConfig) (*tls.Config, error) {
 		tc.RootCAs = pool
 	}
 
-	if cfg.CertFile != "" && cfg.KeyFile != "" {
+	if (cfg.CertFile == "") != (cfg.KeyFile == "") {
+		return nil, fmt.Errorf("client certificate and key must be configured together")
+	}
+	if cfg.CertFile != "" {
 		cert, err := tls.LoadX509KeyPair(cfg.CertFile, cfg.KeyFile)
 		if err != nil {
 			return nil, fmt.Errorf("load client certificate: %w", err)
@@ -56,10 +59,14 @@ func BuildTLSConfig(cfg *config.TLSConfig) (*tls.Config, error) {
 	return tc, nil
 }
 
-func HTTPClient(tlsCfg *config.TLSConfig, timeout time.Duration) *http.Client {
+func HTTPClient(tlsCfg *config.TLSConfig, timeout time.Duration) (*http.Client, error) {
 	tr := &http.Transport{}
-	if tc, err := BuildTLSConfig(tlsCfg); err == nil && tc != nil {
+	tc, err := BuildTLSConfig(tlsCfg)
+	if err != nil {
+		return nil, err
+	}
+	if tc != nil {
 		tr.TLSClientConfig = tc
 	}
-	return &http.Client{Timeout: timeout, Transport: tr}
+	return &http.Client{Timeout: timeout, Transport: tr}, nil
 }

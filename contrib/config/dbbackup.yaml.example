@@ -92,7 +92,7 @@ profiles:
       user: admin
       pass: "env://COUCH_PASS"
 
-  ## Databases - connection + include/exclude/table filters
+  ## Databases - connection + include/exclude/table filters + objects/options
   databases:
     production-apps:
       connection: production-mysql
@@ -101,6 +101,20 @@ profiles:
         - app2
       exclude:
         - temp
+      objects:
+        events: false
+      options:
+        blob_format: raw
+        # single_transaction: false  # default true: consistent snapshot; set false to skip the wrapping transaction
+    lean-postgres:
+      connection: analytics-postgres
+      include:
+        - analytics
+      objects:
+        owner: false
+        acl: false
+      options:
+        # single_transaction: false  # default true (REPEATABLE READ, READ ONLY); set false to dump without a snapshot transaction
     analytics-all:
       connection: analytics-postgres
       include:
@@ -122,6 +136,8 @@ profiles:
       connection: local-sqlite
       include:
         - main
+      options:
+        # single_transaction: false  # default true: consistent snapshot; set false to dump without a wrapping transaction
     metrics-all:
       connection: metrics-influx
       include:
@@ -176,6 +192,13 @@ profiles:
       dir_mode: "700"
       user: dbbackup
       group: dbbackup
+
+  restore:
+    verified-mysql:
+      file: mysql-appdb-prod-full-20260811_120000.sql.zst
+      connection: production-mysql
+      storage: fs-analytics
+      verify: true
 
 # Jobs
 jobs:

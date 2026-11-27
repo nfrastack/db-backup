@@ -1,3 +1,62 @@
+## 5.1.0 2026-11-27 <code at nfrastack dot com>
+
+  This minor release brings a series of bug fixes against the tls implementations, creates safety nets around out of memory and denial of service concerns, arbitrary file reading capabilities with specially crafted arguments along with a series of new features. Depending on the engine, toggleable options control what you want to include in your backup file. Restores now have the capability of verifying the backup before restoration to ensure consistency, and for supporters the capability of outputting the dump to multiple storage locations for safety and disaster recovery purposes. There are a series of performance enhancements which should allow operations to complete quicker with less resource usage. For more information on the changes see the upgrade guide at https://nfrastack.com/db-backup
+
+  If this software is useful for your environment, consider supporting it. Most of the feature set is free, any sort of support helps. I do not have a consistent day job and searching for new opportunities. If you have any lets talk! at hello@nfrastack.com
+
+   Breaking Change:
+     - Config structure has objects: and options: structure has been introduced.
+     - Old mysql Keys have been removed and migrated
+     - Require Go 1.27.4 for compilation
+
+   ### Added
+     - add --object and --option cli overrides
+     - add more container environment variables to match config file
+     - allow dumping to multiple storage backends per job (supporter)
+     - fail when secret env:// references cannot be resolved
+     - (container) add CONFIG_INCLUDE variable to add config snippets via file:// or base64
+     - (container) archive to non fs backends via ARCHIVE_LOCATION and retention prunes backend (supporter)
+     - dump additions
+       - (couch) support for skipping attachments, designDocs, data
+       - (influx) support for skipping data
+       - (mongo) support for skipping views, indexes, collection options, data
+       - (mysql) support for skipping routines, events, triggers, views
+       - (postgres) support for skipping functions, aggregates, triggers, views, materialized views
+         rules, policies, extensions, types, sequences, indexes, constraints, comments, blobs,
+         publications, drops, data, owner, acl, collations
+       - (postgres) wrap operation in transaction via options.single_transaction
+       - (mysql) wrap operation in transaction via options.single_transaction
+       - (redis) support for skipping expires, streams, data
+       - (sqlite) support for skipping views, triggers, indexes, sequences, data, drops
+       - (sqlite) wrap operation in transaction via options.single_transaction
+     - restore additions
+       - add support for verifying backup before operation
+       - (sqlite) wrap operation in transaction
+       - WARN when restoring dumps that have been made with skipped options
+
+   ### Changed
+     - bump metadata sidecar version to 3
+     - contain filesystem paths and sanitize database filename tokens
+     - enforce sidecar limit to 1MB
+     - fail closed when secret references cannot be resolved instead of using the reference as a literal credential
+     - post hooks now fire for every failure stage with DBB_STAGE/DBB_ERROR detail
+     - reject invalid storage tls settings instead of ignoring CA, client certificate, key, or version errors
+     - (container) rewrite entrypoint to allow docker to output proper exit code when runing in manual mode
+     - dump modifications
+       - (mysql) remove flat `routines/events/triggers/views/raw_blobs` keys
+       - (mysql) change `raw_blobs` to options.blob_format
+     - refuse encryption profile mixing passphrase and recipients
+     - restore modifications
+       - enforce configurable size limits per file for restoring to avoid oom/dos situations
+       - (influx) normalize physical restore shard paths
+       - (influx) bind manifests and extraction within limits
+       - (mysql) validate incremental position before operation
+     - tls modifications
+       - don't fall back to plain when configuration invalid
+       - fix gcs storage
+       - fix mssql integrated authentication
+       - stop allowing plaintext uri endpoints when enabled
+
 ## 5.0.12 2026-11-23 <code at nfrastack dot com>
 
    ### Changed

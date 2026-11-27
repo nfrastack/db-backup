@@ -19,7 +19,11 @@ func Spec() registry.EngineSpec {
 		Label:       "MongoDB",
 		DefaultPort: 27017,
 		New: func(o registry.Options) (registry.Engine, error) {
-			return NewDumper(o.Host, o.Port, o.User, o.Pass, o.DB, o.AuthSource, o.TLS), nil
+			d := NewDumper(o.Host, o.Port, o.User, o.Pass, o.DB, o.AuthSource, o.TLS)
+			if o.HasObjects {
+				d.SetMongoObjects(ResolveObjects(o.Objects))
+			}
+			return d, nil
 		},
 		ListDatabases: func(host string, port int, user, pass, authSource string, tlsCfg *config.TLSConfig) ([]string, error) {
 			return ListDatabases(host, port, user, pass, authSource, tlsCfg)

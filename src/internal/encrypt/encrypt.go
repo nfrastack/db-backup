@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -115,10 +116,8 @@ func LookupEncryptor(name string) *EncryptorSpec {
 		if n == name {
 			return &spec
 		}
-		for _, a := range spec.Aliases {
-			if a == name {
-				return &spec
-			}
+		if slices.Contains(spec.Aliases, name) {
+			return &spec
 		}
 	}
 	return nil
@@ -164,10 +163,5 @@ func recognizesAlias(s, canonical string, aliases []string) bool {
 	if s == canonical {
 		return true
 	}
-	for _, a := range aliases {
-		if s == a {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(aliases, s)
 }

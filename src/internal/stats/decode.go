@@ -142,11 +142,11 @@ func DecodePayload(payload string) (*Decoded, error) {
 	}
 	seenSchema, seenTool := false, false
 	for _, tok := range fields {
-		eq := strings.IndexByte(tok, '=')
-		if eq < 0 {
+		before, after, ok := strings.Cut(tok, "=")
+		if !ok {
 			continue
 		}
-		key, val := tok[:eq], tok[eq+1:]
+		key, val := before, after
 		switch key {
 		case "sv":
 			d.SchemaVersion = atoiCode(val)
@@ -321,7 +321,7 @@ func decodeBool(code string) bool {
 
 func decodeJobs(val string) []Job {
 	var jobs []Job
-	for _, entry := range strings.Split(val, "|") {
+	for entry := range strings.SplitSeq(val, "|") {
 		f := strings.Split(entry, ":")
 		if len(f) < 11 {
 			continue
@@ -373,7 +373,7 @@ func decodeJobs(val string) []Job {
 
 func decodeServers(field string) []string {
 	var out []string
-	for _, tok := range strings.Split(field, ",") {
+	for tok := range strings.SplitSeq(field, ",") {
 		tok = strings.TrimSpace(tok)
 		if tok == "" {
 			continue

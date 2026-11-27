@@ -72,10 +72,6 @@ func Restore(r io.Reader, host string, port int, user, pass, dbName string, tlsC
 		firstDB = "master"
 	}
 	connStr := ConnStr(user, pass, host, port, firstDB, tlsCfg)
-	if user == "" {
-		connStr = fmt.Sprintf("sqlserver://%s:%d?database=%s&encrypt=disable&trusted_connection=yes",
-			host, port, firstDB)
-	}
 	db, err := sql.Open("sqlserver", connStr)
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)

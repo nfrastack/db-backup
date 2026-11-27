@@ -74,6 +74,7 @@ func cmdRestore(args []string) int {
 	storageProfile := fs.String("storage-profile", "", "Storage profile (resolved from -c <config>)")
 	restoreProfile := fs.String("profile", "", "Restore profile (resolved from -c <config>, profiles.restore)")
 	createDB := fs.Bool("create-db", true, "Create the target database if it does not exist")
+	verify := fs.Bool("verify", false, "Verify backup checksums before restoring")
 	compressType := fs.String("compress", "", "Compression type (auto-detect from filename if empty)")
 	encryptionType := fs.String("encryption", "auto", "Encryption type (auto|age|gpg|openssl) - auto detects from magic bytes or the sidecar")
 	agePass := fs.String("age-passphrase", "", "Age passphrase for decryption")
@@ -92,12 +93,18 @@ func cmdRestore(args []string) int {
 	explicitFlags := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { explicitFlags[f.Name] = true })
 
-	pass := runner.ResolveSecret(*dbPass)
+	pass, err := runner.ResolveSecret(*dbPass)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ERROR: database pass: %v\n", err)
+		return 1
+	}
 
 	var restoreTLS *config.TLSConfig
 	var restoreStorage *config.StorageConfig
 	var restoreIdentity, restorePassphrase, restoreAuthSource string
 	restoreAuthSource = *authSource
+	restoreLimits := config.DefaultPhysicalRestoreLimits()
+	stagingLimits := config.DefaultRestoreStagingLimits()
 
 	if len(fs.Args()) > 0 && len(globalConfigPaths) == 0 {
 		fmt.Fprintf(os.Stderr, "ERROR: job '%s' requires a config file\n", fs.Arg(0))
@@ -114,12 +121,28 @@ func cmdRestore(args []string) int {
 			return 1
 		}
 
-		r := cfg.EffectiveRestore(*restoreProfile)
+		r, err := cfg.EffectiveRestore(*restoreProfile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "ERROR: restore profile: %v\n", err)
+			return 1
+		}
 		if *restoreProfile != "" && r == nil {
 			fmt.Fprintf(os.Stderr, "ERROR: restore profile '%s' not found in config\n", *restoreProfile)
 			return 1
 		}
 		if r != nil {
+			resolvedLimits, err := r.ResolvePhysicalRestoreLimits()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "ERROR: restore limits: %v\n", err)
+				return 1
+			}
+			restoreLimits = resolvedLimits
+			resolvedStaging, err := r.ResolveRestoreStagingLimits()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "ERROR: restore staging limits: %v\n", err)
+				return 1
+			}
+			stagingLimits = resolvedStaging
 			if err := license.AllowRestore(); err != nil {
 				fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
 				fmt.Fprintf(os.Stderr, "  Community restores support AGE encryption and filesystem/S3/webDAV storage only\n")
@@ -128,6 +151,9 @@ func cmdRestore(args []string) int {
 			}
 			if !explicitFlags["create-db"] && r.CreateDB != nil {
 				common.CreateDBOnRestore = *r.CreateDB
+			}
+			if !explicitFlags["verify"] && r.Verify != nil && *r.Verify {
+				*verify = true
 			}
 		}
 		if r != nil {
@@ -183,7 +209,7 @@ func cmdRestore(args []string) int {
 					*dbName = dbNames
 					*storagePath = job.Storage.Path
 					if pass == "" {
-						pass = runner.ResolveSecret(job.Pass)
+						pass = job.Pass
 					}
 					restoreTLS = job.TLS
 					restoreStorage = job.Storage
@@ -297,7 +323,7 @@ func cmdRestore(args []string) int {
 			fmt.Fprintf(os.Stderr, "ERROR: restore requires a backup file (--file). run without --non-interactive to enter interactive mode\n")
 			return 1
 		}
-		interactiveRestore()
+		interactiveRestore(*verify)
 		return 0
 	}
 
@@ -308,7 +334,7 @@ func cmdRestore(args []string) int {
 			line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 			line = strings.TrimSpace(line)
 			if strings.EqualFold(line, "y") || strings.EqualFold(line, "yes") {
-				interactiveRestore()
+				interactiveRestore(*verify)
 				return 0
 			}
 		}
@@ -336,29 +362,14 @@ func cmdRestore(args []string) int {
 		return 0
 	}
 
-	order := []string{*filePath}
-	{
-		cur := *filePath
-		for i := 0; i < 64; i++ {
-			base := ""
-			if cur == *filePath && *basePath != "" {
-				base = *basePath
-			} else if sc, err := retention.ReadSidecar(st, cur); err == nil {
-				base = sc.Base
-			}
-			base = strings.TrimSuffix(base, ".json")
-			if base == "" || base == cur {
-				break
-			}
-			order = append([]string{base}, order...)
-			cur = base
-		}
+	order, err := resolveRestoreOrder(st, *filePath, *basePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
+		return 1
 	}
 	if len(order) > 1 {
 		log.Debug("restore", "chain resolved", "depth", len(order), "order", strings.Join(order, " -> "))
 	}
-
-	warnRestoreServerCompat(st, order[len(order)-1], *dbType, *dbHost, *dbPort, *dbUser, pass, *dbName, restoreAuthSource, restoreTLS)
 
 	opts := retention.DecryptOpts{
 		EncryptionType: *encryptionType,
@@ -369,6 +380,15 @@ func cmdRestore(args []string) int {
 		FallbackPass:   restorePassphrase,
 		FallbackID:     restoreIdentity,
 	}
+	if *verify {
+		if err := verifyRestoreOrder(st, order, opts, *compressType); err != nil {
+			fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
+			return 1
+		}
+	}
+
+	warnRestoreServerCompat(st, order[len(order)-1], *dbType, *dbHost, *dbPort, *dbUser, pass, *dbName, restoreAuthSource, restoreTLS)
+	warnRestoreExcludedObjects(st, order[len(order)-1])
 
 	var restoredBytes int64
 	restoreChecksum := ""
@@ -381,6 +401,7 @@ func cmdRestore(args []string) int {
 		}
 		defer os.RemoveAll(tmpDir)
 		var paths []string
+		var stagedTotal int64
 		for gi, gf := range order {
 			isMain := gi == len(order)-1
 			rc, _, err := st.Download(context.Background(), gf)
@@ -411,20 +432,25 @@ func cmdRestore(args []string) int {
 				fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
 				return 1
 			}
-			_, err = io.Copy(tmp, decoded)
+			staged, err := retention.CopyWithLimit(tmp, decoded, min(stagingLimits.MaxFileBytes, stagingLimits.MaxTotalBytes-stagedTotal))
+			if closer, ok := decoded.(io.Closer); ok {
+				closer.Close()
+			}
 			rc.Close()
 			if err != nil {
 				tmp.Close()
-				fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
+				os.Remove(tmp.Name())
+				fmt.Fprintf(os.Stderr, "ERROR: stage %s: %v\n", gf, err)
 				return 1
 			}
+			stagedTotal += staged
 			tmp.Close()
 			paths = append(paths, tmp.Name())
 		}
-		n, err := engSpec.RestoreChain(paths, order, func(name string, r io.Reader) error {
+		n, err := engSpec.RestoreChainWithLimits(paths, order, func(name string, r io.Reader) error {
 			cr := &countingReader{r: r}
 			stop := startMeter("Restoring "+formatBytes(cr.Bytes())+": ", &cr.n)
-			if err := database.RestoreTo(cr, *dbType, *dbHost, *dbPort, *dbUser, pass, *dbName, restoreAuthSource, restoreTLS); err != nil {
+			if err := database.RestoreToWithLimits(cr, *dbType, *dbHost, *dbPort, *dbUser, pass, *dbName, restoreAuthSource, restoreTLS, restoreLimits); err != nil {
 				close(stop)
 				return fmt.Errorf("restore %s: %w", name, err)
 			}
@@ -432,7 +458,7 @@ func cmdRestore(args []string) int {
 			time.Sleep(50 * time.Millisecond)
 			fmt.Fprintf(os.Stderr, "%s: %s streamed\033[K\n", name, formatBytes(cr.Bytes()))
 			return nil
-		})
+		}, restoreLimits)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "ERROR: restore: %v\n", err)
 			return 1
@@ -442,7 +468,7 @@ func cmdRestore(args []string) int {
 		fmt.Fprintf(os.Stderr, "Restore complete (%d backup(s))\n", len(paths))
 		return 0
 	}
-	if engSpec != nil && engSpec.RestoreChain != nil {
+	if engSpec != nil && (engSpec.RestoreChain != nil || engSpec.RestoreChainWithLimits != nil) {
 		return restoreChain()
 	}
 	for gi, gf := range order {
@@ -516,7 +542,7 @@ func cmdRestore(args []string) int {
 		cr := &countingReader{r: decoded}
 		stop := startMeter(stage+" "+formatBytes(cr.Bytes())+": ", &cr.n)
 
-		if err := database.RestoreTo(cr, *dbType, *dbHost, *dbPort, *dbUser, pass, *dbName, restoreAuthSource, restoreTLS); err != nil {
+		if err := database.RestoreToWithLimits(cr, *dbType, *dbHost, *dbPort, *dbUser, pass, *dbName, restoreAuthSource, restoreTLS, restoreLimits); err != nil {
 			close(stop)
 			rc.Close()
 			fmt.Fprintf(os.Stderr, "ERROR: restore %s: %v\n", gf, err)
@@ -532,6 +558,68 @@ func cmdRestore(args []string) int {
 	manualOpDetail = manualDetail{engine: *dbType, bytes: restoredBytes, checksum: restoreChecksum}
 	fmt.Fprintf(os.Stderr, "Restore complete (%d backup(s))\n", len(order))
 	return 0
+}
+
+func resolveRestoreOrder(st storage.Storage, filePath, basePath string) ([]string, error) {
+	order := []string{filePath}
+	seen := map[string]bool{filepath.Clean(filePath): true}
+	current := filePath
+	for len(order) < 64 {
+		base := ""
+		if current == filePath && basePath != "" {
+			base = basePath
+		} else if sc, err := retention.ReadSidecar(st, current); err == nil {
+			base = sc.Base
+		}
+		base = strings.TrimSuffix(base, ".json")
+		if base == "" {
+			return order, nil
+		}
+		if !filepath.IsLocal(base) {
+			return nil, fmt.Errorf("invalid base backup path %q", base)
+		}
+		base = filepath.Clean(base)
+		if base == "." {
+			return nil, fmt.Errorf("invalid base backup path %q", base)
+		}
+		if seen[base] {
+			return nil, fmt.Errorf("cyclic backup chain at %q", base)
+		}
+		seen[base] = true
+		order = append([]string{base}, order...)
+		current = base
+	}
+	return nil, fmt.Errorf("backup chain exceeds 64 files")
+}
+
+func warnRestoreExcludedObjects(st storage.Storage, file string) {
+	sc, err := retention.ReadSidecar(st, file)
+	if err != nil || sc == nil || len(sc.Objects) == 0 {
+		return
+	}
+	var excluded []string
+	for k, v := range sc.Objects {
+		if !v {
+			excluded = append(excluded, k)
+		}
+	}
+	if len(excluded) == 0 {
+		return
+	}
+	sort.Strings(excluded)
+	engine := sc.ObjectsEngine
+	if engine == "" {
+		engine = sc.Type
+	}
+	fmt.Fprintf(os.Stderr, "WARNING: backup excluded objects (%s): %s\n", engine, strings.Join(excluded, ", "))
+	log.Warn("restore", "backup excluded objects",
+		"status", "warn", "engine", engine, "excluded", strings.Join(excluded, ", "))
+	if v, ok := sc.Objects["drops"]; ok && !v {
+		fmt.Fprintf(os.Stderr, "WARNING: backup has no DROP preambles - restoring over an existing database may conflict\n")
+	}
+	if v, ok := sc.Objects["data"]; ok && !v {
+		fmt.Fprintf(os.Stderr, "WARNING: backup contains no data - restore will be structure-only\n")
+	}
 }
 
 func warnRestoreServerCompat(st storage.Storage, file, dbType, host string, port int, user, pass, dbName, authSource string, tlsCfg *config.TLSConfig) {
@@ -646,7 +734,7 @@ func formatBytes(n int64) string {
 		return fmt.Sprintf("%dB", n)
 	}
 }
-func interactiveRestore() {
+func interactiveRestore(verify bool) {
 	rd := bufio.NewReader(os.Stdin)
 
 	fmt.Fprintf(os.Stderr, "\ndb-backup Interactive Restore\n")
@@ -657,7 +745,12 @@ func interactiveRestore() {
 	var cfg *config.Config
 	var restoreProfileNames []string
 	if len(globalConfigPaths) > 0 {
-		cfg, _ = config.LoadConfig(globalConfigPaths...)
+		var err error
+		cfg, err = config.LoadConfig(globalConfigPaths...)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "ERROR: config: %v\n", err)
+			os.Exit(1)
+		}
 		if cfg != nil && cfg.RestoreProfiles != nil {
 			for name := range cfg.RestoreProfiles {
 				restoreProfileNames = append(restoreProfileNames, name)
@@ -669,6 +762,7 @@ func interactiveRestore() {
 	profileMode := false
 	var effRestore *config.RestoreConfig
 	var profileCfg *config.StorageConfig
+	restoreLimits := config.DefaultPhysicalRestoreLimits()
 	if len(restoreProfileNames) > 0 {
 		fmt.Fprintf(os.Stderr, "\nRestore profiles in config:\n")
 		for i, name := range restoreProfileNames {
@@ -682,7 +776,12 @@ func interactiveRestore() {
 		fmt.Fprintf(os.Stderr, "Use a restore profile? [1-%d, N]: ", len(restoreProfileNames))
 		if v := strings.TrimSpace(readLine(rd)); v != "" && strings.ToLower(v) != "n" {
 			if idx, err := strconv.Atoi(v); err == nil && idx >= 1 && idx <= len(restoreProfileNames) {
-				if r := cfg.EffectiveRestore(restoreProfileNames[idx-1]); r != nil {
+				r, err := cfg.EffectiveRestore(restoreProfileNames[idx-1])
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "ERROR: restore profile: %v\n", err)
+					os.Exit(1)
+				}
+				if r != nil {
 					effRestore = r
 					profileMode = true
 				}
@@ -699,6 +798,13 @@ func interactiveRestore() {
 	}
 
 	if profileMode {
+		var err error
+		restoreLimits, err = effRestore.ResolvePhysicalRestoreLimits()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "ERROR: restore limits: %v\n", err)
+			os.Exit(1)
+		}
+		verify = verify || (effRestore.Verify != nil && *effRestore.Verify)
 		if effRestore.Storage != nil {
 			switch strings.ToLower(effRestore.Storage.Backend) {
 			case "azure", "gcs":
@@ -762,18 +868,22 @@ func interactiveRestore() {
 			os.Exit(0)
 		}
 
-		order := []string{fileName}
-		cur := fileName
-		for i := 0; i < 64; i++ {
-			base := ""
-			if sc, err := retention.ReadSidecar(pst, cur); err == nil {
-				base = strings.TrimSuffix(sc.Base, ".json")
+		order, err := resolveRestoreOrder(pst, fileName, "")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
+			os.Exit(1)
+		}
+
+		opts := retention.DecryptOpts{
+			FallbackPass: effRestore.Passphrase,
+			FallbackID:   effRestore.Identity,
+			Identity:     effRestore.Identity,
+		}
+		if verify {
+			if err := verifyRestoreOrder(pst, order, opts, ""); err != nil {
+				fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
+				os.Exit(1)
 			}
-			if base == "" || base == cur {
-				break
-			}
-			order = append([]string{base}, order...)
-			cur = base
 		}
 
 		totalStart := time.Now()
@@ -791,11 +901,6 @@ func interactiveRestore() {
 			if sc, err := retention.ReadSidecar(pst, gf); err == nil {
 				encMeta = sc.Encryption
 			}
-			opts := retention.DecryptOpts{
-				FallbackPass: effRestore.Passphrase,
-				FallbackID:   effRestore.Identity,
-				Identity:     effRestore.Identity,
-			}
 			decoded, oerr := retention.OpenBackup(cr, encMeta, opts, gf, "")
 			if oerr != nil {
 				rc.Close()
@@ -811,8 +916,8 @@ func interactiveRestore() {
 			if memPort == 0 {
 				memPort = runner.DefaultPort(memType)
 			}
-			if err := database.RestoreTo(decoded, memType, effRestore.Host, memPort,
-				effRestore.User, effRestore.Pass, memDB, "", nil); err != nil {
+			if err := database.RestoreToWithLimits(decoded, memType, effRestore.Host, memPort,
+				effRestore.User, effRestore.Pass, memDB, "", nil, restoreLimits); err != nil {
 				rc.Close()
 				close(stop)
 				fmt.Fprintf(os.Stderr, "\nERROR: restore %s: %v\n", gf, err)
@@ -1100,7 +1205,7 @@ func interactiveRestore() {
 	chain := []string{fileName}
 	{
 		cur := fileName
-		for i := 0; i < 64; i++ {
+		for range 64 {
 			s, err := retention.ReadSidecar(st2, cur)
 			if err != nil || s.Base == "" {
 				break
@@ -1210,7 +1315,7 @@ func interactiveRestore() {
 		} else {
 			fmt.Fprintf(os.Stderr, "restoring base (%d/%d)...\n", idx+1, len(chain))
 		}
-		if err := database.RestoreTo(dr, rType, rHost, portNum, rUser, rPass, rDB, "", nil); err != nil {
+		if err := database.RestoreToWithLimits(dr, rType, rHost, portNum, rUser, rPass, rDB, "", nil, config.DefaultPhysicalRestoreLimits()); err != nil {
 			close(stop2)
 			fmt.Fprintf(os.Stderr, "\nERROR: restore %s: %v\n", item, err)
 			os.Exit(1)
@@ -1233,6 +1338,28 @@ func orDash(s string) string {
 		return "-"
 	}
 	return s
+}
+
+func sortedKeys(m map[string]bool) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func sortedOptionPairs(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	pairs := make([]string, 0, len(m))
+	for _, k := range keys {
+		pairs = append(pairs, k+"="+m[k])
+	}
+	return pairs
 }
 
 func printSidecarPanel(sc *retention.Sidecar) {
@@ -1275,6 +1402,29 @@ func printSidecarPanel(sc *retention.Sidecar) {
 		}
 		if len(t.SchemaOnly) > 0 {
 			fmt.Fprintf(os.Stderr, "  tables   : schema-only %s\n", strings.Join(t.SchemaOnly, ", "))
+		}
+	}
+	if len(sc.Objects) > 0 || len(sc.Options) > 0 {
+		engine := sc.ObjectsEngine
+		if engine == "" {
+			engine = sc.Type
+		}
+		var excluded, included []string
+		for _, k := range sortedKeys(sc.Objects) {
+			if sc.Objects[k] {
+				included = append(included, k)
+			} else {
+				excluded = append(excluded, k)
+			}
+		}
+		if len(excluded) > 0 {
+			fmt.Fprintf(os.Stderr, "  objects  : excluded %s (%s)\n", strings.Join(excluded, ", "), engine)
+		}
+		if len(included) > 0 {
+			fmt.Fprintf(os.Stderr, "  objects  : included %s (%s)\n", strings.Join(included, ", "), engine)
+		}
+		if len(sc.Options) > 0 {
+			fmt.Fprintf(os.Stderr, "  options  : %s\n", strings.Join(sortedOptionPairs(sc.Options), ", "))
 		}
 	}
 	if sc.Base != "" || sc.ChainDepth > 0 {

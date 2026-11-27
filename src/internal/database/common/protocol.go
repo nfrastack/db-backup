@@ -31,7 +31,7 @@ var (
 
 func ProtocolKey(host string, port int, user, db string) string {
 	var parts []string
-	for _, n := range strings.Split(db, ",") {
+	for n := range strings.SplitSeq(db, ",") {
 		if n = strings.TrimSpace(n); n != "" {
 			parts = append(parts, n)
 		}

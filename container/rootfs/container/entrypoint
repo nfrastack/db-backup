@@ -1,0 +1,38 @@
+#!/bin/bash
+# SPDX-FileCopyrightText: © 2026 Nfrastack <code@nfrastack.com>
+#
+# SPDX-License-Identifier: MIT
+
+export PATH="/command:${PATH}"
+
+source /container/base/functions/container/init
+
+if [ -f /container/base/defaults/container ]; then
+    source /container/base/defaults/container
+fi
+
+if [ -f /container/defaults/10-dbbackup ]; then
+    source /container/defaults/10-dbbackup
+fi
+
+if [ "${MODE,,}" = "manual" ] && var_nottrue "${MANUAL_RUN_FOREVER}"; then
+    if [ -x /etc/cont-init.d/0-container ]; then
+        /etc/cont-init.d/0-container
+        _init_rc=$?
+        if [ "${_init_rc}" -ne 0 ]; then
+            exit "${_init_rc}"
+        fi
+    else
+        source /container/base/functions/container/init
+        source /container/functions/10-dbbackup
+        dbbackup_boot_config
+    fi
+    CONFIG_FILE_PATH="${CONFIG_PATH%/}/${CONFIG_FILE}"
+    if [ ! -f "${CONFIG_FILE_PATH}" ]; then
+        print_error "No config at ${CONFIG_FILE_PATH} - set DB* environment variables or mount a db-backup.yml"
+        exit 1
+    fi
+    exec s6-setuidgid "${DBBACKUP_USER}" /app/dbb --container scheduler --config "${CONFIG_FILE_PATH}" --once
+fi
+
+exec /init "$@"

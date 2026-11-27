@@ -581,7 +581,7 @@ func NewDumper(host string, port int, user, pass string, tlsCfg ...*config.TLSCo
 		Triggers:          true,
 		Views:             true,
 		connCfg: &config.ConnectivityConfig{
-			Enabled:       config.BoolPtr(true),
+			Enabled:       new(true),
 			Method:        config.MethodFull,
 			RetryInterval: 5,
 			Timeout:       300,
@@ -633,9 +633,11 @@ func (d *Dumper) OpenContext(ctx context.Context) error {
 				return err
 			}
 			if tc != nil {
-				if name, err := RegisterTLS(tc); err == nil {
-					d.tlsName = name
+				name, err := RegisterTLS(tc)
+				if err != nil {
+					return err
 				}
+				d.tlsName = name
 			}
 		}
 		dsn := ConnectDSN(d.user, d.pass, d.host, d.port,
@@ -711,12 +713,13 @@ func (d *Dumper) SetConnectivity(cfg *config.ConnectivityConfig) {
 	}
 }
 
-func (d *Dumper) SetMysqlObjects(o config.MysqlObjects) {
+func (d *Dumper) SetMysqlObjects(o MysqlObjects) {
 	d.Routines = o.Routines
 	d.Events = o.Events
 	d.Triggers = o.Triggers
 	d.Views = o.Views
 	d.RawBlobs = o.RawBlobs
+	d.SingleTransaction = o.SingleTransaction
 }
 
 func (d *Dumper) SetTableFilter(f *config.TableFilter, schemaOnly bool) {

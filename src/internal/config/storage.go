@@ -141,22 +141,45 @@ func mergeStorage(job, prof *StorageConfig) {
 		job.Group = prof.Group
 	}
 }
-func (s *StorageConfig) resolveSecrets() {
-	s.Path = ResolveSecret(s.Path)
-	s.Pass = ResolveSecret(s.Pass)
-	s.Bucket = ResolveSecret(s.Bucket)
-	s.Endpoint = ResolveSecret(s.Endpoint)
-	s.Region = ResolveSecret(s.Region)
-	s.KeyID = ResolveSecret(s.KeyID)
-	s.KeySecret = ResolveSecret(s.KeySecret)
-	s.Account = ResolveSecret(s.Account)
-	s.Key = ResolveSecret(s.Key)
-	s.URL = ResolveSecret(s.URL)
-	if s.TLS != nil {
-		s.TLS.CAFile = ResolveSecret(s.TLS.CAFile)
-		s.TLS.CertFile = ResolveSecret(s.TLS.CertFile)
-		s.TLS.KeyFile = ResolveSecret(s.TLS.KeyFile)
+func (s *StorageConfig) ResolveSecrets() error {
+	return s.resolveSecrets()
+}
+
+func (s *StorageConfig) resolveSecrets() error {
+	for _, field := range []struct {
+		name string
+		dst  *string
+	}{
+		{name: "path", dst: &s.Path},
+		{name: "pass", dst: &s.Pass},
+		{name: "bucket", dst: &s.Bucket},
+		{name: "endpoint", dst: &s.Endpoint},
+		{name: "region", dst: &s.Region},
+		{name: "key_id", dst: &s.KeyID},
+		{name: "key_secret", dst: &s.KeySecret},
+		{name: "account", dst: &s.Account},
+		{name: "key", dst: &s.Key},
+		{name: "url", dst: &s.URL},
+	} {
+		if err := resolveSecretField(field.dst, field.name); err != nil {
+			return err
+		}
 	}
+	if s.TLS != nil {
+		for _, field := range []struct {
+			name string
+			dst  *string
+		}{
+			{name: "tls.ca_file", dst: &s.TLS.CAFile},
+			{name: "tls.cert_file", dst: &s.TLS.CertFile},
+			{name: "tls.key_file", dst: &s.TLS.KeyFile},
+		} {
+			if err := resolveSecretField(field.dst, field.name); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 func (s *StorageConfig) unsetKey(key string) bool {
 	return s != nil && s.unsetKeys != nil && s.unsetKeys[key]

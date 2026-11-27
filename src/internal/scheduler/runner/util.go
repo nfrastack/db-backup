@@ -58,7 +58,7 @@ func RandomID(nBytes int) string {
 	return hex.EncodeToString(b)
 }
 
-func ResolveSecret(val string) string {
+func ResolveSecret(val string) (string, error) {
 	return config.ResolveSecret(val)
 }
 
@@ -66,7 +66,7 @@ func SetVersion(v string) { version = v }
 
 func SplitCsv(s string) []string {
 	var out []string
-	for _, p := range strings.Split(s, ",") {
+	for p := range strings.SplitSeq(s, ",") {
 		if p = strings.TrimSpace(p); p != "" {
 			out = append(out, p)
 		}

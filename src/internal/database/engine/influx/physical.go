@@ -161,6 +161,9 @@ func (d *Dumper) PhysicalBackupRange(w io.Writer, dbNames []string, since, end s
 }
 
 func (d *Dumper) physicalBackupRange(w io.Writer, dbNames []string, since, end string) error {
+	if !d.Data {
+		return nil
+	}
 	if d.Version() == 1 {
 		return fmt.Errorf("influx: physical backup requires InfluxDB v2 (2.1+)")
 	}

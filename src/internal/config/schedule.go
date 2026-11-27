@@ -161,7 +161,7 @@ func validateCronField(field string, min, max int) error {
 		return nil
 	}
 	if strings.Contains(field, ",") {
-		for _, p := range strings.Split(field, ",") {
+		for p := range strings.SplitSeq(field, ",") {
 			if p == "" || strings.Contains(p, ",") {
 				return fmt.Errorf("bad list element in %q", field)
 			}
@@ -325,8 +325,8 @@ func ParseOffset(s string) (time.Duration, bool) {
 		return 0, false
 	}
 	t := strings.TrimSpace(s)
-	if strings.HasPrefix(t, "+") {
-		n, err := strconv.Atoi(strings.TrimPrefix(t, "+"))
+	if after, ok := strings.CutPrefix(t, "+"); ok {
+		n, err := strconv.Atoi(after)
 		if err != nil || n < 0 {
 			return 0, false
 		}
@@ -453,7 +453,7 @@ func cronFieldMatch(field string, val, min, max int) bool {
 		return true
 	}
 	if strings.Contains(field, ",") {
-		for _, p := range strings.Split(field, ",") {
+		for p := range strings.SplitSeq(field, ",") {
 			if cronFieldMatch(p, val, min, max) {
 				return true
 			}
@@ -555,7 +555,7 @@ func (s *Schedule) enforceCommunityLimits() error {
 }
 
 func isTimeList(s string) bool {
-	for _, tok := range strings.Split(s, ",") {
+	for tok := range strings.SplitSeq(s, ",") {
 		tok = strings.TrimSpace(tok)
 		if tok == "" {
 			return false
@@ -599,7 +599,7 @@ func (d *DayList) parse(s string) error {
 }
 
 func (t *TimeList) parse(s string) error {
-	for _, tok := range strings.Split(s, ",") {
+	for tok := range strings.SplitSeq(s, ",") {
 		tok = strings.TrimSpace(tok)
 		if tok == "" {
 			continue

@@ -172,8 +172,8 @@ func ListBackupsWithSidecars(st storage.Storage, prefix string) ([]BackupEntry, 
 
 	sidecars := make(map[string]*Sidecar)
 	for _, e := range entries {
-		if strings.HasSuffix(e.Path, ".json") {
-			name := strings.TrimSuffix(e.Path, ".json")
+		if before, ok := strings.CutSuffix(e.Path, ".json"); ok {
+			name := before
 			sc, err := ReadSidecar(st, name)
 			if err == nil {
 				sidecars[name] = sc
@@ -233,8 +233,8 @@ func ParseWithin(s string) (time.Duration, error) {
 		return 0, nil
 	}
 
-	if strings.HasSuffix(trimmed, "m") {
-		num := strings.TrimSuffix(trimmed, "m")
+	if before, ok := strings.CutSuffix(trimmed, "m"); ok {
+		num := before
 		n, err := strconv.Atoi(strings.TrimSpace(num))
 		if err != nil || n <= 0 {
 			return 0, fmt.Errorf("invalid keep_within %q: expected Ns, Nm, Nh, or Nd (eg 90s, 10m, 24h, 7d)", s)

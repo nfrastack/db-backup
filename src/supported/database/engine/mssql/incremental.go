@@ -32,10 +32,6 @@ func CheckSupport(ctx context.Context, host string, port int, user, pass, dbName
 		firstDB = "master"
 	}
 	connStr := mssql.ConnStr(user, pass, host, port, firstDB, tlsCfg)
-	if user == "" {
-		connStr = fmt.Sprintf("sqlserver://%s:%d?database=%s&encrypt=disable&trusted_connection=yes",
-			host, port, firstDB)
-	}
 	db, err := sql.Open("sqlserver", connStr)
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)
@@ -69,10 +65,6 @@ func IncrementalDump(ctx context.Context, w io.Writer, host string, port int, us
 		firstDB = "master"
 	}
 	connStr := mssql.ConnStr(user, pass, host, port, firstDB, tlsCfg)
-	if user == "" {
-		connStr = fmt.Sprintf("sqlserver://%s:%d?database=%s&encrypt=disable&trusted_connection=yes",
-			host, port, firstDB)
-	}
 	db, err := sql.Open("sqlserver", connStr)
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)
@@ -122,10 +114,6 @@ func Position(ctx context.Context, host string, port int, user, pass, dbName str
 		firstDB = "master"
 	}
 	connStr := mssql.ConnStr(user, pass, host, port, firstDB, tlsCfg)
-	if user == "" {
-		connStr = fmt.Sprintf("sqlserver://%s:%d?database=%s&encrypt=disable&trusted_connection=yes",
-			host, port, firstDB)
-	}
 	db, err := sql.Open("sqlserver", connStr)
 	if err != nil {
 		return "", fmt.Errorf("connect: %w", err)

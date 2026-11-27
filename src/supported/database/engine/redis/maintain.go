@@ -24,7 +24,10 @@ func init() {
 }
 
 func maintain(host string, port int, user, pass, dbName, authSource string, cfg *common.MaintenanceCfg, tlsCfg *config.TLSConfig) ([]common.OpResult, error) {
-	rdb := rediscore.ClientFor(host, port, pass, tlsCfg)
+	rdb, err := rediscore.ClientFor(host, port, pass, tlsCfg)
+	if err != nil {
+		return nil, err
+	}
 	defer rdb.Close()
 	ctx := context.Background()
 

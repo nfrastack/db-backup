@@ -10,7 +10,7 @@ permissions:
   packages: write
 
 env:
-  GO_VERSION: '1.26.11'
+  GO_VERSION: '1.27.4'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -81,6 +81,13 @@ jobs:
       contents: write
 
     steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
       - name: Download Build Artifacts
         uses: actions/download-artifact@v8
         with:
@@ -92,7 +99,7 @@ jobs:
         id: create_release
         uses: softprops/action-gh-release@v3
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}

@@ -20,21 +20,25 @@ import (
 	"github.com/nfrastack/db-backup/internal/log"
 )
 
-func ClientFor(host string, port int, pass string, tlsCfg *config.TLSConfig) *redis.Client {
+func ClientFor(host string, port int, pass string, tlsCfg *config.TLSConfig) (*redis.Client, error) {
 	return ClientForDB(host, port, pass, 0, tlsCfg)
 }
 
-func ClientForDB(host string, port int, pass string, db int, tlsCfg *config.TLSConfig) *redis.Client {
+func ClientForDB(host string, port int, pass string, db int, tlsCfg *config.TLSConfig) (*redis.Client, error) {
 	opts := &redis.Options{
 		Addr:        fmt.Sprintf("%s:%d", host, port),
 		Password:    pass,
 		DB:          db,
 		DialTimeout: 10 * time.Second,
 	}
-	if tc, err := common.BuildTLSConfig(tlsCfg); err == nil && tc != nil {
+	tc, err := common.BuildTLSConfig(tlsCfg)
+	if err != nil {
+		return nil, fmt.Errorf("redis: tls: %w", err)
+	}
+	if tc != nil {
 		opts.TLSConfig = tc
 	}
-	return redis.NewClient(opts)
+	return redis.NewClient(opts), nil
 }
 
 func Maintain(host string, port int, pass string, cfg *common.MaintenanceCfg) ([]common.OpResult, error) {
@@ -46,7 +50,10 @@ func Restore(r io.Reader, host string, port int, pass, dbName string, tlsCfg *co
 	if err != nil {
 		return err
 	}
-	rdb := ClientForDB(host, port, pass, db, tlsCfg)
+	rdb, err := ClientForDB(host, port, pass, db, tlsCfg)
+	if err != nil {
+		return err
+	}
 	defer rdb.Close()
 	ctx := context.Background()
 

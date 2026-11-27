@@ -55,10 +55,7 @@ func isBranchVersion(v string) bool {
 func compareCores(a, b string) int {
 	as := strings.Split(a, ".")
 	bs := strings.Split(b, ".")
-	n := len(as)
-	if len(bs) > n {
-		n = len(bs)
-	}
+	n := max(len(bs), len(as))
 	for i := 0; i < n; i++ {
 		av, bv := 0, 0
 		if i < len(as) {
@@ -92,7 +89,7 @@ func splitVersion(v string) (core, tag string, ok bool) {
 	if core == "" || strings.HasPrefix(core, ".") || strings.HasSuffix(core, ".") || strings.Contains(core, "..") {
 		return "", "", false
 	}
-	for _, seg := range strings.Split(core, ".") {
+	for seg := range strings.SplitSeq(core, ".") {
 		if _, err := strconv.Atoi(seg); err != nil {
 			return "", "", false
 		}

@@ -48,7 +48,7 @@ type propfindProp struct {
 func (s *webdavStorage) Delete(ctx context.Context, filePath string) error {
 	url := s.davPath(filePath)
 	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := range 3 {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
@@ -95,7 +95,7 @@ func (s *webdavStorage) Delete(ctx context.Context, filePath string) error {
 func (s *webdavStorage) Download(ctx context.Context, filePath string) (io.ReadCloser, int64, error) {
 	url := s.davPath(filePath)
 	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := range 3 {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
@@ -144,7 +144,7 @@ func (s *webdavStorage) List(ctx context.Context, prefix string) ([]Entry, error
 	url := s.baseURL + "/" + path.Join(s.prefix, prefix) + "/"
 	var resp *http.Response
 	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := range 3 {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
@@ -255,7 +255,7 @@ func (s *webdavStorage) Upload(ctx context.Context, filePath string, r io.Reader
 	log.Debug("webdav", "uploading object",
 		"host", endpointHost(s.baseURL), "path", filePath, "bytes", n, "status", "debug")
 	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := range 3 {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
@@ -336,6 +336,19 @@ func newWebDAVStorage(opts map[string]string) (Storage, error) {
 	if u, err := url.Parse(baseURL); err != nil || u.Host == "" {
 		return nil, fmt.Errorf("webdav: invalid url %q (set webdav.url to a URL such as https://host/path)", opts["url"])
 	}
+	if err := ValidateHTTPURL(baseURL); err != nil {
+		return nil, fmt.Errorf("webdav: invalid url: %w", err)
+	}
+	if HasTLSOpts(opts) {
+		if err := RequireHTTPS(baseURL); err != nil {
+			return nil, fmt.Errorf("webdav url: %w", err)
+		}
+	}
+
+	client, err := webdavClient(opts)
+	if err != nil {
+		return nil, fmt.Errorf("webdav: %w", err)
+	}
 
 	log.Debug("webdav", "backend initialised",
 		"host", endpointHost(baseURL), "path", strings.Trim(strings.TrimPrefix(opts["path"], "/"), "/"),
@@ -345,7 +358,7 @@ func newWebDAVStorage(opts map[string]string) (Storage, error) {
 		prefix:  strings.Trim(strings.TrimPrefix(opts["path"], "/"), "/"),
 		user:    opts["user"],
 		pass:    opts["pass"],
-		client:  webdavClient(opts),
+		client:  client,
 	}, nil
 }
 
@@ -373,6 +386,6 @@ func (s *webdavStorage) setAuth(req *http.Request) {
 	}
 }
 
-func webdavClient(opts map[string]string) *http.Client {
+func webdavClient(opts map[string]string) (*http.Client, error) {
 	return TLSHTTPClient(opts)
 }

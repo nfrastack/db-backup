@@ -66,8 +66,8 @@ func ResolveCommit(version string) string {
 	if Commit != "" {
 		return Commit
 	}
-	if i := strings.Index(version, "-g"); i >= 0 {
-		sha := version[i+2:]
+	if _, after, ok := strings.Cut(version, "-g"); ok {
+		sha := after
 		sha = strings.TrimSuffix(sha, "-dirty")
 		if sha != "" {
 			return sha

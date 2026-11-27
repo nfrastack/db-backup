@@ -51,7 +51,7 @@ var publicKeys = map[string][]byte{
 
 func assembleKey() []byte {
 	out := make([]byte, 32)
-	for i := 0; i < 16; i++ {
+	for i := range 16 {
 		out[i] = keySeedA[i] ^ maskSeed[i]
 		out[i+16] = keySeedB[i] ^ maskSeed[i]
 	}
@@ -80,7 +80,7 @@ func keySalt() []byte { return keySaltBytes }
 
 func mustHex(s string) []byte {
 	out := make([]byte, len(s)/2)
-	for i := 0; i < len(out); i++ {
+	for i := range out {
 		hi := hexVal(s[i*2])
 		lo := hexVal(s[i*2+1])
 		out[i] = hi<<4 | lo

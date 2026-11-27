@@ -81,8 +81,7 @@ func (e *StatusError) Error() string {
 }
 
 func HTTPStatus(err error) (int, bool) {
-	var se *StatusError
-	if errors.As(err, &se) {
+	if se, ok := errors.AsType[*StatusError](err); ok {
 		return se.Code, true
 	}
 	return 0, false
@@ -102,8 +101,7 @@ func DescribeError(err error) string {
 	if err == nil {
 		return ""
 	}
-	var dnsErr *net.DNSError
-	if errors.As(err, &dnsErr) {
+	if dnsErr, ok := errors.AsType[*net.DNSError](err); ok {
 		switch {
 		case dnsErr.IsNotFound:
 			return fmt.Sprintf("unknown host %q", dnsErr.Name)

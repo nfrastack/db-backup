@@ -23,7 +23,11 @@ func Spec() registry.EngineSpec {
 			if o.AuthSource != "" {
 				fallback = o.AuthSource
 			}
-			return NewDumper(o.Host, o.Port, o.User, o.Pass, common.ConnDB(o.DB, fallback), o.TLS), nil
+			d := NewDumper(o.Host, o.Port, o.User, o.Pass, common.ConnDB(o.DB, fallback), o.TLS)
+			if o.HasObjects {
+				d.SetPostgresObjects(ResolveObjects(o.Objects, o.Options))
+			}
+			return d, nil
 		},
 		ListDatabases: func(host string, port int, user, pass, authSource string, tlsCfg *config.TLSConfig) ([]string, error) {
 			return ListDatabases(host, port, user, pass, authSource, tlsCfg)

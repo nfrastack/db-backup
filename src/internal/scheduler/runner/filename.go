@@ -27,12 +27,23 @@ var hostSanitizer = strings.NewReplacer(
 )
 
 func createLatestSymlink(job config.JobConfig, dbName, storagePath, filename string) {
+	backend := ""
+	if job.Storage != nil {
+		backend = job.Storage.Backend
+	}
+	CreateLatestSymlinkFor(job, dbName, storagePath, filename, backend)
+}
+
+func CreateLatestSymlinkFor(job config.JobConfig, dbName, storagePath, filename, backend string) {
 	if job.Backup == nil || job.Backup.CreateLatest == nil || !*job.Backup.CreateLatest {
 		return
 	}
-	if !strings.EqualFold(job.Storage.Backend, "filesystem") {
+	if job.Backup == nil || job.Backup.CreateLatest == nil || !*job.Backup.CreateLatest {
+		return
+	}
+	if !strings.EqualFold(backend, "filesystem") {
 		JLog(log.LevelWarn, job, "create_latest symlink only supported for filesystem storage",
-			"status", "warn", "backend", job.Storage.Backend)
+			"status", "warn", "backend", backend)
 		return
 	}
 	dbTok, hostTok := defaultFilenameTokens(job, dbName)
@@ -64,8 +75,7 @@ func dbToken(job config.JobConfig, dbName string) string {
 		return "all"
 	}
 	if dbName != "" && !strings.EqualFold(dbName, "ALL") {
-		dbName = strings.ReplaceAll(dbName, ",", "_")
-		dbName = strings.ReplaceAll(dbName, "-", "_")
+		dbName = strings.NewReplacer(",", "_", "-", "_", "/", "_", `\`, "_").Replace(dbName)
 	}
 	return dbName
 }

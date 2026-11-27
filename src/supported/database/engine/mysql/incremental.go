@@ -33,7 +33,11 @@ func CheckSupport(ctx context.Context, host string, port int, user, pass string,
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	db, err := sql.Open("mysql", mysql.ConnectDSN(user, pass, host, port, "charset=utf8mb4", mysql.TLSNameFor(tlsCfg)))
+	tlsName, err := mysql.TLSNameFor(tlsCfg)
+	if err != nil {
+		return fmt.Errorf("tls: %w", err)
+	}
+	db, err := sql.Open("mysql", mysql.ConnectDSN(user, pass, host, port, "charset=utf8mb4", tlsName))
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)
 	}
@@ -64,8 +68,26 @@ func IncrementalDump(ctx context.Context, w io.Writer, host string, port int, us
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	var startFile string
+	var startPos uint32
+	if since != "" {
+		parts := strings.SplitN(since, ":", 2)
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			return fmt.Errorf("invalid position: %s", since)
+		}
+		pos, err := strconv.ParseUint(parts[1], 10, 32)
+		if err != nil {
+			return fmt.Errorf("invalid position: %s", since)
+		}
+		startFile = parts[0]
+		startPos = uint32(pos)
+	}
+	tlsName, err := mysql.TLSNameFor(tlsCfg)
+	if err != nil {
+		return fmt.Errorf("tls: %w", err)
+	}
 	db, err := sql.Open("mysql", mysql.ConnectDSN(user, pass, host, port,
-		"charset=utf8mb4&multiStatements=true&interpolateParams=true", mysql.TLSNameFor(tlsCfg)))
+		"charset=utf8mb4&multiStatements=true&interpolateParams=true", tlsName))
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)
 	}
@@ -86,13 +108,6 @@ func IncrementalDump(ctx context.Context, w io.Writer, host string, port int, us
 		defer dumper.Close()
 		return dumper.Dump(w, strings.Split(dbName, ","))
 	}
-
-	parts := strings.SplitN(since, ":", 2)
-	if len(parts) != 2 {
-		return fmt.Errorf("invalid position: %s", since)
-	}
-	startFile := parts[0]
-	startPos, _ := strconv.ParseUint(parts[1], 10, 32)
 
 	label := "incremental"
 	if strategy == "differential" {
@@ -181,7 +196,11 @@ func Position(ctx context.Context, host string, port int, user, pass string, tls
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	db, err := sql.Open("mysql", mysql.ConnectDSN(user, pass, host, port, "charset=utf8mb4", mysql.TLSNameFor(tlsCfg)))
+	tlsName, err := mysql.TLSNameFor(tlsCfg)
+	if err != nil {
+		return "", fmt.Errorf("tls: %w", err)
+	}
+	db, err := sql.Open("mysql", mysql.ConnectDSN(user, pass, host, port, "charset=utf8mb4", tlsName))
 	if err != nil {
 		return "", err
 	}
@@ -221,8 +240,8 @@ func binlogEventsIn(db *sql.DB, file string, fromPos uint32) ([]binlogEvent, err
 	cols, _ := rows.Columns()
 	var events []binlogEvent
 	for rows.Next() {
-		vals := make([]interface{}, len(cols))
-		ptrs := make([]interface{}, len(cols))
+		vals := make([]any, len(cols))
+		ptrs := make([]any, len(cols))
 		for i := range vals {
 			ptrs[i] = &vals[i]
 		}
@@ -276,8 +295,8 @@ func listBinlogs(db *sql.DB) ([]string, error) {
 	var names []string
 	cols, _ := rows.Columns()
 	for rows.Next() {
-		vals := make([]interface{}, len(cols))
-		ptrs := make([]interface{}, len(cols))
+		vals := make([]any, len(cols))
+		ptrs := make([]any, len(cols))
 		for i := range vals {
 			ptrs[i] = &vals[i]
 		}

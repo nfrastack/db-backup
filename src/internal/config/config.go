@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nfrastack/db-backup/internal/database/objects"
 	"github.com/nfrastack/db-backup/internal/license"
 	"gopkg.in/yaml.v3"
 )
@@ -41,7 +42,7 @@ type Config struct {
 	RestoreProfiles     map[string]RestoreConfig     `yaml:"-"`
 }
 
-var SupporterResolveRestore = func(c *Config, r *RestoreConfig) {}
+var SupporterResolveRestore = func(c *Config, r *RestoreConfig) error { return nil }
 
 type ProfilesConfig struct {
 	Connections map[string]ConnConfig        `yaml:"connections,omitempty"`
@@ -90,22 +91,25 @@ type ConnConfig struct {
 }
 
 type RestoreConfig struct {
-	File       string         `yaml:"file"`
-	Base       string         `yaml:"base,omitempty"`
-	Connection string         `yaml:"connection"`
-	StorageRef string         `yaml:"storage"`
-	ProfileRef string         `yaml:"profile,omitempty"`
-	Identity   string         `yaml:"identity,omitempty"`
-	Passphrase string         `yaml:"passphrase,omitempty"`
-	CreateDB   *bool          `yaml:"create_db,omitempty"`
-	Type       string         `yaml:"-"`
-	Host       string         `yaml:"-"`
-	Port       int            `yaml:"-"`
-	User       string         `yaml:"-"`
-	Pass       string         `yaml:"-"`
-	AuthSource string         `yaml:"-"`
-	TLS        *TLSConfig     `yaml:"-"`
-	Storage    *StorageConfig `yaml:"-"`
+	File            string                 `yaml:"file"`
+	Base            string                 `yaml:"base,omitempty"`
+	Connection      string                 `yaml:"connection"`
+	StorageRef      string                 `yaml:"storage"`
+	ProfileRef      string                 `yaml:"profile,omitempty"`
+	Identity        string                 `yaml:"identity,omitempty"`
+	Passphrase      string                 `yaml:"passphrase,omitempty"`
+	CreateDB        *bool                  `yaml:"create_db,omitempty"`
+	Verify          *bool                  `yaml:"verify,omitempty"`
+	PhysicalRestore *PhysicalRestoreLimits `yaml:"physical_restore,omitempty"`
+	Staging         *RestoreStagingLimits  `yaml:"staging,omitempty"`
+	Type            string                 `yaml:"-"`
+	Host            string                 `yaml:"-"`
+	Port            int                    `yaml:"-"`
+	User            string                 `yaml:"-"`
+	Pass            string                 `yaml:"-"`
+	AuthSource      string                 `yaml:"-"`
+	TLS             *TLSConfig             `yaml:"-"`
+	Storage         *StorageConfig         `yaml:"-"`
 }
 
 type LicenseConfig struct {
@@ -217,8 +221,9 @@ func (c *ConnectivityConfig) UnmarshalYAML(value *yaml.Node) error {
 	return nil
 }
 
+//go:fix inline
 func BoolPtr(b bool) *bool {
-	return &b
+	return new(b)
 }
 
 const (
@@ -234,20 +239,22 @@ type StartupConfig struct {
 	TempDir         string                 `yaml:"temp_dir,omitempty"`
 }
 
-func (c *Config) EffectiveRestore(profileName string) *RestoreConfig {
+func (c *Config) EffectiveRestore(profileName string) (*RestoreConfig, error) {
 	if c == nil {
-		return nil
+		return nil, nil
 	}
 	if profileName != "" {
 		prof, ok := c.RestoreProfiles[profileName]
 		if !ok {
-			return nil
+			return nil, nil
 		}
 		r := prof
-		c.ResolveRestore(&r)
-		return &r
+		if err := c.ResolveRestore(&r); err != nil {
+			return nil, err
+		}
+		return &r, nil
 	}
-	return c.Restore
+	return c.Restore, nil
 }
 
 func (v *CheckNewVersionConfig) IsEnabled() bool {
@@ -286,10 +293,24 @@ func LoadConfig(paths ...string) (*Config, error) {
 		if err := cfg.Jobs[i].ValidateWithEncryptionProfiles(cfg.EncryptionProfiles); err != nil {
 			return nil, err
 		}
+		if len(cfg.Jobs[i].StorageProfiles) == 0 {
+			if cfg.Jobs[i].UploadMode != "" {
+				fmt.Fprintf(os.Stderr, "WARN: job %q upload_mode is set without a storage profiles list - ignored\n", cfg.Jobs[i].Name)
+			}
+			if cfg.Jobs[i].OnStorageFailure != "" {
+				fmt.Fprintf(os.Stderr, "WARN: job %q on_storage_failure is set without a storage profiles list - ignored\n", cfg.Jobs[i].Name)
+			}
+		} else {
+			if err := ValidateStorageProfiles(&cfg.Jobs[i], cfg.StorageProfiles); err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	for i := range cfg.Jobs {
-		resolveSecrets(&cfg.Jobs[i])
+		if err := resolveSecrets(&cfg.Jobs[i]); err != nil {
+			return nil, err
+		}
 	}
 
 	for _, job := range cfg.Jobs {
@@ -311,7 +332,9 @@ func LoadConfig(paths ...string) (*Config, error) {
 		return nil, fmt.Errorf("no backup jobs or restore target configured")
 	}
 
-	cfg.ResolveRestore(cfg.Restore)
+	if err := cfg.ResolveRestore(cfg.Restore); err != nil {
+		return nil, fmt.Errorf("restore: %w", err)
+	}
 
 	return &cfg, nil
 }
@@ -385,7 +408,9 @@ func LoadStorageProfile(paths []string, name string) (*StorageConfig, error) {
 	if !ok {
 		return nil, fmt.Errorf("storage profile %q not found in %s", name, strings.Join(paths, ", "))
 	}
-	prof.resolveSecrets()
+	if err := prof.resolveSecrets(); err != nil {
+		return nil, fmt.Errorf("storage profile %q: %w", name, err)
+	}
 	return &prof, nil
 }
 func ParseRetention(s string) (time.Duration, error) {
@@ -443,24 +468,26 @@ func ReadStatsState(stateDir string) (*StatsState, error) {
 	}
 	return &st, nil
 }
-func (c *Config) ResolveRestore(r *RestoreConfig) {
+func (c *Config) ResolveRestore(r *RestoreConfig) error {
 	if r == nil {
-		return
+		return nil
 	}
-	SupporterResolveRestore(c, r)
+	return SupporterResolveRestore(c, r)
 }
 
-func (c *Config) ResolveRestoreProfile(name string) *RestoreConfig {
+func (c *Config) ResolveRestoreProfile(name string) (*RestoreConfig, error) {
 	if c == nil || c.RestoreProfiles == nil {
-		return nil
+		return nil, nil
 	}
 	prof, ok := c.RestoreProfiles[name]
 	if !ok {
-		return nil
+		return nil, nil
 	}
 	r := prof
-	c.ResolveRestore(&r)
-	return &r
+	if err := c.ResolveRestore(&r); err != nil {
+		return nil, err
+	}
+	return &r, nil
 }
 
 func ResolveStateDir(configured string) string {
@@ -674,20 +701,9 @@ func (c *Config) resolveJob(job *JobConfig) {
 				if len(job.Databases.Exclude) == 0 && len(prof.Exclude) > 0 && !job.unsetKey("databases") {
 					job.Databases.Exclude = prof.Exclude
 				}
-				if job.Databases.Routines == nil && prof.Routines != nil && !job.unsetKey("databases") {
-					job.Databases.Routines = prof.Routines
-				}
-				if job.Databases.Events == nil && prof.Events != nil && !job.unsetKey("databases") {
-					job.Databases.Events = prof.Events
-				}
-				if job.Databases.Triggers == nil && prof.Triggers != nil && !job.unsetKey("databases") {
-					job.Databases.Triggers = prof.Triggers
-				}
-				if job.Databases.Views == nil && prof.Views != nil && !job.unsetKey("databases") {
-					job.Databases.Views = prof.Views
-				}
-				if job.Databases.RawBlobs == nil && prof.RawBlobs != nil && !job.unsetKey("databases") {
-					job.Databases.RawBlobs = prof.RawBlobs
+				if !job.unsetKey("databases") {
+					job.Databases.Objects = objects.MergeObjects(prof.Objects, job.Databases.Objects)
+					job.Databases.Options = objects.MergeOptions(prof.Options, job.Databases.Options)
 				}
 				if job.Databases.Tables == nil && prof.Tables != nil && !job.unsetKey("tables") {
 					t := *prof.Tables
@@ -743,6 +759,11 @@ func (c *Config) resolveJob(job *JobConfig) {
 		} else if job.Databases == nil {
 			job.Databases = &DatabaseList{Include: []string{job.DatabaseRef}}
 		}
+	}
+
+	if job.Databases != nil && !job.unsetKey("databases") {
+		job.Databases.Objects = objects.MergeObjects(nil, job.Databases.Objects)
+		job.Databases.Options = objects.MergeOptions(nil, job.Databases.Options)
 	}
 
 	if !job.splitDBSet {
@@ -809,6 +830,23 @@ func (c *Config) resolveJob(job *JobConfig) {
 			}
 		} else {
 			fmt.Fprintf(os.Stderr, "WARN: storage profile %q not found\n", job.StorageRef)
+		}
+	}
+
+	if len(job.StorageProfiles) > 0 && c != nil && c.StorageProfiles != nil {
+		for i := range job.StorageProfiles {
+			if prof, ok := c.StorageProfiles[job.StorageProfiles[i].StorageProfile]; ok {
+				sp := prof
+				job.StorageProfiles[i].Storage = &sp
+			}
+		}
+		if job.Storage == nil {
+			if job.StorageProfiles[0].Storage != nil {
+				primary := *job.StorageProfiles[0].Storage
+				job.Storage = &primary
+			}
+		} else if job.StorageProfiles[0].Storage != nil {
+			mergeStorage(job.Storage, job.StorageProfiles[0].Storage)
 		}
 	}
 
@@ -886,7 +924,7 @@ func (c *Config) resolveJob(job *JobConfig) {
 			job.Connectivity = &cp
 		default:
 			job.Connectivity = &ConnectivityConfig{
-				Enabled:       BoolPtr(true),
+				Enabled:       new(true),
 				Method:        MethodFull,
 				RetryInterval: 5,
 				Timeout:       30,
@@ -944,8 +982,8 @@ func validateRetentionWithin(s string) error {
 	if trimmed == "" {
 		return nil
 	}
-	if strings.HasSuffix(trimmed, "m") {
-		num := strings.TrimSuffix(trimmed, "m")
+	if before, ok := strings.CutSuffix(trimmed, "m"); ok {
+		num := before
 		if _, err := strconv.Atoi(strings.TrimSpace(num)); err != nil || strings.TrimSpace(num) == "" {
 			return fmt.Errorf("invalid keep_within %q", s)
 		}

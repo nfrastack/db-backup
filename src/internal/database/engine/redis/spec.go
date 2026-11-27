@@ -24,6 +24,9 @@ func Spec() registry.EngineSpec {
 			}
 			d := NewDumper(o.Host, o.Port, o.Pass, o.TLS)
 			d.db = db
+			if o.HasObjects {
+				d.SetRedisObjects(ResolveObjects(o.Objects))
+			}
 			return d, nil
 		},
 		Maintain: func(host string, port int, user, pass, dbName, authSource string, cfg *common.MaintenanceCfg, tlsCfg *config.TLSConfig) ([]common.OpResult, error) {

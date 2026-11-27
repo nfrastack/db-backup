@@ -47,11 +47,12 @@ var (
 )
 
 type gcsStorage struct {
-	bucket   string
-	prefix   string
-	tok      *gcsToken
-	client   *http.Client
-	endpoint string
+	bucket      string
+	prefix      string
+	tok         *gcsToken
+	client      *http.Client
+	endpoint    string
+	tlsRequired bool
 }
 
 type gcsToken struct {
@@ -84,7 +85,7 @@ type gcsObjectItem struct {
 func (s *gcsStorage) Delete(ctx context.Context, filePath string) error {
 	u := s.storageURL(url.PathEscape(s.bucket)+"/o", url.PathEscape(s.objectName(filePath)))
 	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := range 3 {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
@@ -120,7 +121,7 @@ func (s *gcsStorage) Delete(ctx context.Context, filePath string) error {
 func (s *gcsStorage) Download(ctx context.Context, filePath string) (io.ReadCloser, int64, error) {
 	u := s.storageURL(url.PathEscape(s.bucket)+"/o", url.PathEscape(s.objectName(filePath))+"?alt=media")
 	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := range 3 {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
@@ -167,7 +168,7 @@ func (s *gcsStorage) List(ctx context.Context, prefix string) ([]storage.Entry, 
 		}
 		var resp *http.Response
 		var lastErr error
-		for attempt := 0; attempt < 3; attempt++ {
+		for attempt := range 3 {
 			if attempt > 0 {
 				select {
 				case <-ctx.Done():
@@ -255,7 +256,7 @@ func (s *gcsStorage) Upload(ctx context.Context, filePath string, r io.Reader) (
 	initURL := s.uploadURL(url.PathEscape(s.bucket)+"/o") + "?uploadType=resumable&name=" + url.QueryEscape(name)
 	var initResp *http.Response
 	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := range 3 {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
@@ -299,7 +300,7 @@ func (s *gcsStorage) Upload(ctx context.Context, filePath string, r io.Reader) (
 
 	var resp *http.Response
 	lastErr = nil
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := range 3 {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
@@ -371,6 +372,11 @@ func (s *gcsStorage) do(ctx context.Context, method, rawURL string, body io.Read
 }
 
 func (s *gcsStorage) doHdr(ctx context.Context, method, rawURL string, body io.Reader, hdr map[string]string) (*http.Response, error) {
+	if s.tlsRequired {
+		if err := storage.RequireHTTPS(rawURL); err != nil {
+			return nil, fmt.Errorf("gcs request URL: %w", err)
+		}
+	}
 	tok, err := s.auth(ctx)
 	if err != nil {
 		return nil, err
@@ -389,6 +395,11 @@ func (s *gcsStorage) doHdr(ctx context.Context, method, rawURL string, body io.R
 	return s.client.Do(req)
 }
 func (s *gcsStorage) fetchToken(ctx context.Context) (*gcsToken, error) {
+	if s.tlsRequired {
+		if err := storage.RequireHTTPS(s.tok.tokenURI); err != nil {
+			return nil, fmt.Errorf("gcs token URL: %w", err)
+		}
+	}
 	header, _ := json.Marshal(map[string]string{"alg": "RS256", "typ": "JWT"})
 	now := time.Now().Unix()
 	claims, _ := json.Marshal(map[string]any{
@@ -483,16 +494,46 @@ func newGCSStorage(opts map[string]string) (storage.Storage, error) {
 		k.TokenURI = testTokenURI
 	}
 
+	tlsRequired := storage.HasTLSOpts(opts)
+	client := &http.Client{Timeout: 3600 * time.Second}
+	if tlsRequired {
+		client, err = storage.TLSHTTPClient(opts)
+		if err != nil {
+			return nil, fmt.Errorf("gcs: %w", err)
+		}
+	}
+
+	endpoint := strings.TrimRight(strings.TrimSpace(opts["endpoint"]), "/")
+	if endpoint != "" {
+		if !strings.Contains(endpoint, "://") {
+			endpoint = "https://" + endpoint
+		}
+		if err := storage.ValidateHTTPURL(endpoint); err != nil {
+			return nil, fmt.Errorf("gcs: invalid endpoint: %w", err)
+		}
+		if tlsRequired {
+			if err := storage.RequireHTTPS(endpoint); err != nil {
+				return nil, fmt.Errorf("gcs endpoint: %w", err)
+			}
+		}
+	}
+	if tlsRequired {
+		if err := storage.RequireHTTPS(k.TokenURI); err != nil {
+			return nil, fmt.Errorf("gcs token endpoint: %w", err)
+		}
+	}
+
 	return &gcsStorage{
-		bucket:   bucket,
-		prefix:   strings.TrimPrefix(opts["path"], "/"),
-		endpoint: strings.TrimRight(opts["endpoint"], "/"),
+		bucket:      bucket,
+		prefix:      strings.TrimPrefix(opts["path"], "/"),
+		endpoint:    endpoint,
+		tlsRequired: tlsRequired,
 		tok: &gcsToken{
 			clientEmail: k.ClientEmail,
 			privateKey:  k.PrivateKey,
 			tokenURI:    k.TokenURI,
 		},
-		client: &http.Client{Timeout: 3600 * time.Second},
+		client: client,
 	}, nil
 }
 

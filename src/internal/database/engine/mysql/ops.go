@@ -23,11 +23,15 @@ var (
 	reOtherQual  = regexp.MustCompile("(?i)(FROM|UPDATE|DELETE\\s+FROM|TRUNCATE\\s+TABLE|RENAME\\s+TABLE|DROP\\s+TABLE|ALTER\\s+TABLE|CREATE\\s+TABLE)\\s+`[^`]+`\\.")
 	rePlainQual  = regexp.MustCompile("(?i)(INSERT\\s+INTO|UPDATE|DELETE\\s+FROM|TRUNCATE\\s+TABLE|RENAME\\s+TABLE|DROP\\s+TABLE|ALTER\\s+TABLE|CREATE\\s+TABLE)\\s+([A-Za-z0-9_]+)\\.")
 	reUseSrc     = regexp.MustCompile("(?i)USE\\s+`([^`]+)`")
-	reUseStmt    = regexp.MustCompile("(?i)USE\\s+`[^`]+`\\s*;")
+	reUseStmt    = regexp.MustCompile("(?i)USE\\s+`[^`]+`")
 )
 
 func ListDatabases(host string, port int, user, pass string, tlsCfg *config.TLSConfig) ([]string, error) {
-	db, err := sql.Open("mysql", ConnectDSN(user, pass, host, port, "charset=utf8mb4", TLSNameFor(tlsCfg)))
+	tlsName, err := TLSNameFor(tlsCfg)
+	if err != nil {
+		return nil, fmt.Errorf("tls: %w", err)
+	}
+	db, err := sql.Open("mysql", ConnectDSN(user, pass, host, port, "charset=utf8mb4", tlsName))
 	if err != nil {
 		return nil, fmt.Errorf("connect: %w", err)
 	}
@@ -54,7 +58,11 @@ func ListDatabases(host string, port int, user, pass string, tlsCfg *config.TLSC
 }
 
 func Maintain(host string, port int, user, pass, dbName string, cfg *common.MaintenanceCfg, tlsCfg *config.TLSConfig) ([]common.OpResult, error) {
-	db, err := sql.Open("mysql", ConnectDSN(user, pass, host, port, "charset=utf8mb4&multiStatements=true", TLSNameFor(tlsCfg)))
+	tlsName, err := TLSNameFor(tlsCfg)
+	if err != nil {
+		return nil, fmt.Errorf("tls: %w", err)
+	}
+	db, err := sql.Open("mysql", ConnectDSN(user, pass, host, port, "charset=utf8mb4&multiStatements=true", tlsName))
 	if err != nil {
 		return nil, fmt.Errorf("connect: %w", err)
 	}
@@ -82,8 +90,12 @@ func Maintain(host string, port int, user, pass, dbName string, cfg *common.Main
 
 func Restore(r io.Reader, host string, port int, user, pass, dbName string, tlsCfg *config.TLSConfig) error {
 	firstDB := common.FirstDBName(dbName)
+	tlsName, err := TLSNameFor(tlsCfg)
+	if err != nil {
+		return fmt.Errorf("tls: %w", err)
+	}
 	db, err := sql.Open("mysql", ConnectDSN(user, pass, host, port,
-		"charset=utf8mb4&multiStatements=true&interpolateParams=true", TLSNameFor(tlsCfg)))
+		"charset=utf8mb4&multiStatements=true&interpolateParams=true", tlsName))
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)
 	}
@@ -112,7 +124,7 @@ func Restore(r io.Reader, host string, port int, user, pass, dbName string, tlsC
 
 	var reUseTarget *regexp.Regexp
 	if target != "" {
-		reUseTarget = regexp.MustCompile("(?i)USE\\s+`" + regexp.QuoteMeta(target) + "`\\s*;")
+		reUseTarget = regexp.MustCompile("(?i)USE\\s+`" + regexp.QuoteMeta(target) + "`")
 	}
 
 	sources := map[string]bool{}
@@ -193,11 +205,11 @@ func isInsertStmt(stmt string) bool {
 	for {
 		t := strings.TrimLeft(s, " \t\r\n")
 		if strings.HasPrefix(t, "--") || strings.HasPrefix(t, "#") {
-			i := strings.IndexByte(t, '\n')
-			if i < 0 {
+			_, after, ok := strings.Cut(t, "\n")
+			if !ok {
 				return false
 			}
-			s = t[i+1:]
+			s = after
 			continue
 		}
 		if strings.HasPrefix(t, "/*") {
@@ -263,7 +275,7 @@ func rewriteStatement(stmt, target string, sources map[string]bool) (string, int
 				sources[m[1]] = true
 			}
 		}
-		scope = reUseStmt.ReplaceAllString(scope, "USE `"+target+"`;")
+		scope = reUseStmt.ReplaceAllString(scope, "USE `"+target+"`")
 		scope = reInsertQual.ReplaceAllString(scope, "INSERT INTO `"+target+"`.")
 		scope = reOtherQual.ReplaceAllString(scope, "$1 `"+target+"`.")
 		scope = rePlainQual.ReplaceAllString(scope, "${1} "+target+".")
@@ -312,7 +324,7 @@ func runMySQLOp(db *sql.DB, op, dbName string) *common.OpResult {
 func splitSQLStatements(data string) []string {
 	var out []string
 	sp := newStmtSplitter()
-	for _, line := range strings.Split(data, "\n") {
+	for line := range strings.SplitSeq(data, "\n") {
 		out = append(out, sp.pushLine(line)...)
 	}
 	if s := sp.flush(); s != "" {

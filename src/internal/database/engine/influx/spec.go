@@ -18,7 +18,11 @@ func Spec() registry.EngineSpec {
 		Label:       "InfluxDB",
 		DefaultPort: 8086,
 		New: func(o registry.Options) (registry.Engine, error) {
-			return NewDumper(o.Host, o.Port, o.User, o.Pass, o.DB, o.Version, o.TLS), nil
+			d := NewDumper(o.Host, o.Port, o.User, o.Pass, o.DB, o.Version, o.TLS)
+			if o.HasObjects {
+				d.SetInfluxObjects(ResolveObjects(o.Objects))
+			}
+			return d, nil
 		},
 		ListDatabases: func(host string, port int, user, pass, authSource string, tlsCfg *config.TLSConfig) ([]string, error) {
 			return ListDatabases(host, port, user, pass, authSource, tlsCfg)
@@ -29,6 +33,10 @@ func Spec() registry.EngineSpec {
 		Restore: func(r io.Reader, host string, port int, user, pass, dbName, authSource string, tlsCfg *config.TLSConfig) error {
 			return Restore(r, host, port, user, pass, dbName, authSource, tlsCfg)
 		},
-		RestoreChain: RestoreChain,
+		RestoreWithLimits: func(r io.Reader, host string, port int, user, pass, dbName, authSource string, tlsCfg *config.TLSConfig, limits config.PhysicalRestoreLimits) error {
+			return RestoreWithLimits(r, host, port, user, pass, dbName, authSource, tlsCfg, limits)
+		},
+		RestoreChain:           RestoreChain,
+		RestoreChainWithLimits: RestoreChainWithLimits,
 	}
 }

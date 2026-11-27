@@ -8,12 +8,14 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"sort"
 	"strings"
 	"sync"
 
 	"github.com/nfrastack/db-backup/internal/config"
 	"github.com/nfrastack/db-backup/internal/database/common"
+	"github.com/nfrastack/db-backup/internal/database/objects"
 )
 
 type Engine interface {
@@ -33,7 +35,8 @@ type Options struct {
 	Version    int
 	TLS        *config.TLSConfig
 	AuthSource string
-	Objects    config.MysqlObjects
+	Objects    objects.Objects
+	Options    objects.Options
 	HasObjects bool
 }
 
@@ -43,12 +46,14 @@ type EngineSpec struct {
 	Label       string
 	DefaultPort int
 
-	New             func(o Options) (Engine, error)
-	IncrementalDump func(ctx context.Context, w io.Writer, host string, port int, user, pass, dbName, strategy, since, authSource string, tlsCfg *config.TLSConfig) error
-	ListDatabases   func(host string, port int, user, pass, authSource string, tlsCfg *config.TLSConfig) ([]string, error)
-	Maintain        func(host string, port int, user, pass, dbName, authSource string, cfg *common.MaintenanceCfg, tlsCfg *config.TLSConfig) ([]common.OpResult, error)
-	Restore         func(r io.Reader, host string, port int, user, pass, dbName, authSource string, tlsCfg *config.TLSConfig) error
-	RestoreChain    func(paths, names []string, restore func(name string, r io.Reader) error) (int64, error)
+	New                    func(o Options) (Engine, error)
+	IncrementalDump        func(ctx context.Context, w io.Writer, host string, port int, user, pass, dbName, strategy, since, authSource string, tlsCfg *config.TLSConfig) error
+	ListDatabases          func(host string, port int, user, pass, authSource string, tlsCfg *config.TLSConfig) ([]string, error)
+	Maintain               func(host string, port int, user, pass, dbName, authSource string, cfg *common.MaintenanceCfg, tlsCfg *config.TLSConfig) ([]common.OpResult, error)
+	Restore                func(r io.Reader, host string, port int, user, pass, dbName, authSource string, tlsCfg *config.TLSConfig) error
+	RestoreWithLimits      func(r io.Reader, host string, port int, user, pass, dbName, authSource string, tlsCfg *config.TLSConfig, limits config.PhysicalRestoreLimits) error
+	RestoreChain           func(paths, names []string, restore func(name string, r io.Reader) error) (int64, error)
+	RestoreChainWithLimits func(paths, names []string, restore func(name string, r io.Reader) error, limits config.PhysicalRestoreLimits) (int64, error)
 }
 
 type IncrementalSpec struct {
@@ -76,9 +81,7 @@ func Aliases() map[string]string {
 	registryMu.RLock()
 	defer registryMu.RUnlock()
 	out := make(map[string]string, len(aliases))
-	for a, c := range aliases {
-		out[a] = c
-	}
+	maps.Copy(out, aliases)
 	return out
 }
 func CanonicalName(name string) string {

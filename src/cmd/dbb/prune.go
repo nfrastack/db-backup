@@ -33,6 +33,7 @@ func cmdPrune(args []string) int {
 	fs.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
 	cfgGFS := false
 	var jobStorage *config.StorageConfig
+	var jobStorageProfiles []config.StorageEntry
 
 	if len(globalConfigPaths) > 0 {
 		cfg, err := config.LoadConfig(globalConfigPaths...)
@@ -75,48 +76,55 @@ func cmdPrune(args []string) int {
 					for _, job := range cfg.Jobs {
 						if job.Name == jn {
 							jobStorage = job.Storage
+							jobStorageProfiles = job.StorageProfiles
 							break
 						}
 					}
 				}
 			} else {
 				jobStorage = cfg.Jobs[0].Storage
+				jobStorageProfiles = cfg.Jobs[0].StorageProfiles
 			}
 		}
 	}
 
-	storageCfg := jobStorage
-	if *storageProfile != "" {
-		var err error
-		storageCfg, err = config.ResolveStorageArg(globalConfigPaths, *storageProfile, *storagePath)
+	type pruneTarget struct {
+		name string
+		cfg  *config.StorageConfig
+	}
+	var targets []pruneTarget
+	if *storageProfile != "" || (len(fs.Args()) == 0 && len(jobStorageProfiles) == 0) {
+		storageCfg, err := config.ResolveStorageArg(globalConfigPaths, *storageProfile, *storagePath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
 			return 1
 		}
-	}
-	if storageCfg == nil {
-		var err error
-		storageCfg, err = config.ResolveStorageArg(globalConfigPaths, "", *storagePath)
+		if jobStorage != nil && *storageProfile == "" {
+			storageCfg = jobStorage
+		}
+		targets = append(targets, pruneTarget{name: "", cfg: storageCfg})
+	} else if len(jobStorageProfiles) > 0 {
+		for _, e := range jobStorageProfiles {
+			if e.Storage == nil {
+				fmt.Fprintf(os.Stderr, "WARNING: skipping unresolved storage profile %q\n", e.StorageProfile)
+				continue
+			}
+			targets = append(targets, pruneTarget{name: e.StorageProfile, cfg: e.Storage})
+		}
+		if len(targets) == 0 {
+			fmt.Fprintf(os.Stderr, "ERROR: no resolvable storage profiles for prune\n")
+			return 1
+		}
+	} else {
+		storageCfg, err := config.ResolveStorageArg(globalConfigPaths, "", *storagePath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
 			return 1
 		}
-	}
-	st, err := storage.New(storage.Backend(storageCfg.Backend), runner.StorageOpts(storageCfg))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "ERROR: storage: %v\n", err)
-		return 1
-	}
-
-	backups, err := retention.ListBackupsWithSidecars(st, "")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "ERROR: list: %v\n", err)
-		return 1
-	}
-
-	if len(backups) == 0 {
-		fmt.Fprintln(os.Stderr, "No backups found")
-		return 0
+		if jobStorage != nil {
+			storageCfg = jobStorage
+		}
+		targets = append(targets, pruneTarget{name: "", cfg: storageCfg})
 	}
 
 	policy := retention.RetentionPolicy{
@@ -156,6 +164,35 @@ func cmdPrune(args []string) int {
 		return 1
 	}
 
+	for _, tgt := range targets {
+		if tgt.name != "" {
+			fmt.Fprintf(os.Stderr, "Pruning storage profile %q:\n", tgt.name)
+		}
+		if code := pruneOne(tgt.cfg, policy, *dryRun || runner.DryRun()); code != 0 {
+			return code
+		}
+	}
+	return 0
+}
+
+func pruneOne(storageCfg *config.StorageConfig, policy retention.RetentionPolicy, dryRun bool) int {
+	st, err := storage.New(storage.Backend(storageCfg.Backend), runner.StorageOpts(storageCfg))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ERROR: storage: %v\n", err)
+		return 1
+	}
+
+	backups, err := retention.ListBackupsWithSidecars(st, "")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ERROR: list: %v\n", err)
+		return 1
+	}
+
+	if len(backups) == 0 {
+		fmt.Fprintln(os.Stderr, "No backups found")
+		return 0
+	}
+
 	toDelete := retention.ApplyRetention(backups, policy)
 
 	if len(toDelete) == 0 {
@@ -168,7 +205,7 @@ func cmdPrune(args []string) int {
 		fmt.Fprintf(os.Stderr, "  %s\n", f)
 	}
 
-	if *dryRun || runner.DryRun() {
+	if dryRun {
 		return 0
 	}
 

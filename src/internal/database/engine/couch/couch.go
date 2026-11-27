@@ -21,20 +21,27 @@ import (
 )
 
 type Dumper struct {
-	host    string
-	port    int
-	user    string
-	pass    string
-	client  *http.Client
-	tlsCfg  *config.TLSConfig
-	connCfg *config.ConnectivityConfig
-	ctx     context.Context
-	server  common.ServerVersion
+	host        string
+	port        int
+	user        string
+	pass        string
+	client      *http.Client
+	tlsCfg      *config.TLSConfig
+	initErr     error
+	connCfg     *config.ConnectivityConfig
+	ctx         context.Context
+	server      common.ServerVersion
+	Attachments bool
+	DesignDocs  bool
+	Data        bool
 }
 
 func (d *Dumper) Close() error { return nil }
 
 func (d *Dumper) Dump(w io.Writer, dbNames []string) error {
+	if d.initErr != nil {
+		return fmt.Errorf("couch: tls: %w", d.initErr)
+	}
 	start := time.Now()
 	log.Debug("couch", "backup start",
 		"host", d.host, "port", d.port, "scheme", d.scheme(),
@@ -76,16 +83,19 @@ func NewDumper(host string, port int, user, pass string, tlsCfg ...*config.TLSCo
 	if port == 0 {
 		port = 5984
 	}
+	client, err := common.HTTPClient(nil, 30*time.Second)
 	d := &Dumper{
-		host:   host,
-		port:   port,
-		user:   user,
-		pass:   pass,
-		client: common.HTTPClient(nil, 30*time.Second),
+		host:        host,
+		port:        port,
+		user:        user,
+		pass:        pass,
+		client:      client,
+		initErr:     err,
+		Attachments: true, DesignDocs: true, Data: true,
 	}
 	if len(tlsCfg) > 0 && tlsCfg[0] != nil {
 		d.tlsCfg = tlsCfg[0]
-		d.client = common.HTTPClient(tlsCfg[0], 30*time.Second)
+		d.client, d.initErr = common.HTTPClient(tlsCfg[0], 30*time.Second)
 	}
 	return d
 }
@@ -95,6 +105,9 @@ func (d *Dumper) Open() error {
 }
 
 func (d *Dumper) OpenContext(ctx context.Context) error {
+	if d.initErr != nil {
+		return fmt.Errorf("couch: tls: %w", d.initErr)
+	}
 	d.ctx = ctx
 	log.Debug("couch", "connect start",
 		"host", d.host, "port", d.port, "scheme", d.scheme(),
@@ -137,6 +150,12 @@ func (d *Dumper) authMode() string {
 	return "basic"
 }
 
+func (d *Dumper) SetCouchObjects(o CouchObjects) {
+	d.Attachments = o.Attachments
+	d.DesignDocs = o.DesignDocs
+	d.Data = o.Data
+}
+
 func (d *Dumper) SetConnectivity(cfg *config.ConnectivityConfig) {
 	if cfg != nil {
 		d.connCfg = cfg
@@ -158,14 +177,22 @@ const couchPageSize = 1000
 func (d *Dumper) dumpDatabase(w io.Writer, dbName string) (int, error) {
 	start := time.Now()
 	fmt.Fprintf(w, "// Database: %s\n", dbName)
-	var total int
+	if !d.Data {
+		log.Debug("couch", "database done",
+			"database", dbName, "docs", 0,
+			"elapsed", time.Since(start).Round(time.Millisecond).String())
+		fmt.Fprintf(w, "\n")
+		return 0, nil
+	}
+	var total, fetched int
 	for {
-		n, err := d.dumpPage(w, dbName, total)
+		n, f, err := d.dumpPage(w, dbName, fetched)
 		if err != nil {
 			return total, err
 		}
 		total += n
-		if n < couchPageSize {
+		fetched += f
+		if f < couchPageSize {
 			break
 		}
 	}
@@ -176,19 +203,23 @@ func (d *Dumper) dumpDatabase(w io.Writer, dbName string) (int, error) {
 	return total, nil
 }
 
-func (d *Dumper) dumpPage(w io.Writer, dbName string, skip int) (int, error) {
-	u := fmt.Sprintf("%s/%s/_all_docs?include_docs=true&attachments=true&limit=%d&skip=%d", d.baseURL(), url.PathEscape(dbName), couchPageSize, skip)
+func (d *Dumper) dumpPage(w io.Writer, dbName string, skip int) (int, int, error) {
+	att := "true"
+	if !d.Attachments {
+		att = "false"
+	}
+	u := fmt.Sprintf("%s/%s/_all_docs?include_docs=true&attachments=%s&limit=%d&skip=%d", d.baseURL(), url.PathEscape(dbName), att, couchPageSize, skip)
 	start := time.Now()
 	req, err := http.NewRequestWithContext(d.ctxOrBg(), "GET", u, nil)
 	if err != nil {
-		return 0, fmt.Errorf("build request: %w", err)
+		return 0, 0, fmt.Errorf("build request: %w", err)
 	}
 	if d.user != "" {
 		req.SetBasicAuth(d.user, d.pass)
 	}
 	resp, err := d.client.Do(req)
 	if err != nil {
-		return 0, fmt.Errorf("fetch %s: %w", dbName, err)
+		return 0, 0, fmt.Errorf("fetch %s: %w", dbName, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -197,7 +228,7 @@ func (d *Dumper) dumpPage(w io.Writer, dbName string, skip int) (int, error) {
 			"database", dbName, "status", resp.StatusCode,
 			"latency", time.Since(start).Round(time.Millisecond).String(),
 			"body", strings.TrimSpace(string(body)))
-		return 0, fmt.Errorf("fetch %s: HTTP %d: %s", dbName, resp.StatusCode, strings.TrimSpace(string(body)))
+		return 0, 0, fmt.Errorf("fetch %s: HTTP %d: %s", dbName, resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
 	var result struct {
@@ -206,27 +237,39 @@ func (d *Dumper) dumpPage(w io.Writer, dbName string, skip int) (int, error) {
 		} `json:"rows"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return 0, fmt.Errorf("decode %s: %w", dbName, err)
+		return 0, 0, fmt.Errorf("decode %s: %w", dbName, err)
 	}
 
+	written := 0
 	for _, row := range result.Rows {
 		var doc map[string]any
 		if err := json.Unmarshal(row.Doc, &doc); err != nil {
-			return 0, fmt.Errorf("unmarshal doc in %s: %w", dbName, err)
+			return 0, 0, fmt.Errorf("unmarshal doc in %s: %w", dbName, err)
+		}
+		if id, _ := doc["_id"].(string); !d.DesignDocs && strings.HasPrefix(id, "_design/") {
+			log.Trace("couch", "design doc skipped by objects", "database", dbName, "doc", id)
+			continue
+		}
+		if !d.Attachments {
+			delete(doc, "_attachments")
 		}
 		b, err := json.Marshal(doc)
 		if err != nil {
-			return 0, fmt.Errorf("marshal doc in %s: %w", dbName, err)
+			return 0, 0, fmt.Errorf("marshal doc in %s: %w", dbName, err)
 		}
 		fmt.Fprintf(w, "db.%s.insert(%s)\n", dbName, string(b))
+		written++
 	}
 	log.Trace("couch", "page dumped",
-		"database", dbName, "docs", len(result.Rows), "skip", skip,
+		"database", dbName, "docs", written, "skip", skip,
 		"latency", time.Since(start).Round(time.Millisecond).String())
-	return len(result.Rows), nil
+	return written, len(result.Rows), nil
 }
 
 func (d *Dumper) listDatabases() ([]string, error) {
+	if d.initErr != nil {
+		return nil, fmt.Errorf("couch: tls: %w", d.initErr)
+	}
 	u := fmt.Sprintf("%s/_all_dbs", d.baseURL())
 	req, err := http.NewRequestWithContext(d.ctxOrBg(), "GET", u, nil)
 	if err != nil {
