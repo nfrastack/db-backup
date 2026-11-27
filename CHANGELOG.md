@@ -46,6 +46,7 @@
        - enforce configurable size limits per file for restoring to avoid oom/dos situations
        - (influx) normalize physical restore shard paths
        - (influx) bind manifests and extraction within limits
+       - (mysql) validate incremental position before operation
      - tls modifications
        - don't fall back to plain when configuration invalid
        - fix gcs storage

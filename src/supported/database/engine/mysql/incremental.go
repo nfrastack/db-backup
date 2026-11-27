@@ -68,6 +68,20 @@ func IncrementalDump(ctx context.Context, w io.Writer, host string, port int, us
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	var startFile string
+	var startPos uint32
+	if since != "" {
+		parts := strings.SplitN(since, ":", 2)
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			return fmt.Errorf("invalid position: %s", since)
+		}
+		pos, err := strconv.ParseUint(parts[1], 10, 32)
+		if err != nil {
+			return fmt.Errorf("invalid position: %s", since)
+		}
+		startFile = parts[0]
+		startPos = uint32(pos)
+	}
 	tlsName, err := mysql.TLSNameFor(tlsCfg)
 	if err != nil {
 		return fmt.Errorf("tls: %w", err)
@@ -94,13 +108,6 @@ func IncrementalDump(ctx context.Context, w io.Writer, host string, port int, us
 		defer dumper.Close()
 		return dumper.Dump(w, strings.Split(dbName, ","))
 	}
-
-	parts := strings.SplitN(since, ":", 2)
-	if len(parts) != 2 {
-		return fmt.Errorf("invalid position: %s", since)
-	}
-	startFile := parts[0]
-	startPos, _ := strconv.ParseUint(parts[1], 10, 32)
 
 	label := "incremental"
 	if strategy == "differential" {
