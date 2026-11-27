@@ -42,6 +42,39 @@ func (l PhysicalRestoreLimits) WithDefaults() (PhysicalRestoreLimits, error) {
 	return l, nil
 }
 
+type RestoreStagingLimits struct {
+	MaxFileBytes  int64 `yaml:"max_file_bytes"`
+	MaxTotalBytes int64 `yaml:"max_total_bytes"`
+}
+
+func DefaultRestoreStagingLimits() RestoreStagingLimits {
+	return RestoreStagingLimits{
+		MaxFileBytes:  100 << 30,
+		MaxTotalBytes: 1 << 40,
+	}
+}
+
+func (l RestoreStagingLimits) WithDefaults() (RestoreStagingLimits, error) {
+	defaults := DefaultRestoreStagingLimits()
+	if l.MaxFileBytes == 0 {
+		l.MaxFileBytes = defaults.MaxFileBytes
+	}
+	if l.MaxTotalBytes == 0 {
+		l.MaxTotalBytes = defaults.MaxTotalBytes
+	}
+	if l.MaxFileBytes < 0 || l.MaxTotalBytes < 0 {
+		return RestoreStagingLimits{}, fmt.Errorf("restore staging limits must not be negative")
+	}
+	return l, nil
+}
+
+func (r *RestoreConfig) ResolveRestoreStagingLimits() (RestoreStagingLimits, error) {
+	if r == nil || r.Staging == nil {
+		return DefaultRestoreStagingLimits(), nil
+	}
+	return r.Staging.WithDefaults()
+}
+
 func (r *RestoreConfig) ResolvePhysicalRestoreLimits() (PhysicalRestoreLimits, error) {
 	if r == nil || r.PhysicalRestore == nil {
 		return DefaultPhysicalRestoreLimits(), nil

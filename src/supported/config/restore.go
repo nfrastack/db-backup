@@ -53,6 +53,10 @@ func mergeRestore(dst, src *config.RestoreConfig) {
 		cp := *src.PhysicalRestore
 		dst.PhysicalRestore = &cp
 	}
+	if dst.Staging == nil && src.Staging != nil {
+		cp := *src.Staging
+		dst.Staging = &cp
+	}
 }
 
 func resolveRestore(c *config.Config, r *config.RestoreConfig) error {
@@ -129,6 +133,13 @@ func resolveRestore(c *config.Config, r *config.RestoreConfig) error {
 			return fmt.Errorf("restore physical_restore: %w", err)
 		}
 		r.PhysicalRestore = &limits
+	}
+	if r.Staging != nil {
+		limits, err := r.Staging.WithDefaults()
+		if err != nil {
+			return fmt.Errorf("restore staging: %w", err)
+		}
+		r.Staging = &limits
 	}
 	return nil
 }

@@ -43,6 +43,7 @@
        - (mysql) change `raw_blobs` to options.blob_format
      - refuse encryption profile mixing passphrase and recipients
      - restore modifications
+       - enforce configurable size limits per file for restoring to avoid oom/dos situations
        - (influx) normalize physical restore shard paths
        - (influx) bind manifests and extraction within limits
      - tls modifications

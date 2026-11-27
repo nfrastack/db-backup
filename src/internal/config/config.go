@@ -101,6 +101,7 @@ type RestoreConfig struct {
 	CreateDB        *bool                  `yaml:"create_db,omitempty"`
 	Verify          *bool                  `yaml:"verify,omitempty"`
 	PhysicalRestore *PhysicalRestoreLimits `yaml:"physical_restore,omitempty"`
+	Staging         *RestoreStagingLimits  `yaml:"staging,omitempty"`
 	Type            string                 `yaml:"-"`
 	Host            string                 `yaml:"-"`
 	Port            int                    `yaml:"-"`

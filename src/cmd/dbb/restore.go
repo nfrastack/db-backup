@@ -104,6 +104,7 @@ func cmdRestore(args []string) int {
 	var restoreIdentity, restorePassphrase, restoreAuthSource string
 	restoreAuthSource = *authSource
 	restoreLimits := config.DefaultPhysicalRestoreLimits()
+	stagingLimits := config.DefaultRestoreStagingLimits()
 
 	if len(fs.Args()) > 0 && len(globalConfigPaths) == 0 {
 		fmt.Fprintf(os.Stderr, "ERROR: job '%s' requires a config file\n", fs.Arg(0))
@@ -136,6 +137,12 @@ func cmdRestore(args []string) int {
 				return 1
 			}
 			restoreLimits = resolvedLimits
+			resolvedStaging, err := r.ResolveRestoreStagingLimits()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "ERROR: restore staging limits: %v\n", err)
+				return 1
+			}
+			stagingLimits = resolvedStaging
 			if err := license.AllowRestore(); err != nil {
 				fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
 				fmt.Fprintf(os.Stderr, "  Community restores support AGE encryption and filesystem/S3/webDAV storage only\n")
@@ -394,6 +401,7 @@ func cmdRestore(args []string) int {
 		}
 		defer os.RemoveAll(tmpDir)
 		var paths []string
+		var stagedTotal int64
 		for gi, gf := range order {
 			isMain := gi == len(order)-1
 			rc, _, err := st.Download(context.Background(), gf)
@@ -424,13 +432,18 @@ func cmdRestore(args []string) int {
 				fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
 				return 1
 			}
-			_, err = io.Copy(tmp, decoded)
+			staged, err := retention.CopyWithLimit(tmp, decoded, min(stagingLimits.MaxFileBytes, stagingLimits.MaxTotalBytes-stagedTotal))
+			if closer, ok := decoded.(io.Closer); ok {
+				closer.Close()
+			}
 			rc.Close()
 			if err != nil {
 				tmp.Close()
-				fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
+				os.Remove(tmp.Name())
+				fmt.Fprintf(os.Stderr, "ERROR: stage %s: %v\n", gf, err)
 				return 1
 			}
+			stagedTotal += staged
 			tmp.Close()
 			paths = append(paths, tmp.Name())
 		}
