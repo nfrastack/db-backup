@@ -33,7 +33,8 @@
      - bump metadata sidecar version to 3
      - contain filesystem paths and sanitize database filename tokens
      - don't fall back to plain when tls configuration invalid
-     - reject invalid storage TLS settings instead of ignoring CA, client certificate, key, or version errors
+     - reject invalid storage tls settings instead of ignoring CA, client certificate, key, or version errors
+     - fix tls configuration for gcs storage
      - post hooks now fire for every failure stage with DBB_STAGE/DBB_ERROR detail
      - (container) rewrite entrypoint to allow docker to output proper exit code when runing in manual mode
      - dump modifications

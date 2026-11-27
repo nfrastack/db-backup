@@ -483,6 +483,14 @@ func newGCSStorage(opts map[string]string) (storage.Storage, error) {
 		k.TokenURI = testTokenURI
 	}
 
+	client := &http.Client{Timeout: 3600 * time.Second}
+	if storage.HasTLSOpts(opts) {
+		client, err = storage.TLSHTTPClient(opts)
+		if err != nil {
+			return nil, fmt.Errorf("gcs: %w", err)
+		}
+	}
+
 	return &gcsStorage{
 		bucket:   bucket,
 		prefix:   strings.TrimPrefix(opts["path"], "/"),
@@ -492,7 +500,7 @@ func newGCSStorage(opts map[string]string) (storage.Storage, error) {
 			privateKey:  k.PrivateKey,
 			tokenURI:    k.TokenURI,
 		},
-		client: &http.Client{Timeout: 3600 * time.Second},
+		client: client,
 	}, nil
 }
 
