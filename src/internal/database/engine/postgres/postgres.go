@@ -924,6 +924,10 @@ func (d *Dumper) dumpDatabase(w io.Writer, dbName string) error {
 	if err := d.dumpExtensions(w, dbName); err != nil {
 		return err
 	}
+	timescaleRestore, err := d.dumpTimescaleRestoreStart(w, dbName)
+	if err != nil {
+		return err
+	}
 	if err := d.dumpCollations(w, dbName); err != nil {
 		return err
 	}
@@ -1004,6 +1008,10 @@ func (d *Dumper) dumpDatabase(w io.Writer, dbName string) error {
 		}
 	}
 
+	if err := d.dumpExtensionConfigData(w, dbName); err != nil {
+		return err
+	}
+
 	if err := d.dumpViews(w, dbName); err != nil {
 		return err
 	}
@@ -1050,6 +1058,9 @@ func (d *Dumper) dumpDatabase(w io.Writer, dbName string) error {
 		for _, r := range matviewRefreshes {
 			fmt.Fprint(w, r)
 		}
+	}
+	if timescaleRestore {
+		fmt.Fprintln(w, "\nSELECT timescaledb_post_restore();")
 	}
 	if d.SingleTransaction {
 		if _, err := d.conn.Exec(d.ctxOrBg(), "COMMIT"); err != nil {
@@ -1204,6 +1215,20 @@ func (d *Dumper) dumpExtensions(w io.Writer, dbName string) error {
 	log.Debug("postgres", "extensions done", "database", dbName,
 		"count", len(names), "extensions", strings.Join(names, ","))
 	return nil
+}
+
+func (d *Dumper) dumpTimescaleRestoreStart(w io.Writer, dbName string) (bool, error) {
+	var installed bool
+	if err := d.conn.QueryRow(d.ctxOrBg(),
+		"SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_extension WHERE extname = 'timescaledb')").Scan(&installed); err != nil {
+		return false, fmt.Errorf("check timescaledb extension: %w", err)
+	}
+	if !installed {
+		return false, nil
+	}
+	fmt.Fprintln(w, "\nSELECT timescaledb_pre_restore();")
+	log.Debug("postgres", "timescaledb restore mode enabled", "database", dbName)
+	return true, nil
 }
 
 type eventTriggerDef struct {
@@ -2512,6 +2537,11 @@ func (d *Dumper) dumpSequenceValues(w io.Writer, dbName string) error {
 	if err != nil {
 		return err
 	}
+	extSeqs, err := d.listExtensionConfigSequences()
+	if err != nil {
+		return err
+	}
+	seqs = append(seqs, extSeqs...)
 	wrote := false
 	link := func() {
 		if !wrote {
@@ -4185,6 +4215,165 @@ func (d *Dumper) listTables(dbName string) ([]string, error) {
 		tables = append(tables, schema+"."+table)
 	}
 	return tables, nil
+}
+
+type extensionConfigTable struct {
+	oid    uint32
+	schema string
+	name   string
+}
+
+func (d *Dumper) listExtensionConfigTables() ([]extensionConfigTable, error) {
+	rows, err := d.conn.Query(d.ctxOrBg(),
+		"SELECT DISTINCT c.oid, n.nspname, c.relname FROM pg_catalog.pg_extension e "+
+			"CROSS JOIN LATERAL unnest(e.extconfig) AS cfg(table_oid) "+
+			"JOIN pg_catalog.pg_class c ON c.oid = cfg.table_oid "+
+			"JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "+
+			"WHERE c.relkind IN ('r', 'p', 'f') ORDER BY 2, 3")
+	if err != nil {
+		return nil, fmt.Errorf("list extension config tables: %w", err)
+	}
+	defer rows.Close()
+	var out []extensionConfigTable
+	for rows.Next() {
+		var ref extensionConfigTable
+		if err := rows.Scan(&ref.oid, &ref.schema, &ref.name); err != nil {
+			return nil, fmt.Errorf("scan extension config table: %w", err)
+		}
+		out = append(out, ref)
+	}
+	return out, rows.Err()
+}
+
+func (d *Dumper) orderExtensionConfigTables(tables []extensionConfigTable) []extensionConfigTable {
+	byOID := make(map[uint32]extensionConfigTable, len(tables))
+	indegree := make(map[uint32]int, len(tables))
+	children := make(map[uint32][]uint32)
+	for _, table := range tables {
+		byOID[table.oid] = table
+	}
+
+	rows, err := d.conn.Query(d.ctxOrBg(),
+		"SELECT conrelid, confrelid FROM pg_catalog.pg_constraint WHERE contype = 'f'")
+	if err != nil {
+		log.Warn("postgres", "extension config dependency order unavailable", "error", err.Error())
+		return tables
+	}
+	for rows.Next() {
+		var child, parent uint32
+		if err := rows.Scan(&child, &parent); err != nil {
+			break
+		}
+		if _, ok := byOID[child]; !ok {
+			continue
+		}
+		if _, ok := byOID[parent]; !ok {
+			continue
+		}
+		if child == parent {
+			continue
+		}
+		indegree[child]++
+		children[parent] = append(children[parent], child)
+	}
+	rows.Close()
+	if rows.Err() != nil {
+		log.Warn("postgres", "extension config dependency order unavailable", "error", rows.Err().Error())
+		return tables
+	}
+
+	var ready []extensionConfigTable
+	for _, table := range tables {
+		if indegree[table.oid] == 0 {
+			ready = append(ready, table)
+		}
+	}
+	sort.Slice(ready, func(i, j int) bool {
+		if ready[i].schema == ready[j].schema {
+			return ready[i].name < ready[j].name
+		}
+		return ready[i].schema < ready[j].schema
+	})
+
+	ordered := make([]extensionConfigTable, 0, len(tables))
+	for len(ready) > 0 {
+		table := ready[0]
+		ready = ready[1:]
+		ordered = append(ordered, table)
+		for _, childOID := range children[table.oid] {
+			indegree[childOID]--
+			if indegree[childOID] == 0 {
+				ready = append(ready, byOID[childOID])
+			}
+		}
+		sort.Slice(ready, func(i, j int) bool {
+			if ready[i].schema == ready[j].schema {
+				return ready[i].name < ready[j].name
+			}
+			return ready[i].schema < ready[j].schema
+		})
+	}
+	if len(ordered) != len(tables) {
+		log.Warn("postgres", "extension config tables contain dependency cycles", "tables", len(tables)-len(ordered))
+		for _, table := range tables {
+			if indegree[table.oid] > 0 {
+				ordered = append(ordered, table)
+			}
+		}
+	}
+	return ordered
+}
+
+func (d *Dumper) listExtensionConfigSequences() ([][3]string, error) {
+	rows, err := d.conn.Query(d.ctxOrBg(),
+		"SELECT DISTINCT sn.nspname, c.relname, pg_catalog.pg_get_userbyid(c.relowner) "+
+			"FROM pg_catalog.pg_class c "+
+			"JOIN pg_catalog.pg_namespace sn ON sn.oid = c.relnamespace "+
+			"JOIN pg_catalog.pg_depend dd ON dd.objid = c.oid AND dd.classid = 'pg_class'::regclass "+
+			"AND dd.refclassid = 'pg_class'::regclass AND dd.deptype IN ('a', 'i') "+
+			"JOIN pg_catalog.pg_class tc ON tc.oid = dd.refobjid "+
+			"JOIN pg_catalog.pg_extension e ON tc.oid = ANY(e.extconfig) "+
+			"WHERE c.relkind = 'S' ORDER BY 1, 2")
+	if err != nil {
+		return nil, fmt.Errorf("list extension config sequences: %w", err)
+	}
+	defer rows.Close()
+	var out [][3]string
+	for rows.Next() {
+		var ref [3]string
+		if err := rows.Scan(&ref[0], &ref[1], &ref[2]); err != nil {
+			return nil, fmt.Errorf("scan extension config sequence: %w", err)
+		}
+		out = append(out, ref)
+	}
+	return out, rows.Err()
+}
+
+func (d *Dumper) dumpExtensionConfigData(w io.Writer, dbName string) error {
+	if !d.Data || d.SchemaOnly {
+		return nil
+	}
+	tables, err := d.listExtensionConfigTables()
+	if err != nil {
+		return err
+	}
+	if len(tables) == 0 {
+		return nil
+	}
+	tables = d.orderExtensionConfigTables(tables)
+	qualified := make([]string, 0, len(tables))
+	for _, table := range tables {
+		qualified = append(qualified, quotePGIdent(table.schema)+"."+quotePGIdent(table.name))
+	}
+	fmt.Fprintf(w, "\nTRUNCATE TABLE %s CASCADE;\n", strings.Join(qualified, ", "))
+	for _, table := range tables {
+		schema, name := table.schema, table.name
+		log.Debug("postgres", "extension config table data dumped", "database", dbName, "table", schema+"."+name)
+		if err := d.copyData(w, dbName, schema, name); err != nil {
+			return fmt.Errorf("extension config table %s.%s: %w", schema, name, err)
+		}
+	}
+	return nil
 }
 
 type pgSchemaInfo struct {

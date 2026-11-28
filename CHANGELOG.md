@@ -4,7 +4,7 @@
      - dump modifications
        - (postgres) exclude extension owned event triggers
        - (postgres) handle event triggers containing WHEN TAG
-
+       - (postgres) preserve timescaledb catalog data and restore mode for hypertables and continuous aggregates
 
 ## 5.1.0 2026-11-27 <code at nfrastack dot com>
 
