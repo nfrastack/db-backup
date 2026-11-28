@@ -5,7 +5,7 @@
 
   outputs = { self, nixpkgs }:
     let
-      version = "5.1.0";
+      version = "5.1.1b";
 
       goVersion = "1.27.4";
       goMajorMinor = nixpkgs.lib.versions.majorMinor goVersion;
