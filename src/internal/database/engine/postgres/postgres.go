@@ -1262,12 +1262,13 @@ func (d *Dumper) dumpEventTriggers(w io.Writer, _ string) error {
 	defer rows.Close()
 	for rows.Next() {
 		var e eventTriggerDef
-		var schema, fn, args, tagsRaw string
+		var schema, fn, args string
+		var tagsRaw sql.NullString
 		if err := rows.Scan(&e.name, &e.event, &tagsRaw, &schema, &fn, &args, &e.enabled); err != nil {
 			return fmt.Errorf("scan event trigger: %w", err)
 		}
 		e.function = quotePGIdent(schema) + "." + quotePGIdent(fn) + "(" + args + ")"
-		e.tags = pgTagList(tagsRaw)
+		e.tags = pgTagList(tagsRaw.String)
 		fmt.Fprintf(w, "\n-- Event trigger: %s\n%s\n", e.name, buildEventTrigger(e))
 	}
 	return rows.Err()

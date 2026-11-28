@@ -1,3 +1,9 @@
+## dev
+
+   ### Changed
+     - dump modifications
+       - (postgres) handle event triggers containing WHEN TAG
+
 ## 5.1.0 2026-11-27 <code at nfrastack dot com>
 
   This minor release brings a series of bug fixes against the tls implementations, creates safety nets around out of memory and denial of service concerns, arbitrary file reading capabilities with specially crafted arguments along with a series of new features. Depending on the engine, toggleable options control what you want to include in your backup file. Restores now have the capability of verifying the backup before restoration to ensure consistency, and for supporters the capability of outputting the dump to multiple storage locations for safety and disaster recovery purposes. There are a series of performance enhancements which should allow operations to complete quicker with less resource usage. For more information on the changes see the upgrade guide at https://nfrastack.com/db-backup
