@@ -1255,6 +1255,7 @@ func (d *Dumper) dumpEventTriggers(w io.Writer, _ string) error {
 		"SELECT e.evtname, e.evtevent, e.evttags::text, fn.nspname, p.proname, pg_catalog.pg_get_function_identity_arguments(p.oid), e.evtenabled FROM pg_catalog.pg_event_trigger e "+
 			"JOIN pg_catalog.pg_proc p ON p.oid = e.evtfoid "+
 			"JOIN pg_catalog.pg_namespace fn ON fn.oid = p.pronamespace "+
+			"WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend dd WHERE dd.objid = e.oid AND dd.classid = 'pg_event_trigger'::regclass AND dd.refclassid = 'pg_extension'::regclass AND dd.deptype = 'e') "+
 			"ORDER BY e.evtname")
 	if err != nil {
 		return fmt.Errorf("event triggers: %w", err)

@@ -2,7 +2,9 @@
 
    ### Changed
      - dump modifications
+       - (postgres) exclude extension owned event triggers
        - (postgres) handle event triggers containing WHEN TAG
+
 
 ## 5.1.0 2026-11-27 <code at nfrastack dot com>
 
